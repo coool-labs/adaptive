@@ -42,7 +42,7 @@ export function parseTierLists(
   return tiers
 }
 
-function parseModelRef(raw: unknown): ModelRef | undefined {
+export function parseModelRef(raw: unknown): ModelRef | undefined {
   if (!isRecord(raw)) return undefined
   const providerID = raw["providerID"]
   const id = raw["id"]
