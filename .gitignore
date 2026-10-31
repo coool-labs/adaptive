@@ -1,0 +1,7 @@
+node_modules
+dist
+coverage
+.scratch
+*.log
+.DS_Store
+GOAL.md
