@@ -19,7 +19,7 @@ Checkbox format: objective / boundary / tests required / acceptance. IDs are sta
 
 ## Phase C — State and execution
 
-- [ ] **T-10 Settings store** — Objective: versioned settings + migration (ADP-036/005). Boundary: `src/state/settings/` over storage interface. Tests: unit migration from empty/v0/vN; bounded shape validation. Acceptance: 100% coverage.
+- [x] **T-10 Settings store** — Objective: versioned settings + migration (ADP-036/005). Boundary: `src/state/settings/` over storage interface. Tests: unit migration from empty/v0/vN; bounded shape validation. Acceptance: 100% coverage.
 - [ ] **T-11 Receipts + parked work** — Objective: bounded durable records (ADP-030/024). Boundary: `src/state/receipts/`, `src/state/parked-work/`. Tests: unit bounds/eviction, restart-read round-trip, no-secret invariant property. Acceptance: 100% coverage.
 - [ ] **T-12 Retry policy** — Objective: hook decision logic (ADP-013/014). Boundary: `src/execution/retry/`. Tests: unit — veto cases, native-defer cases, user cancellation, boundedness. Acceptance: 100% coverage.
 - [ ] **T-13 Continuation / recovery / parking** — Objective: safe-boundary behavior (ADP-014/016/018/023/024). Boundary: `src/execution/{continuation,recovery,parking}/`. Tests: unit with fake session ops — never replay after side effects; park before dispatch; resume at recovery; no mid-work pull. Acceptance: 100% coverage.
