@@ -87,14 +87,25 @@ function checkInvariants(input: SchedulerInput, decision: Decision, routing: "ti
       // required tier's configured list.
       expect(input.tierCandidates.some((r) => sameModelRef(r, decision.model))).toBe(true)
       // Draining is never chosen while an equivalent healthy resource exists.
+      // "Equivalent" means present in inventory AND gate-compatible — the
+      // oracle must apply the same gate admit does, or an incompatible
+      // candidate without health data would count as a ready alternative.
       if (decision.reason === "draining") {
-        const anyReady = input.tierCandidates.some(
-          (r) =>
+        const anyReady = input.tierCandidates.some((r) => {
+          const entry = entryFor(input.inventory, r)
+          if (entry === undefined) {
+            return false
+          }
+          if (!checkCompatibility(entry, input.demand).compatible) {
+            return false
+          }
+          return (
             oracleBucket(
               input.health[schedulerHealthKey(r)],
               input.capacity[schedulerHealthKey(r)],
-            ) === "ready",
-        )
+            ) === "ready"
+          )
+        })
         expect(anyReady).toBe(false)
       }
     } else {
