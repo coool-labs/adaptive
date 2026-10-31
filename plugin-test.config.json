@@ -1,0 +1,8 @@
+{
+  "targets": ["current", "2.2.1", "latest"],
+  "mode": "packed",
+  "surfaces": ["server", "rpc"],
+  "scenarios": "test/plugin-test/scenarios.ts",
+  "reporter": "pretty",
+  "expectedPluginId": "coool.adaptive"
+}
