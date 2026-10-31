@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from "vitest"
 
 import type { ModelSource } from "../../src/adapters/opencode/inventory.js"
+import type { OperatingMode } from "../../src/core/scheduler/types.js"
 import type { SupervisorSessionSource } from "../../src/supervisor/types.js"
 
 import { makeInfo, wireRef } from "../adapters/opencode/helpers.js"
@@ -34,6 +35,20 @@ async function flush(): Promise<void> {
   await new Promise((resolve) => {
     setTimeout(resolve, 0)
   })
+}
+
+/** Capture fail-open logging without polluting test output. */
+function spyErrors(): { lines: string[]; restore: () => void } {
+  const lines: string[] = []
+  const spy = vi.spyOn(console, "error").mockImplementation((first: unknown) => {
+    lines.push(String(first))
+  })
+  return {
+    lines,
+    restore: (): void => {
+      spy.mockRestore()
+    },
+  }
 }
 
 function ref(providerID: string, id: string): { providerID: string; id: string } {
@@ -592,20 +607,6 @@ describe("supervisor", () => {
   })
 
   describe("fail-open boundaries and evidence branches", () => {
-    /** Capture fail-open logging without polluting test output. */
-    function spyErrors(): { lines: string[]; restore: () => void } {
-      const lines: string[] = []
-      const spy = vi.spyOn(console, "error").mockImplementation((first: unknown) => {
-        lines.push(String(first))
-      })
-      return {
-        lines,
-        restore: (): void => {
-          spy.mockRestore()
-        },
-      }
-    }
-
     const STARTED = { kind: "execution-started", sessionID: "s1", at: 10 } as const
 
     /** A versioned parked-work payload with explicit records. */
@@ -1094,6 +1095,374 @@ describe("supervisor", () => {
       })
       await supervisor.handleReport(STARTED)
       expect(session.log).toEqual(["switch:s1:prov/a@high"])
+    })
+  })
+
+  describe("escalation on capability failure (T-18, ADP-015..017)", () => {
+    const STARTED = { kind: "execution-started", sessionID: "s1", at: 10 } as const
+
+    /** Control-mode settings with a standard and an advanced tier. */
+    function escalateStorage(mode: OperatingMode = "control"): KeyFailStorage {
+      const storage = new KeyFailStorage("unused")
+      seed(
+        storage,
+        SETTINGS_KEY,
+        settingsJSON(mode, {
+          standard: [wireRef("prov", "a")],
+          advanced: [wireRef("prov", "b")],
+        }),
+      )
+      return storage
+    }
+
+    const CONTEXT_OVERFLOW = { type: "UnknownError", message: "", status: 413 } as const
+
+    /** Run one admitted, failing episode and return the observed state. */
+    async function failingEpisode(
+      storage: KeyFailStorage,
+      session: FakeSupervisorSession,
+      error: { type: string; message: string; status?: number },
+    ): Promise<void> {
+      const supervisor = makeSupervisor({ storage, session })
+      await supervisor.handleReport(STARTED)
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: "s1",
+        at: 15,
+        model: ref("prov", "a"),
+      })
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 20,
+        error,
+      })
+      await flush()
+    }
+
+    it("escalates to the next tier on a context-overflow failure", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = escalateStorage()
+      await failingEpisode(storage, session, CONTEXT_OVERFLOW)
+      expect(session.log).toEqual([
+        "switch:s1:prov/a",
+        "wait:s1",
+        "switch:s1:prov/b",
+        `prompt:s1:${CONTINUATION_PROMPT}`,
+      ])
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts[1]?.decision).toEqual({
+        kind: "escalate",
+        target: ref("prov", "b"),
+        step: "tier",
+        tier: "advanced",
+        evidence: [{ kind: "repeated-failure", detail: "context_overflow" }],
+        budgetRemaining: 1,
+      })
+      expect(receipts[1]?.tier).toBe("advanced")
+    })
+
+    it("records an observe-only escalation decision without switching", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = escalateStorage("observe")
+      await failingEpisode(storage, session, CONTEXT_OVERFLOW)
+      expect(session.log).toEqual([])
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts[0]?.decision).toMatchObject({
+        kind: "observe-only",
+        would: { kind: "apply", model: ref("prov", "a") },
+      })
+      expect(receipts[1]?.decision).toEqual({
+        kind: "observe-only",
+        would: {
+          kind: "escalate",
+          target: ref("prov", "b"),
+          step: "tier",
+          tier: "advanced",
+          evidence: [{ kind: "repeated-failure", detail: "context_overflow" }],
+          budgetRemaining: 1,
+        },
+      })
+      expect(receipts[1]?.tier).toBe("advanced")
+    })
+
+    it("never escalates on an infrastructure failure (ADP-019)", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = escalateStorage()
+      await failingEpisode(storage, session, {
+        type: "UnknownError",
+        message: "",
+        status: 429,
+      })
+      expect(session.log).toEqual(["switch:s1:prov/a"])
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts).toHaveLength(1)
+    })
+
+    it("never escalates on an auth failure", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = escalateStorage()
+      await failingEpisode(storage, session, {
+        type: "UnauthorizedError",
+        message: "",
+        status: 401,
+      })
+      expect(session.log).toEqual(["switch:s1:prov/a"])
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts).toHaveLength(1)
+    })
+
+    it("defers with escalation-no-candidate when the next tier is empty", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = new KeyFailStorage("unused")
+      seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+      await failingEpisode(storage, session, CONTEXT_OVERFLOW)
+      expect(session.log).toEqual(["switch:s1:prov/a"])
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts[1]?.decision).toEqual({
+        kind: "defer",
+        reason: "escalation-no-candidate",
+      })
+      expect(receipts[1]?.tier).toBe("standard")
+    })
+
+    it("defers with escalation-ceiling at the top tier", async () => {
+      // Agent-role routing (ADP-002 level 3) is the admission path that can
+      // land on the top tier; from there the escalation ladder tops out.
+      const session = new FakeSupervisorSession()
+      const storage = new KeyFailStorage("unused")
+      seed(
+        storage,
+        SETTINGS_KEY,
+        settingsJSON("control", { advanced: [wireRef("prov", "b")] }, null, {
+          reviewer: "advanced",
+        }),
+      )
+      const supervisor = makeSupervisor({ storage, session })
+      await supervisor.handleReport({
+        kind: "model-request",
+        sessionID: "s1",
+        model: ref("prov", "b"),
+        requestKind: "primary",
+        agent: "reviewer",
+      })
+      await supervisor.handleReport(STARTED)
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: "s1",
+        at: 15,
+        model: ref("prov", "b"),
+      })
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 20,
+        error: CONTEXT_OVERFLOW,
+      })
+      await flush()
+      expect(session.log).toEqual(["switch:s1:prov/b"])
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts[0]?.decision).toMatchObject({ kind: "apply", model: ref("prov", "b") })
+      expect(receipts[1]?.decision).toEqual({
+        kind: "defer",
+        reason: "escalation-ceiling",
+      })
+      expect(receipts[1]?.tier).toBe("advanced")
+    })
+
+    it("escalates on a content-policy rejection via the textual last resort", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = escalateStorage()
+      await failingEpisode(storage, session, {
+        type: "ProviderRequestError",
+        message: "the request was rejected by the content policy",
+        status: 400,
+      })
+      expect(session.log).toEqual([
+        "switch:s1:prov/a",
+        "wait:s1",
+        "switch:s1:prov/b",
+        `prompt:s1:${CONTINUATION_PROMPT}`,
+      ])
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts[0]?.outcome).toEqual({ status: "failed", category: "content_policy" })
+    })
+
+    it("escalates again for a fresh unit (budget cleared on close)", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = escalateStorage()
+      const supervisor = makeSupervisor({ storage, session })
+      await supervisor.handleReport(STARTED)
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: "s1",
+        at: 15,
+        model: ref("prov", "a"),
+      })
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 20,
+        error: CONTEXT_OVERFLOW,
+      })
+      await flush()
+      await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: "s1",
+        at: 35,
+        model: ref("prov", "b"),
+      })
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 40,
+        error: { type: "UnknownError", message: "", status: 413 },
+      })
+      await flush()
+      const escalations = parseReceiptsPayload(storedReceipts(storage)).filter(
+        (receipt) => receipt.decision.kind === "escalate",
+      )
+      expect(escalations).toHaveLength(2)
+      expect(escalations[1]?.decision).toMatchObject({
+        kind: "escalate",
+        target: ref("prov", "b"),
+        budgetRemaining: 1,
+      })
+    })
+
+    it("escalates a variantless unit even without an attributable tier source", async () => {
+      // A failure without an admitted tier (e.g. pin routing) never escalates:
+      // there is no tier context to escalate within.
+      const session = new FakeSupervisorSession()
+      const storage = new KeyFailStorage("unused")
+      seed(storage, SETTINGS_KEY, settingsJSON("control", {}, wireRef("prov", "b")))
+      await failingEpisode(storage, session, CONTEXT_OVERFLOW)
+      expect(session.log).toEqual(["switch:s1:prov/b"])
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts).toHaveLength(1)
+    })
+
+    it("carries escalation-tool requests as evidence (ADP-015)", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = escalateStorage()
+      const supervisor = makeSupervisor({ storage, session })
+      await supervisor.handleReport(STARTED)
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: "s1",
+        at: 15,
+        model: ref("prov", "a"),
+      })
+      expect(supervisor.noteEscalationRequest("s1", "needs larger context", "413 on 200k")).toBe(
+        true,
+      )
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 20,
+        error: CONTEXT_OVERFLOW,
+      })
+      await flush()
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts[1]?.decision).toEqual({
+        kind: "escalate",
+        target: ref("prov", "b"),
+        step: "tier",
+        tier: "advanced",
+        evidence: [
+          { kind: "agent-request", detail: "needs larger context: 413 on 200k" },
+          { kind: "repeated-failure", detail: "context_overflow" },
+        ],
+        budgetRemaining: 1,
+      })
+    })
+
+    it("discards tool evidence when the unit completes without failure", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = escalateStorage()
+      const supervisor = makeSupervisor({ storage, session })
+      await supervisor.handleReport(STARTED)
+      expect(supervisor.noteEscalationRequest("s1", "r", "e")).toBe(true)
+      await supervisor.handleReport({ kind: "execution-succeeded", sessionID: "s1", at: 15 })
+      await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 20 })
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: "s1",
+        at: 25,
+        model: ref("prov", "a"),
+      })
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 30,
+        error: CONTEXT_OVERFLOW,
+      })
+      await flush()
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts.at(-1)?.decision).toMatchObject({
+        kind: "escalate",
+        evidence: [{ kind: "repeated-failure", detail: "context_overflow" }],
+      })
+    })
+
+    it("discards an escalation request without an active unit", () => {
+      const supervisor = makeSupervisor({
+        storage: escalateStorage(),
+        session: new FakeSupervisorSession(),
+      })
+      expect(supervisor.noteEscalationRequest("s1", "r", "e")).toBe(false)
+    })
+
+    it("bounds recorded tool evidence per unit", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = escalateStorage()
+      const supervisor = makeSupervisor({ storage, session })
+      await supervisor.handleReport(STARTED)
+      for (let index = 0; index < 6; index++) {
+        expect(supervisor.noteEscalationRequest("s1", "r", String(index))).toBe(true)
+      }
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: "s1",
+        at: 15,
+        model: ref("prov", "a"),
+      })
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 20,
+        error: CONTEXT_OVERFLOW,
+      })
+      await flush()
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      const decision = receipts[1]?.decision
+      if (decision?.kind !== "escalate") {
+        expect(decision?.kind).toBe("escalate")
+        return
+      }
+      expect(decision.evidence.map((entry) => entry.kind)).toEqual([
+        "agent-request",
+        "agent-request",
+        "agent-request",
+        "repeated-failure",
+      ])
+    })
+
+    it("logs a failed escalation continuation without parking", async () => {
+      const errors = spyErrors()
+      try {
+        const session = new FakeSupervisorSession({ failWait: true })
+        const storage = escalateStorage()
+        await failingEpisode(storage, session, CONTEXT_OVERFLOW)
+        expect(errors.lines.some((line) => line.includes("escalation-ops"))).toBe(true)
+        // The decision receipt stands even though the continuation failed.
+        const receipts = parseReceiptsPayload(storedReceipts(storage))
+        expect(receipts[1]?.decision).toMatchObject({ kind: "escalate", target: ref("prov", "b") })
+        expect(parseParkedPayload(storedParked(storage))).toHaveLength(0)
+      } finally {
+        errors.restore()
+      }
     })
   })
 })

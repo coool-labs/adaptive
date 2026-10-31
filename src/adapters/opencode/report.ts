@@ -94,12 +94,14 @@ export function mapSessionEvent(event: SessionEvent): ExecutionReport | null {
 export function contextModelRequest(input: {
   sessionID: string
   model: Model.Ref
+  agent?: string
 }): ModelRequestReport {
   return {
     kind: "model-request",
     sessionID: input.sessionID,
     model: modelRefOf(input.model),
     requestKind: "primary",
+    ...(input.agent !== undefined ? { agent: input.agent } : {}),
   }
 }
 
@@ -108,12 +110,14 @@ export function hookModelRequest(input: {
   sessionID: string
   model: Model.Ref
   kind: "primary" | "compaction" | "title" | "generate"
+  agent?: string
 }): ModelRequestReport {
   return {
     kind: "model-request",
     sessionID: input.sessionID,
     model: modelRefOf(input.model),
     requestKind: input.kind,
+    ...(input.agent !== undefined ? { agent: input.agent } : {}),
   }
 }
 

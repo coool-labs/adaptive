@@ -17,21 +17,31 @@
  *   decisions); admission receipts plus outcome attachment cover ADP-030.
  * - interruption reasons outside the known vocabulary leave the unit open
  *   (a later episode supersedes it); no outcome is ever fabricated.
+ * - escalation (ADP-015..017) triggers only on capability-classified unit
+ *   failures (context overflow, content policy); infrastructure failures
+ *   never escalate, and the per-unit budget is finite.
  */
 import { WorkUnitTracker } from "../core/work-unit/tracker.js"
 import type { ActiveUnit, ApplyResult, ModelRef } from "../core/work-unit/types.js"
 import { INTERRUPT_REASONS } from "../core/work-unit/interruption.js"
 import type { InterruptReason } from "../core/work-unit/interruption.js"
 import { resolveRouting } from "../core/tier-policy/resolve.js"
-import { TIERS } from "../core/tier-policy/types.js"
+import { TIERS, nextTier } from "../core/tier-policy/types.js"
 import type { RoutingDecision, TierName } from "../core/tier-policy/types.js"
-import { admit, forMode as schedulerForMode, schedulerHealthKey } from "../core/scheduler/index.js"
-import type { ApplyDecision, SchedulerInput } from "../core/scheduler/types.js"
+import {
+  admit,
+  forMode as schedulerForMode,
+  planEscalation,
+  schedulerHealthKey,
+} from "../core/scheduler/index.js"
+import type { ApplyDecision, EscalationEvidence, SchedulerInput } from "../core/scheduler/types.js"
+import { MAX_ESCALATION_EVIDENCE } from "../core/scheduler/types.js"
 import type { Demand } from "../core/compatibility/types.js"
 import { classifyFailure, CapacityRegistry, ResourceHealthRegistry } from "../health/index.js"
 import type {
   Assessment,
   CapacitySignals,
+  FailureCategory,
   FailureClassification,
   HealthEvent,
   ResourceKey,
@@ -50,6 +60,7 @@ import {
   selectResumable,
   SideEffectLedger,
 } from "../execution/index.js"
+import { MAX_ESCALATION_FIELD_LENGTH, escalationDetail } from "../execution/escalation/index.js"
 import type { ContinuationPrompts, RecoveryOption } from "../execution/index.js"
 import { listCandidates, sessionOps, storageSeam } from "../adapters/opencode/index.js"
 import type { EventReport } from "../adapters/opencode/index.js"
@@ -70,6 +81,19 @@ function interruptReason(reason: string): InterruptReason | undefined {
     : undefined
 }
 
+/**
+ * Failure categories that count as structured capability evidence (ADP-015).
+ * The remaining evidence kinds (agent request, reviewer rejection) have no
+ * structured host source in v2 and are never inferred from free text.
+ */
+const CAPABILITY_EVIDENCE_CATEGORIES: readonly FailureCategory[] = [
+  "context_overflow",
+  "content_policy",
+]
+
+/** Finite per-unit escalation budget (ADP-017). */
+const MAX_ESCALATIONS_PER_UNIT = 2
+
 export class Supervisor {
   readonly #options: SupervisorOptions
   readonly #settings: SettingsStore
@@ -81,6 +105,12 @@ export class Supervisor {
   readonly #codex: CodexCapacitySensor
   readonly #ledger = new SideEffectLedger()
   readonly #vetoes = new Map<string, number>()
+  readonly #escalations = new Map<string, number>()
+  readonly #admissionTiers = new Map<string, TierName>()
+  /** Recorded escalation-tool requests per unit (ADP-015 agent self-reports). */
+  readonly #escalationEvidence = new Map<string, EscalationEvidence[]>()
+  /** Last agent observed per session (role-hint routing evidence, ADP-002). */
+  readonly #agents = new Map<string, string>()
   readonly #ready: Promise<SettingsV1>
   readonly #ops: ReturnType<typeof sessionOps>
 
@@ -142,6 +172,23 @@ export class Supervisor {
     }
   }
 
+  /**
+   * Record an escalation-tool request (ADP-015 agent self-report) against the
+   * session's current work unit. Returns false when no unit is active — the
+   * request is then discarded (escalation is a per-unit signal).
+   */
+  noteEscalationRequest(sessionID: string, reason: string, evidence: string): boolean {
+    const unit = this.#tracker.active(sessionID)
+    if (unit === undefined) return false
+    const recorded = this.#escalationEvidence.get(unit.id) ?? []
+    recorded.push({
+      kind: "agent-request",
+      detail: escalationDetail({ reason, evidence }).slice(0, MAX_ESCALATION_FIELD_LENGTH),
+    })
+    this.#escalationEvidence.set(unit.id, recorded.slice(-MAX_ESCALATION_EVIDENCE))
+    return true
+  }
+
   // ---------- dispatch ----------
 
   async #dispatch(report: EventReport, settings: SettingsV1): Promise<void> {
@@ -153,7 +200,7 @@ export class Supervisor {
         await this.#onExecutionSucceeded(report)
         return
       case "execution-failed":
-        await this.#onExecutionFailed(report)
+        await this.#onExecutionFailed(report, settings)
         return
       case "execution-interrupted":
         await this.#onExecutionInterrupted(report)
@@ -167,6 +214,9 @@ export class Supervisor {
         })
         return
       case "model-request":
+        if (report.agent !== undefined) {
+          this.#agents.set(report.sessionID, report.agent)
+        }
         this.#tracker.apply({
           kind: "model-request",
           sessionID: report.sessionID,
@@ -213,9 +263,13 @@ export class Supervisor {
   /** Fresh admission: routing ladder → scheduler, raw (unwrapped). */
   async #admit(
     settings: SettingsV1,
+    sessionID: string,
   ): Promise<{ routing: RoutingDecision; decision: ReturnType<typeof admit> }> {
     const routing = resolveRouting({
       ...(settings.pin !== null ? { pin: settings.pin } : {}),
+      // The agent-role hint is the session's last observed agent — the host
+      // reports it on every model request (ADP-002 level 3).
+      ...(this.#agents.has(sessionID) ? { agent: this.#agents.get(sessionID) } : {}),
       agentTiers: settings.agentTiers,
       configuredTiers: configuredTiers(settings),
     })
@@ -245,7 +299,13 @@ export class Supervisor {
   }
 
   async #routeAdmission(unit: ActiveUnit, settings: SettingsV1): Promise<void> {
-    const { routing, decision } = await this.#admit(settings)
+    const { routing, decision } = await this.#admit(settings, unit.sessionID)
+    // The tier the unit was admitted under is escalation context (ADP-015);
+    // recorded for every tiered routing outcome (including a defer, which
+    // still names the tier it could not honor).
+    if (routing.kind !== "pin") {
+      this.#admissionTiers.set(unit.id, routing.tier)
+    }
     const wrapped = schedulerForMode(decision, settings.mode)
     if (wrapped.kind === "apply") {
       await this.#applyModel(unit, wrapped)
@@ -294,9 +354,18 @@ export class Supervisor {
     }
   }
 
-  async #onExecutionFailed(report: EventReport & { kind: "execution-failed" }): Promise<void> {
+  async #onExecutionFailed(
+    report: EventReport & { kind: "execution-failed" },
+    settings: SettingsV1,
+  ): Promise<void> {
     const unit = this.#tracker.active(report.sessionID)
     const model = unit?.model ?? this.#tracker.lastModel(report.sessionID)?.model
+    const unitID = unit?.id
+    // Budget and tier are read before the close clears the per-unit maps.
+    const admissionTier = unitID !== undefined ? this.#admissionTiers.get(unitID) : undefined
+    const escalationUsed = unitID !== undefined ? (this.#escalations.get(unitID) ?? 0) : 0
+    // Tool evidence is captured pre-close like the other per-unit maps.
+    const toolEvidence = unitID !== undefined ? (this.#escalationEvidence.get(unitID) ?? []) : []
     const closed = this.#tracker.apply({
       kind: "execution-failed",
       sessionID: report.sessionID,
@@ -312,6 +381,10 @@ export class Supervisor {
           : {}),
       },
       status: report.error.status,
+      // Terminal classification may use the bounded textual last resort
+      // (content-policy rejections arrive as free text, not error types).
+      // The retry hook deliberately omits text: it must stay conservative.
+      text: report.error.message,
     })
     if (model !== undefined) {
       this.#observeHealth(failureEvent(refKey(model), classification))
@@ -319,6 +392,77 @@ export class Supervisor {
     if (unit !== undefined) {
       await this.#attachOutcome(unit, { status: "failed", category: classification.category })
     }
+    await this.#escalateOnFailure(
+      report,
+      unitID,
+      model,
+      classification,
+      admissionTier,
+      escalationUsed,
+      toolEvidence,
+      settings,
+    )
+  }
+
+  /**
+   * Escalation on a terminally failed unit (ADP-015..017): structured
+   * capability evidence only, same-model variant first then next tier,
+   * finite budget. Control continues the interrupted work on the escalated
+   * resource; Observe records the identical decision; defer receipts stand.
+   */
+  async #escalateOnFailure(
+    report: EventReport & { kind: "execution-failed" },
+    unitID: string | undefined,
+    model: ModelRef | undefined,
+    classification: FailureClassification,
+    admissionTier: TierName | undefined,
+    escalationUsed: number,
+    toolEvidence: readonly EscalationEvidence[],
+    settings: SettingsV1,
+  ): Promise<void> {
+    if (
+      unitID === undefined ||
+      model === undefined ||
+      admissionTier === undefined ||
+      !CAPABILITY_EVIDENCE_CATEGORIES.includes(classification.category)
+    ) {
+      return
+    }
+    const next = nextTier(admissionTier)
+    const evidence: EscalationEvidence[] = [
+      ...toolEvidence,
+      { kind: "repeated-failure", detail: classification.category },
+    ]
+    const plan = planEscalation({
+      currentModel: model,
+      currentTier: admissionTier,
+      nextTierResources: next !== undefined ? settings.tiers[next] : [],
+      evidence,
+      budget: { used: escalationUsed, max: MAX_ESCALATIONS_PER_UNIT },
+    })
+    const wrapped = schedulerForMode(plan, settings.mode)
+    if (wrapped.kind === "escalate") {
+      this.#escalations.set(unitID, escalationUsed + 1)
+      await this.#recordReceipt({
+        sessionID: report.sessionID,
+        unitID,
+        tier: wrapped.tier,
+        decision: wrapped,
+      })
+      // Continue the interrupted work on the escalated resource; the unit is
+      // terminally failed, so an ops failure is only logged (never parked).
+      try {
+        await this.#ownRecovery(report.sessionID, wrapped.target)
+      } catch (error) {
+        logFailOpen("escalation-ops", error)
+      }
+      return
+    }
+    await this.#recordReceipt({
+      sessionID: report.sessionID,
+      tier: plan.kind === "escalate" ? plan.tier : admissionTier,
+      decision: wrapped,
+    })
   }
 
   async #onExecutionInterrupted(
@@ -358,6 +502,9 @@ export class Supervisor {
     if (unitID !== undefined) {
       this.#ledger.forget(unitID)
       this.#vetoes.delete(unitID)
+      this.#escalations.delete(unitID)
+      this.#admissionTiers.delete(unitID)
+      this.#escalationEvidence.delete(unitID)
     }
   }
 
@@ -398,7 +545,7 @@ export class Supervisor {
     let recovery: RecoveryOption = { kind: "none" }
     let routingTier: TierName | undefined
     try {
-      const { routing, decision } = await this.#admit(settings)
+      const { routing, decision } = await this.#admit(settings, input.sessionID)
       routingTier = routing.kind === "pin" ? undefined : routing.tier
       if (decision.kind === "apply") {
         recovery = {
@@ -493,7 +640,7 @@ export class Supervisor {
   async #resumeAttempt(record: ParkedRecord, settings: SettingsV1): Promise<void> {
     let decision: ReturnType<typeof admit>
     try {
-      decision = (await this.#admit(settings)).decision
+      decision = (await this.#admit(settings, record.sessionID)).decision
     } catch (error) {
       logFailOpen("resume", error)
       return

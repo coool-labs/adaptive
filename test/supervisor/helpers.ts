@@ -140,13 +140,14 @@ export function settingsJSON(
   mode: OperatingMode,
   tiers: Record<string, unknown[]> = {},
   pin: unknown = null,
+  agentTiers: Record<string, string> = {},
 ): Record<string, unknown> {
   return {
     version: 1,
     mode,
     tiers: { quick: [], standard: [], advanced: [], ...tiers },
     pin,
-    agentTiers: {},
+    agentTiers,
     inviteDismissed: false,
   }
 }

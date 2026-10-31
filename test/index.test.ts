@@ -28,6 +28,7 @@ function fakeContext(options: {
   session: FakeSupervisorSession
   events: ReturnType<typeof fakeEvents>
   infos?: ReturnType<typeof makeInfo>[]
+  addedTools?: unknown[]
 }): Parameters<typeof adaptivePlugin.setup>[0] {
   const infos = options.infos ?? [makeInfo("prov", "a")]
   const model: ModelSource = {
@@ -46,6 +47,16 @@ function fakeContext(options: {
     model,
     storage: options.storage.source,
     event: options.events.source,
+    tool: {
+      transform: (cb: (editor: unknown) => void) => {
+        cb({
+          add: (tool: unknown) => {
+            options.addedTools?.push(tool)
+          },
+        })
+        return Promise.resolve({ dispose: () => Promise.resolve() })
+      },
+    },
   } as unknown as Parameters<typeof adaptivePlugin.setup>[0]
 }
 
@@ -263,6 +274,34 @@ describe("plugin entry", () => {
         errors.mock.calls.some((call) => String(call[0]).includes("[coool.adaptive] events:")),
       ).toBe(true)
     })
+    cleanup()
+  })
+
+  it("registers the typed escalation tool and routes it into the supervisor", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    const events = fakeEvents()
+    const addedTools: unknown[] = []
+    const cleanup = (await adaptivePlugin.setup(
+      fakeContext({ storage, session, events, addedTools }),
+    )) as () => void
+    const tool = addedTools[0] as { name: string } | undefined
+    expect(tool?.name).toBe("adaptive_escalate")
+    // The tool records against the session's active unit.
+    events.push(startedEvent())
+    await vi.waitFor(() => {
+      expect(session.log).toEqual(["switch:s1:prov/a"])
+    })
+    const execute = (
+      tool as unknown as {
+        execute: (input: unknown, context: { sessionID: string }) => Promise<unknown>
+      }
+    ).execute
+    const result = (await execute({ reason: "ctx", evidence: "413" }, { sessionID: "s1" })) as {
+      content: string
+    }
+    expect(result.content).toContain("recorded")
     cleanup()
   })
 

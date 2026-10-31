@@ -41,6 +41,8 @@ export interface ModelRequestReport {
   sessionID: string
   model: ModelRef
   requestKind: RequestKind
+  /** The agent the request runs under (ADP-002 role-hint routing evidence). */
+  agent?: string
 }
 
 /**

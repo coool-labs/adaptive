@@ -1,6 +1,10 @@
 import { Plugin } from "@opencode/plugin"
 import { isCodexHeaderName } from "./adapters/codex-capacity/index.js"
-import { registerSessionHooks, subscribeSessions } from "./adapters/opencode/index.js"
+import {
+  escalationTool,
+  registerSessionHooks,
+  subscribeSessions,
+} from "./adapters/opencode/index.js"
 import { Supervisor, logFailOpen } from "./supervisor/index.js"
 
 /**
@@ -53,11 +57,21 @@ export default Plugin.define({
         logFailOpen("events", error)
       },
     )
+    // The typed escalation tool (T-18, ADP-015): the agent's self-report
+    // surface for stronger capability, applied at the next safe boundary.
+    const toolRegistration = await context.tool.transform((editor) => {
+      editor.add(
+        escalationTool((sessionID, reason, evidence) =>
+          supervisor.noteEscalationRequest(sessionID, reason, evidence),
+        ),
+      )
+    })
     return () => {
       for (const registration of hooks) {
         void registration.dispose()
       }
       subscription.dispose()
+      void toolRegistration.dispose()
     }
   },
 })

@@ -105,6 +105,26 @@ describe("model request reports", () => {
       hookModelRequest({ sessionID: "s1", model: wireRef("p", "m1"), kind: "compaction" }),
     ).toMatchObject({ requestKind: "compaction" })
   })
+
+  it("carries the agent when the hook input has one", () => {
+    expect(
+      contextModelRequest({ sessionID: "s1", model: wireRef("p", "m1"), agent: "reviewer" }),
+    ).toEqual({
+      kind: "model-request",
+      sessionID: "s1",
+      model: { providerID: "p", id: "m1" },
+      requestKind: "primary",
+      agent: "reviewer",
+    })
+    expect(
+      hookModelRequest({
+        sessionID: "s1",
+        model: wireRef("p", "m1"),
+        kind: "generate",
+        agent: "code",
+      }),
+    ).toMatchObject({ requestKind: "generate", agent: "code" })
+  })
 })
 
 describe("mapHttpResponse", () => {
