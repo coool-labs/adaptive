@@ -24,10 +24,20 @@ export interface SessionHookHandlers {
   readonly onIdle: (report: IdleReport) => Promise<void> | void
 }
 
+/** Optional hook behavior supplied by the wiring. */
+export interface SessionHookOptions {
+  /**
+   * Allowlist predicate over lowercase response header names selecting the
+   * quota telemetry to capture (no other header ever leaves the response).
+   */
+  readonly capture?: (lowercaseName: string) => boolean
+}
+
 /** Register supervisor hooks; resolves to all registrations (dispose in order). */
 export async function registerSessionHooks(
   session: SessionHookSource,
   handlers: SessionHookHandlers,
+  options?: SessionHookOptions,
 ): Promise<Registration[]> {
   const retry = await session.hook("retry", (input) => handlers.onRetry(input))
   const context = await session.hook("context", (input) =>
@@ -37,7 +47,7 @@ export async function registerSessionHooks(
     handlers.onModelRequest(hookModelRequest(input)),
   )
   const httpResponse = await session.hook("http.response", async (input) =>
-    handlers.onHttpResponse(await mapHttpResponse(input)),
+    handlers.onHttpResponse(await mapHttpResponse(input, options)),
   )
   const idle = await session.hook("experimental.idle", (input) =>
     handlers.onIdle({ kind: "idle", sessionID: input.sessionID }),

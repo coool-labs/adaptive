@@ -28,8 +28,8 @@ Checkbox format: objective / boundary / tests required / acceptance. IDs are sta
 
 - [x] **T-14 OpenCode adapter** — Objective: all v2 API touchpoints (research facts). Boundary: `src/adapters/opencode/`. Tests: unit against typed fixtures of @opencode/plugin surfaces; response-body clone-once; switch self-tagging. Acceptance: 100% coverage; typechecks against @opencode/plugin@2.2.5 types.
 - [x] **T-15 Codex capacity sensor** — Objective: passive-header sensor (ADP-020). Boundary: `src/adapters/codex-capacity/`. Tests: unit with scripted headers/ws frames; untrusted-header validation. Acceptance: 100% coverage; no scheduler import.
-- [ ] **T-16 RPC contracts** — Objective: typed surface contracts (ADP-036). Boundary: `src/rpc/`. Tests: unit request/response validation incl. hostile inputs (ADP-051). Acceptance: 100% coverage.
-- [ ] **T-17 Plugin wiring** — Objective: `index.ts` gluing hooks/events/store/scheduler with fail-open wrapper (ADP-031/045). Boundary: `src/index.ts`. Tests: integration — throwing sensor/receipts ⇒ defer + log; OFF mode inert. Acceptance: wiring covered (entrypoint included in coverage, no exclusions).
+- [x] **T-16 RPC contracts** — Objective: typed surface contracts (ADP-036). Boundary: `src/rpc/`. Tests: unit request/response validation incl. hostile inputs (ADP-051). Acceptance: 100% coverage.
+- [x] **T-17 Plugin wiring** — Objective: `index.ts` gluing hooks/events/store/scheduler with fail-open wrapper (ADP-031/045). Boundary: `src/index.ts`. Tests: integration — throwing sensor/receipts ⇒ defer + log; OFF mode inert. Acceptance: wiring covered (entrypoint included in coverage, no exclusions).
 - [ ] **T-18 Escalation mechanism** — Objective: smallest typed escalation surface if API permits (GOAL §Capability escalation). Boundary: verify tool-registration support in @opencode/plugin; implement or document proven limitation. Tests: unit for schema (reason+evidence required); if unsupported, a pinned repro test proving the API shape. Acceptance: decision documented in code + docs; no fake fallback.
 
 ## Phase E — Surfaces

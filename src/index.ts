@@ -1,4 +1,7 @@
 import { Plugin } from "@opencode/plugin"
+import { isCodexHeaderName } from "./adapters/codex-capacity/index.js"
+import { registerSessionHooks, subscribeSessions } from "./adapters/opencode/index.js"
+import { Supervisor, logFailOpen } from "./supervisor/index.js"
 
 /**
  * Plugin id as required by GOAL.md: must not collide with the `opencode.*`
@@ -8,14 +11,53 @@ import { Plugin } from "@opencode/plugin"
 export const PLUGIN_ID = "coool.adaptive"
 
 /**
- * Entry point wired into OpenCode via `opencode.json(c)`.
- * Supervision wiring (admission hooks, event subscriptions, RPC surface) is
- * added incrementally in T-14/T-17; until then the plugin activates with
- * nothing to tear down.
+ * Entry point wired into OpenCode via `opencode.json(c)`. Setup glues the
+ * adapter touchpoints (session hooks, event subscription, storage) to the
+ * supervisor and returns a cleanup that disposes every registration.
+ * All supervision errors are fail-open (ADP-031): the supervisor's public
+ * entry points never throw; the event pump's stream errors are logged.
  */
 export default Plugin.define({
   id: PLUGIN_ID,
-  setup() {
-    return
+  async setup(context) {
+    const supervisor = new Supervisor({
+      session: context.session,
+      model: context.model,
+      storage: context.storage,
+      clock: () => Date.now(),
+    })
+    const hooks = await registerSessionHooks(
+      context.session,
+      {
+        onRetry: async (input) => {
+          await supervisor.handleRetry(input)
+        },
+        onModelRequest: async (report) => {
+          await supervisor.handleReport(report)
+        },
+        onHttpResponse: async (report) => {
+          await supervisor.handleReport(report)
+        },
+        onIdle: async (report) => {
+          await supervisor.handleReport(report)
+        },
+      },
+      { capture: isCodexHeaderName },
+    )
+    const subscription = subscribeSessions(
+      context.event,
+      (report) => {
+        void supervisor.handleReport(report)
+      },
+      (error) => {
+        logFailOpen("events", error)
+      },
+    )
+    return () => {
+      for (const registration of hooks) {
+        void registration.dispose()
+      }
+      subscription.dispose()
+    }
   },
 })

@@ -23,6 +23,7 @@ import {
   type ModelRef,
   type ModelSource,
   type ModelTransition,
+  type OpenedResult,
   type WorkUnitEvent,
 } from "./types.js"
 
@@ -40,6 +41,9 @@ export class WorkUnitTracker {
     this.#pendingOwn.set(sessionID, model)
   }
 
+  /** Apply an execution-started event; the tracker always opens a unit. */
+  apply(event: Extract<WorkUnitEvent, { kind: "execution-started" }>): OpenedResult
+  apply(event: WorkUnitEvent): ApplyResult
   apply(event: WorkUnitEvent): ApplyResult {
     switch (event.kind) {
       case "execution-started": {

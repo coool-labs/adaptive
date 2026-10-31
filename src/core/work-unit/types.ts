@@ -139,6 +139,9 @@ export const IGNORED_REASONS = ["terminal-without-active-unit"] as const satisfi
 
 export type IgnoredReason = (typeof IGNORED_REASONS)[number]
 
+/** Result of an execution-started event: the tracker always opens (possibly superseding). */
+export type OpenedResult = Extract<ApplyResult, { kind: "opened" }>
+
 export type ApplyResult =
   | {
       readonly kind: "opened"

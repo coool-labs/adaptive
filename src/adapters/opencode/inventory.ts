@@ -33,12 +33,17 @@ export function mapModelInfo(info: Model.Info): CandidateModel {
   }
 }
 
-/** All inventory candidates, in host order. */
+/** All inventory candidates, in host order. Each offered variant is an
+ * additional explicit candidate so tier resources pinned to a variant
+ * (`provider/model@variant`) are matchable by the scheduler. */
 export async function listCandidates(model: ModelSource): Promise<CandidateModel[]> {
   const out: CandidateModel[] = []
   await model.transform((editor) => {
     for (const info of editor.list()) {
       out.push(mapModelInfo(info))
+      for (const variant of info.variants) {
+        out.push({ ...mapModelInfo(info), variant: variant.id, variantAvailable: true })
+      }
     }
   })
   return out

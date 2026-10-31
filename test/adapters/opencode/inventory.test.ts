@@ -37,6 +37,18 @@ describe("listCandidates", () => {
       mapModelInfo(makeInfo("p2", "c")),
     ])
   })
+
+  it("expands each offered variant into an explicit candidate", async () => {
+    const model = fakeModel([makeInfo("p1", "a", { variants: ["high", "low"] })])
+    const candidates = await listCandidates(model)
+    expect(candidates).toHaveLength(3)
+    expect(candidates[1]).toEqual({
+      ...mapModelInfo(makeInfo("p1", "a")),
+      variant: "high",
+      variantAvailable: true,
+    })
+    expect(candidates[2]?.variant).toBe("low")
+  })
 })
 
 describe("candidateFor", () => {
