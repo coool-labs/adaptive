@@ -26,7 +26,7 @@ Checkbox format: objective / boundary / tests required / acceptance. IDs are sta
 
 ## Phase D — Adapters and wiring
 
-- [ ] **T-14 OpenCode adapter** — Objective: all v2 API touchpoints (research facts). Boundary: `src/adapters/opencode/`. Tests: unit against typed fixtures of @opencode/plugin surfaces; response-body clone-once; switch self-tagging. Acceptance: 100% coverage; typechecks against @opencode/plugin@2.2.5 types.
+- [x] **T-14 OpenCode adapter** — Objective: all v2 API touchpoints (research facts). Boundary: `src/adapters/opencode/`. Tests: unit against typed fixtures of @opencode/plugin surfaces; response-body clone-once; switch self-tagging. Acceptance: 100% coverage; typechecks against @opencode/plugin@2.2.5 types.
 - [ ] **T-15 Codex capacity sensor** — Objective: passive-header sensor (ADP-020). Boundary: `src/adapters/codex-capacity/`. Tests: unit with scripted headers/ws frames; untrusted-header validation. Acceptance: 100% coverage; no scheduler import.
 - [ ] **T-16 RPC contracts** — Objective: typed surface contracts (ADP-036). Boundary: `src/rpc/`. Tests: unit request/response validation incl. hostile inputs (ADP-051). Acceptance: 100% coverage.
 - [ ] **T-17 Plugin wiring** — Objective: `index.ts` gluing hooks/events/store/scheduler with fail-open wrapper (ADP-031/045). Boundary: `src/index.ts`. Tests: integration — throwing sensor/receipts ⇒ defer + log; OFF mode inert. Acceptance: wiring covered (entrypoint included in coverage, no exclusions).
