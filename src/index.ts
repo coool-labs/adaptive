@@ -5,14 +5,19 @@ import {
   registerSessionHooks,
   subscribeSessions,
 } from "./adapters/opencode/index.js"
+import { PLUGIN_ID } from "./plugin-id.js"
+import { adaptiveRpc } from "./rpc/definition.js"
+import { adaptiveRpcHandlers } from "./rpc/handlers.js"
+import type { RpcRegistration } from "@opencode/plugin/promise/rpc"
 import { Supervisor, logFailOpen } from "./supervisor/index.js"
+
+export { PLUGIN_ID } from "./plugin-id.js"
 
 /**
  * Plugin id as required by GOAL.md: must not collide with the `opencode.*`
  * namespace and must stay stable across releases (referenced by settings
  * storage keys and receipts).
  */
-export const PLUGIN_ID = "coool.adaptive"
 
 /**
  * Entry point wired into OpenCode via `opencode.json(c)`. Setup glues the
@@ -66,12 +71,24 @@ export default Plugin.define({
         ),
       )
     })
+    // Typed RPC (ADP-034/036): the only channel to the control surfaces.
+    // The settings-changed emitter resolves the registration lazily: handlers
+    // only run after `register` resolves, so the holder is always populated.
+    const rpcHolder: { registration?: RpcRegistration<typeof adaptiveRpc> } = {}
+    const rpcRegistration = await context.rpc.register(
+      adaptiveRpc,
+      adaptiveRpcHandlers(supervisor, (name, data) =>
+        rpcHolder.registration?.events.emit(name, data),
+      ),
+    )
+    rpcHolder.registration = rpcRegistration
     return () => {
-      for (const registration of hooks) {
-        void registration.dispose()
+      for (const hookRegistration of hooks) {
+        void hookRegistration.dispose()
       }
       subscription.dispose()
       void toolRegistration.dispose()
+      void rpcRegistration.dispose()
     }
   },
 })

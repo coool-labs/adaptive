@@ -48,8 +48,12 @@ import type {
 } from "../health/index.js"
 import { SettingsStore, SETTINGS_KEY } from "../state/settings/index.js"
 import type { SettingsV1 } from "../state/settings/index.js"
+import type { PatchResult, SettingsPatch } from "../state/settings/types.js"
 import { ReceiptStore, RECEIPTS_KEY } from "../state/receipts/index.js"
-import type { ReceiptInput, ReceiptOutcome } from "../state/receipts/types.js"
+import type { Receipt, ReceiptInput, ReceiptOutcome } from "../state/receipts/types.js"
+import { buildStatus } from "../rpc/status.js"
+import type { StatusSnapshot } from "../rpc/status.js"
+import { RECEIPTS_VIEW_LIMIT } from "./view.js"
 import { ParkedWorkStore, PARKED_KEY } from "../state/parked-work/index.js"
 import type { ParkedRecord } from "../state/parked-work/types.js"
 import {
@@ -187,6 +191,36 @@ export class Supervisor {
     })
     this.#escalationEvidence.set(unit.id, recorded.slice(-MAX_ESCALATION_EVIDENCE))
     return true
+  }
+
+  // ---------- state API for the control surfaces (ADP-033/034/036) ----------
+
+  /** Current settings (awaits the constructor load). */
+  async settings(): Promise<SettingsV1> {
+    return this.#ensureSettings()
+  }
+
+  /** Validate and persist a settings patch; returns per-field errors. */
+  async updateSettings(patch: SettingsPatch): Promise<PatchResult> {
+    await this.#ready
+    return this.#settings.update(patch)
+  }
+
+  /** Bounded status snapshot for the status view (ADP-033). */
+  async status(): Promise<StatusSnapshot> {
+    const settings = await this.#ensureSettings()
+    return buildStatus({
+      settings,
+      health: this.#health.snapshot(),
+      parked: this.#parked.count(),
+      receipts: this.#receipts.snapshot().length,
+    })
+  }
+
+  /** Newest-first bounded receipt view (ADP-030). */
+  async receipts(): Promise<Receipt[]> {
+    await this.#ready
+    return this.#receipts.snapshot().slice(-RECEIPTS_VIEW_LIMIT).reverse()
   }
 
   // ---------- dispatch ----------

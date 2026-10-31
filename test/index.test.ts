@@ -18,6 +18,7 @@ import {
   seed,
   settingsJSON,
   storedReceipts,
+  storedSettings,
 } from "./supervisor/helpers.js"
 
 const HOOK_NAMES = ["retry", "context", "model.request", "http.response", "experimental.idle"]
@@ -29,6 +30,7 @@ function fakeContext(options: {
   events: ReturnType<typeof fakeEvents>
   infos?: ReturnType<typeof makeInfo>[]
   addedTools?: unknown[]
+  registeredRpc?: (record: { definition: unknown; handlers: unknown }) => void
 }): Parameters<typeof adaptivePlugin.setup>[0] {
   const infos = options.infos ?? [makeInfo("prov", "a")]
   const model: ModelSource = {
@@ -55,6 +57,15 @@ function fakeContext(options: {
           },
         })
         return Promise.resolve({ dispose: () => Promise.resolve() })
+      },
+    },
+    rpc: {
+      register: (definition: unknown, handlers: unknown) => {
+        options.registeredRpc?.({ definition, handlers })
+        return Promise.resolve({
+          dispose: () => Promise.resolve(),
+          events: { emit: () => undefined },
+        })
       },
     },
   } as unknown as Parameters<typeof adaptivePlugin.setup>[0]
@@ -307,5 +318,41 @@ describe("plugin entry", () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+})
+
+describe("plugin entry: rpc surface", () => {
+  interface RpcRecord {
+    definition: { id: string; methods: Record<string, unknown> }
+    handlers: Record<string, (input: unknown) => Promise<unknown>>
+  }
+
+  it("registers the adaptive rpc definition with four handlers", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    let record: RpcRecord | undefined
+    const context = fakeContext({
+      storage,
+      session,
+      events: fakeEvents(),
+      registeredRpc: (captured) => {
+        record = captured as RpcRecord
+      },
+    })
+    await adaptivePlugin.setup(context)
+    expect(record?.definition.id).toBe("coool.adaptive")
+    expect(Object.keys(record?.definition.methods ?? {}).sort()).toEqual([
+      "receipts.list",
+      "settings.get",
+      "settings.set",
+      "status.get",
+    ])
+    const handlers = record?.handlers ?? {}
+    const settings = (await handlers["settings.get"]?.(undefined)) as { mode: string }
+    expect(settings.mode).toBe("control")
+    const result = (await handlers["settings.set"]?.({ mode: "observe" })) as { ok: boolean }
+    expect(result.ok).toBe(true)
+    expect(storedSettings(storage).mode).toBe("observe")
   })
 })

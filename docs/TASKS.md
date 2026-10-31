@@ -34,7 +34,8 @@ Checkbox format: objective / boundary / tests required / acceptance. IDs are sta
 
 ## Phase E — Surfaces
 
-- [ ] **T-19 TUI** — Objective: `/adaptive` command, tiered editor, status/receipt views (ADP-033). Boundary: `src/tui.tsx`, `src/ui/tui/`. Tests: view-model unit tests; keyboard-flow model tests. Acceptance: view models 100% covered; entrypoint wiring covered.
+- [x] **T-19 TUI** — Objective: `/adaptive` command, tiered editor, status/receipt views (ADP-033). Boundary: `src/tui.tsx`, `src/ui/tui/`. Tests: view-model unit tests; keyboard-flow model tests. Acceptance: view models 100% covered; entrypoint wiring covered.
+  - Done: dialog-driven `/adaptive` (main menu → status/mode/tiers/pin/receipts) through host `ui.dialog.select/confirm/alert` + toasts; entry `src/tui.ts` (renamed from tui.tsx — JSX-free, `@opencode/plugin/tui/plugin` subpath avoids Solid peers); typed RPC `src/rpc/{definition,handlers,status}.ts` (Rpc.define, standard-schema gates, settings-changed event) registered in the server entry; supervisor state API (`settings/updateSettings/status/receipts`); invite-once flow (ADP-032); tier editor with real-model search picker, variant chooser, reorder/remove (ADP-005 order preserved); receipts paging.
 - [ ] **T-20 GUI** — Objective: native SettingsPage, thin adapter (ADP-034/035). Boundary: `src/gui.tsx`, `src/ui/gui/`. Tests: component/view-model units; disconnect-handling unit. Acceptance: covered; no routing logic in UI.
 
 ## Phase F — Test infrastructure and E2E

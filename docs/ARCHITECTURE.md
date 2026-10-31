@@ -33,7 +33,7 @@ src/
     tui/             /adaptive command + dialogs (view layer only)
     gui/             SettingsPage (view layer only)
   index.ts           server plugin wiring
-  tui.tsx            TUI entrypoint
+  tui.ts             TUI entrypoint (dialog-driven, zero JSX)
   gui.tsx            GUI entrypoint
   rpc.ts             RPC entrypoint
 ```

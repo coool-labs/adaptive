@@ -28,6 +28,7 @@ import {
   settingsJSON,
   storedParked,
   storedReceipts,
+  storedSettings,
 } from "./helpers.js"
 
 /** Flush the supervisor's voided async continuations before asserting. */
@@ -1464,5 +1465,57 @@ describe("supervisor", () => {
         errors.restore()
       }
     })
+  })
+})
+
+describe("supervisor: state API for surfaces", () => {
+  it("exposes the loaded settings", async () => {
+    const storage = controlStorage()
+    const session = new FakeSupervisorSession()
+    const supervisor = makeSupervisor({ storage, session })
+    expect(await supervisor.settings()).toMatchObject({ mode: "control" })
+  })
+
+  it("persists a settings update", async () => {
+    const storage = controlStorage()
+    const session = new FakeSupervisorSession()
+    const supervisor = makeSupervisor({ storage, session })
+    const result = await supervisor.updateSettings({ mode: "observe" })
+    expect(result).toMatchObject({ ok: true })
+    expect(storedSettings(storage).mode).toBe("observe")
+    expect((await supervisor.settings()).mode).toBe("observe")
+  })
+
+  it("rejects an invalid patch without persisting", async () => {
+    const storage = controlStorage()
+    const session = new FakeSupervisorSession()
+    const supervisor = makeSupervisor({ storage, session })
+    const result = await supervisor.updateSettings({ mode: "sideways" as "control" })
+    expect(result.ok).toBe(false)
+    expect(storedSettings(storage).mode).toBe("control")
+  })
+
+  it("reports status counts", async () => {
+    const storage = controlStorage()
+    const session = new FakeSupervisorSession()
+    const supervisor = makeSupervisor({ storage, session })
+    const snapshot = await supervisor.status()
+    expect(snapshot.mode).toBe("control")
+    expect(snapshot.parked).toBe(0)
+    expect(snapshot.receipts).toBe(0)
+    await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 1 })
+    const after = await supervisor.status()
+    expect(after.receipts).toBe(1)
+  })
+
+  it("lists receipts newest first", async () => {
+    const storage = controlStorage()
+    const session = new FakeSupervisorSession()
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 1 })
+    await supervisor.handleReport({ kind: "execution-succeeded", sessionID: "s1", at: 2 })
+    await supervisor.handleReport({ kind: "execution-started", sessionID: "s2", at: 3 })
+    const list = await supervisor.receipts()
+    expect(list.map((receipt) => receipt.id)).toEqual([2, 1])
   })
 })

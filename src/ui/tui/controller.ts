@@ -1,0 +1,283 @@
+/**
+ * The `/adaptive` keyboard-flow controller (ADP-033): a pure-ish state machine
+ * over two seams — the typed RPC API and the host dialogs/toasts. It holds no
+ * local settings state: every mutation goes through `settings.set` and the
+ * returned snapshot becomes the new local view (the server is the single
+ * source of truth, ADP-036).
+ *
+ * Flow contract: `undefined` selections always mean "cancel this step" — the
+ * menu loop continues or exits; API failures toast and keep the loop alive.
+ */
+import type { OperatingMode } from "../../core/scheduler/types.js"
+import type { TierName } from "../../core/tier-policy/types.js"
+import { TIERS } from "../../core/tier-policy/types.js"
+import type { ModelRef } from "../../core/work-unit/types.js"
+import type { SettingsPatch, SettingsV1 } from "../../state/settings/index.js"
+import type { PatchResult } from "../../state/settings/types.js"
+import type { Receipt } from "../../state/receipts/types.js"
+import type { StatusSnapshot } from "../../rpc/status.js"
+import { formatStatus } from "./status.js"
+import { mainMenuOptions, modeOptions, type MainMenuChoice } from "./menu.js"
+import {
+  modelPickerOptions,
+  moveResource,
+  removeResource,
+  resourceLabel,
+  tierEditorOptions,
+  tierMenuOptions,
+  variantOptions,
+  type ModelSummary,
+} from "./tiers.js"
+import { errorText, type SelectOption } from "./options.js"
+import { receiptDetail, receiptLine, receiptPage, RECEIPTS_PAGE_SIZE } from "./receipts.js"
+
+export interface AdaptiveView {
+  select<Value>(options: {
+    title: string
+    placeholder?: string
+    options: readonly SelectOption<Value>[]
+    current?: Value
+    search?: (
+      query: string,
+      options: readonly SelectOption<Value>[],
+    ) => readonly SelectOption<Value>[]
+  }): Promise<Value | undefined>
+  confirm(options: {
+    title: string
+    message: string
+    label?: { confirm?: string; cancel?: string }
+  }): Promise<boolean | undefined>
+  alert(options: { title: string; message: string }): Promise<void>
+  toast(message: string, variant: "info" | "success" | "warning" | "error"): void
+}
+
+export interface AdaptiveApi {
+  settings: () => Promise<SettingsV1>
+  setSettings: (patch: SettingsPatch) => Promise<PatchResult>
+  status: () => Promise<StatusSnapshot>
+  receipts: () => Promise<Receipt[]>
+}
+
+export type ModelLister = () => readonly ModelSummary[]
+
+export interface AdaptiveEnv {
+  api: AdaptiveApi
+  view: AdaptiveView
+  models: ModelLister
+}
+
+export const INVITE_TITLE = "OpenCode Adaptive"
+export const INVITE_MESSAGE =
+  "Adaptive starts in Observe mode: routing decisions are recorded as receipts, " +
+  "but no model is switched. Open /adaptive to configure tiers or switch to Control."
+
+/** Run one API call; on failure toast and return undefined. */
+async function tryApi<T>(env: AdaptiveEnv, run: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await run()
+  } catch (error) {
+    env.view.toast(errorText(error), "error")
+    return undefined
+  }
+}
+
+/** Apply one patch; alert on validation errors, toast on success. */
+async function applySettings(
+  env: AdaptiveEnv,
+  patch: SettingsPatch,
+): Promise<SettingsV1 | undefined> {
+  const result = await tryApi(env, () => env.api.setSettings(patch))
+  if (result === undefined) return undefined
+  if (!result.ok) {
+    await env.view.alert({ title: "Invalid settings", message: result.errors.join("; ") })
+    return undefined
+  }
+  env.view.toast("Settings saved", "success")
+  return result.settings
+}
+
+export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
+  const loaded = await tryApi(env, () => env.api.settings())
+  if (loaded === undefined) return
+  let settings = loaded
+  if (!settings.inviteDismissed) {
+    await env.view.confirm({ title: INVITE_TITLE, message: INVITE_MESSAGE })
+    const dismissed = await applySettings(env, { inviteDismissed: true })
+    if (dismissed !== undefined) settings = dismissed
+  }
+  for (;;) {
+    const choice = await env.view.select({ title: "Adaptive", options: mainMenuOptions() })
+    if (choice === undefined) return
+    if (choice === "status") {
+      const snapshot = await tryApi(env, () => env.api.status())
+      if (snapshot !== undefined) {
+        await env.view.alert({ title: "Adaptive status", message: formatStatus(snapshot) })
+      }
+      continue
+    }
+    if (choice === "mode") {
+      settings = (await runModeMenu(env, settings)) ?? settings
+      continue
+    }
+    if (choice === "tiers") {
+      settings = (await runTierEditor(env, settings)) ?? settings
+      continue
+    }
+    if (choice === "pin") {
+      settings = (await runPinMenu(env, settings)) ?? settings
+      continue
+    }
+    await runReceiptsView(env)
+  }
+}
+
+async function runModeMenu(
+  env: AdaptiveEnv,
+  settings: SettingsV1,
+): Promise<SettingsV1 | undefined> {
+  const pick = await env.view.select({
+    title: "Operating mode",
+    options: modeOptions(settings.mode),
+  })
+  if (pick === undefined || pick === settings.mode) return undefined
+  return applySettings(env, { mode: pick })
+}
+
+type TierEditorOutcome = SettingsV1 | undefined
+
+async function runTierEditor(env: AdaptiveEnv, settings: SettingsV1): Promise<TierEditorOutcome> {
+  for (;;) {
+    const status = await tryApi(env, () => env.api.status())
+    if (status === undefined) return undefined
+    const tier = await env.view.select({ title: "Tier", options: tierMenuOptions(status) })
+    if (tier === undefined) return undefined
+    const choice = await env.view.select({
+      title: `Tier: ${tier}`,
+      options: tierEditorOptions(settings, tier, status),
+    })
+    if (choice === undefined || choice.kind === "back") continue
+    if (choice.kind === "add") {
+      const next = await runAddModel(env, settings, tier)
+      if (next !== undefined) settings = next
+      continue
+    }
+    const next = await runResourceMenu(env, settings, tier, choice.index)
+    if (next !== undefined) settings = next
+  }
+}
+
+async function runAddModel(
+  env: AdaptiveEnv,
+  settings: SettingsV1,
+  tier: TierName,
+): Promise<SettingsV1 | undefined> {
+  const models = env.models()
+  const pick = await env.view.select({
+    title: "Add model",
+    placeholder: "Search provider / model / name",
+    options: modelPickerOptions(models, ""),
+    search: (query) => modelPickerOptions(models, query),
+  })
+  if (pick === undefined) return undefined
+  const info = models.find((m) => m.providerID === pick.providerID && m.modelID === pick.modelID)
+  const variants = info?.variants ?? []
+  let variant: string | undefined
+  if (variants.length > 0) {
+    const choice = await env.view.select({
+      title: `Variant: ${pick.providerID}/${pick.modelID}`,
+      options: variantOptions(variants),
+    })
+    if (choice === undefined) return undefined
+    variant = choice.variant
+  }
+  const ref: ModelRef =
+    variant === undefined
+      ? { providerID: pick.providerID, id: pick.modelID }
+      : { providerID: pick.providerID, id: pick.modelID, variant }
+  const list = [...settings.tiers[tier], ref]
+  return applySettings(env, { tiers: { ...settings.tiers, [tier]: list } })
+}
+
+type ResourceMenuChoice = "up" | "down" | "remove"
+
+function resourceMenuOptions(): SelectOption<ResourceMenuChoice>[] {
+  return [
+    { title: "Move up", value: "up", description: "Higher priority within the tier" },
+    { title: "Move down", value: "down", description: "Lower priority within the tier" },
+    { title: "Remove", value: "remove" },
+  ]
+}
+
+async function runResourceMenu(
+  env: AdaptiveEnv,
+  settings: SettingsV1,
+  tier: TierName,
+  index: number,
+): Promise<SettingsV1 | undefined> {
+  const ref = settings.tiers[tier][index]
+  if (ref === undefined) return undefined
+  const pick = await env.view.select({
+    title: `Resource: ${resourceLabel(ref)}`,
+    options: resourceMenuOptions(),
+  })
+  if (pick === undefined) return undefined
+  if (pick === "remove") {
+    const confirmed = await env.view.confirm({
+      title: "Remove resource",
+      message: `Remove ${resourceLabel(ref)} from ${tier}?`,
+    })
+    if (confirmed !== true) return undefined
+    return applySettings(env, {
+      tiers: { ...settings.tiers, [tier]: removeResource(settings.tiers[tier], index) },
+    })
+  }
+  const moved = moveResource(settings.tiers[tier], index, pick === "up" ? -1 : 1)
+  return applySettings(env, { tiers: { ...settings.tiers, [tier]: moved } })
+}
+
+type PinChoice = { kind: "clear" } | { kind: "pin"; ref: ModelRef }
+
+function pinOptions(settings: SettingsV1): SelectOption<PinChoice>[] {
+  const options: SelectOption<PinChoice>[] = [{ title: "No pin", value: { kind: "clear" } }]
+  for (const tier of TIERS) {
+    for (const ref of settings.tiers[tier]) {
+      options.push({ title: `${resourceLabel(ref)} (${tier})`, value: { kind: "pin", ref } })
+    }
+  }
+  return options
+}
+
+async function runPinMenu(env: AdaptiveEnv, settings: SettingsV1): Promise<SettingsV1 | undefined> {
+  const pick = await env.view.select({ title: "Pin", options: pinOptions(settings) })
+  if (pick === undefined) return undefined
+  return applySettings(env, { pin: pick.kind === "clear" ? null : pick.ref })
+}
+
+async function runReceiptsView(env: AdaptiveEnv): Promise<void> {
+  const list = await tryApi(env, () => env.api.receipts())
+  if (list === undefined) return
+  if (list.length === 0) {
+    await env.view.alert({ title: "Receipts", message: "No decisions recorded yet." })
+    return
+  }
+  const pick = await env.view.select({
+    title: `Receipts (${String(list.length)}, newest first)`,
+    options: receiptPage(list).map((receipt) => ({ title: receiptLine(receipt), value: receipt })),
+  })
+  if (pick !== undefined) {
+    await env.view.alert({ title: `Receipt #${String(pick.id)}`, message: receiptDetail(pick) })
+  }
+}
+
+/** Exported for tests: the receipts page size used by the receipts browser. */
+export { RECEIPTS_PAGE_SIZE }
+
+export type {
+  MainMenuChoice,
+  OperatingMode,
+  StatusSnapshot,
+  SettingsV1,
+  SettingsPatch,
+  PatchResult,
+  Receipt,
+}

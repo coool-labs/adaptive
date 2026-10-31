@@ -10,6 +10,8 @@ import type { ModelRef } from "../../src/core/work-unit/types.js"
 import { RECEIPTS_KEY } from "../../src/state/receipts/types.js"
 import { PARKED_KEY } from "../../src/state/parked-work/types.js"
 import { SETTINGS_KEY } from "../../src/state/settings/types.js"
+import type { SettingsV1 } from "../../src/state/settings/types.js"
+import { migrateSettings } from "../../src/state/settings/parse.js"
 
 type AnyCallback = (input: never) => unknown
 
@@ -164,6 +166,6 @@ export function storedParked(storage: { data: Map<string, unknown> }): unknown {
   return storage.data.get(PARKED_KEY)
 }
 
-export function storedSettingsKey(): string {
-  return SETTINGS_KEY
+export function storedSettings(storage: { data: Map<string, unknown> }): SettingsV1 {
+  return migrateSettings(storage.data.get(SETTINGS_KEY))
 }
