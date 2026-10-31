@@ -116,6 +116,19 @@ describe("classifyFailure: structured metadata layer", () => {
       expect(c.layer).toBe("status")
     }
   })
+
+  it("never resolves a structured type through the prototype chain (regression)", () => {
+    // A hostile or accidental tag like "toString" must be treated as unmapped,
+    // not as the inherited Object.prototype member.
+    for (const type of ["toString", "constructor", "hasOwnProperty"]) {
+      const c = classifyFailure({ structured: { type }, status: 429 })
+      expect(c.category).toBe("rate_limited")
+      expect(c.layer).toBe("status")
+    }
+    const noStatus = classifyFailure({ structured: { type: "toString" } })
+    expect(noStatus.category).toBe("unknown")
+    expect(noStatus.definitive).toBe(false)
+  })
 })
 
 describe("classifyFailure: HTTP status layer", () => {

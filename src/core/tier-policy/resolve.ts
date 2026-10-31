@@ -37,8 +37,11 @@ export function resolveRouting(input: RoutingInput): RoutingDecision {
   // auxiliary-request evidence. Conflict inside the level is ambiguity
   // (ADP-002) and resolves to `standard`; agreement keeps the tier.
   const agentTier =
-    input.agent !== undefined && input.agent.length > 0
-      ? input.agentTiers?.[input.agent]
+    input.agent !== undefined &&
+    input.agent.length > 0 &&
+    input.agentTiers !== undefined &&
+    Object.hasOwn(input.agentTiers, input.agent)
+      ? input.agentTiers[input.agent]
       : undefined
   const auxiliaryTier =
     input.requestKind !== undefined && isAuxiliary(input.requestKind) ? AUXILIARY_TIER : undefined

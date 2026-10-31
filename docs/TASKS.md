@@ -15,7 +15,7 @@ Checkbox format: objective / boundary / tests required / acceptance. IDs are sta
 - [x] **T-06 Work unit tracking** — Objective: episode state machine (ADP-001). Boundary: `src/core/work-unit/`. Tests: unit — tool continuation same unit, subagent separate, goal continuation new, terminal events close. Acceptance: 100% coverage.
 - [x] **T-07 Tier policy** — Objective: priority ladder + defer (ADP-002/003/004/005). Boundary: `src/core/tier-policy/`. Tests: unit per priority level; ambiguity → standard; defer. Acceptance: 100% coverage.
 - [x] **T-08 Compatibility gate** — Objective: filter unexecutable candidates (ADP-017). Boundary: `src/core/compatibility/`. Tests: unit — context capacity, tools, modalities, variant/provider availability; unknown metadata ⇒ conservative. Acceptance: 100% coverage.
-- [ ] **T-09 Scheduler** — Objective: pure decision core (ADP-013/015/016/022). Boundary: `src/core/scheduler/`; inputs only. Tests: unit scenarios per decision kind; property suite (ADP-038 full invariant list); escalate-budget termination proof. Acceptance: 100% coverage; Observe/Control identical-decision property green.
+- [x] **T-09 Scheduler** — Objective: pure decision core (ADP-013/015/016/022). Boundary: `src/core/scheduler/`; inputs only. Tests: unit scenarios per decision kind; property suite (ADP-038 full invariant list); escalate-budget termination proof. Acceptance: 100% coverage; Observe/Control identical-decision property green.
 
 ## Phase C — State and execution
 

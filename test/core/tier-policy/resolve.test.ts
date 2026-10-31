@@ -107,6 +107,20 @@ describe("resolveRouting — agent role hint level", () => {
     })
   })
 
+  it("an agent named like an Object.prototype member carries no hint (regression)", () => {
+    // Untrusted strings must never be looked up through a prototype chain.
+    expect(resolveRouting(input({ agent: "toString", agentTiers: { build: "quick" } }))).toEqual({
+      kind: "tier",
+      tier: DEFAULT_TIER,
+      source: "default",
+    })
+    expect(resolveRouting(input({ agent: "hasOwnProperty", agentTiers: {} }))).toEqual({
+      kind: "tier",
+      tier: DEFAULT_TIER,
+      source: "default",
+    })
+  })
+
   it("defers when the hinted tier has no resources", () => {
     const decision = resolveRouting(
       input({ agent: "build", agentTiers: { build: "quick" }, configuredTiers: ["standard"] }),
@@ -239,7 +253,12 @@ describe("resolveRouting — properties (fast-check)", () => {
       return asTier(r.tierRequest.tier, "tier-request")
     }
     const agentTier =
-      r.agent !== undefined && r.agent.length > 0 ? r.agentTiers?.[r.agent] : undefined
+      r.agent !== undefined &&
+      r.agent.length > 0 &&
+      r.agentTiers !== undefined &&
+      Object.hasOwn(r.agentTiers, r.agent)
+        ? r.agentTiers[r.agent]
+        : undefined
     const auxTier =
       r.requestKind !== undefined && r.requestKind !== "primary" ? AUXILIARY_TIER : undefined
     if (agentTier !== undefined && auxTier !== undefined && agentTier !== auxTier) {

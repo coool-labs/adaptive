@@ -42,13 +42,13 @@ const CATEGORY_POLICY: Readonly<
  * category-specific: they never guess, and classification falls through to
  * the refining layers.
  */
-const STRUCTURED_TYPES: Readonly<Record<string, FailureCategory>> = {
-  UnauthorizedError: "auth_failure",
-  ForbiddenError: "auth_failure",
-  ModelNotFoundError: "invalid_model",
-  UnsupportedModelError: "invalid_model",
-  ServiceUnavailableError: "outage",
-}
+const STRUCTURED_TYPES = new Map<string, FailureCategory>([
+  ["UnauthorizedError", "auth_failure"],
+  ["ForbiddenError", "auth_failure"],
+  ["ModelNotFoundError", "invalid_model"],
+  ["UnsupportedModelError", "invalid_model"],
+  ["ServiceUnavailableError", "outage"],
+])
 
 /**
  * Bounded textual patterns, last resort only (ADP-008). Ordered most
@@ -223,7 +223,7 @@ export function classifyFailure(evidence: ErrorEvidence): FailureClassification 
     ? structured.retryAfterMs
     : undefined
   if (structured !== undefined) {
-    const mapped = STRUCTURED_TYPES[structured.type]
+    const mapped = STRUCTURED_TYPES.get(structured.type)
     if (mapped !== undefined) {
       return classification(mapped, "structured", true, structuredRetryAfterMs)
     }
