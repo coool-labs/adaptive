@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import {
   BODY_EXCERPT_LENGTH,
+  MAX_CAPTURED_HEADERS,
+  MAX_CAPTURED_VALUE_LENGTH,
   contextModelRequest,
   hookModelRequest,
   mapHttpResponse,
@@ -162,5 +164,73 @@ describe("mapHttpResponse", () => {
 
   it("exposes the excerpt bound constant", () => {
     expect(BODY_EXCERPT_LENGTH).toBe(512)
+  })
+
+  it("omits capturedHeaders when no capture predicate is given", async () => {
+    const report = await mapHttpResponse({
+      sessionID: "s1",
+      response: new Response("x", {
+        status: 200,
+        headers: { "x-codex-primary-used-percent": "10" },
+      }),
+    } as never)
+    expect("capturedHeaders" in report).toBe(false)
+  })
+
+  it("captures only headers the predicate allows (allowlist is wiring policy)", async () => {
+    const report = await mapHttpResponse(
+      {
+        sessionID: "s1",
+        response: new Response("x", {
+          status: 200,
+          headers: {
+            "x-codex-primary-used-percent": "10",
+            "X-Codex-Secondary-Used-Percent": "42",
+            authorization: "Bearer secret",
+            "set-cookie": "session=xyz",
+            "retry-after": "30",
+          },
+        }),
+      } as never,
+      { capture: (name) => name.includes("x-codex-") },
+    )
+    // Undici normalizes header names to lowercase on the Headers instance.
+    expect(report.capturedHeaders).toEqual({
+      "x-codex-primary-used-percent": "10",
+      "x-codex-secondary-used-percent": "42",
+    })
+    expect(Object.values(report.capturedHeaders ?? {})).not.toContain("secret")
+  })
+
+  it("omits capturedHeaders when nothing matches", async () => {
+    const report = await mapHttpResponse(
+      {
+        sessionID: "s1",
+        response: new Response("x", { status: 200, headers: { "retry-after": "1" } }),
+      } as never,
+      { capture: (name) => name.includes("x-codex-") },
+    )
+    expect("capturedHeaders" in report).toBe(false)
+  })
+
+  it("bounds captured entries and value length", async () => {
+    const headers: Record<string, string> = {}
+    for (let i = 0; i < 24; i++) {
+      headers[`x-codex-entry-${String(i)}`] = "v".repeat(200)
+    }
+    const report = await mapHttpResponse(
+      { sessionID: "s1", response: new Response("x", { status: 200, headers }) } as never,
+      { capture: (name) => name.startsWith("x-codex-") },
+    )
+    const captured = Object.entries(report.capturedHeaders ?? {})
+    expect(captured.length).toBe(MAX_CAPTURED_HEADERS)
+    for (const [, value] of captured) {
+      expect(value.length).toBe(MAX_CAPTURED_VALUE_LENGTH)
+    }
+  })
+
+  it("exposes the capture bounds", () => {
+    expect(MAX_CAPTURED_HEADERS).toBe(16)
+    expect(MAX_CAPTURED_VALUE_LENGTH).toBe(64)
   })
 })

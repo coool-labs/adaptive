@@ -20,6 +20,10 @@ import type {
  */
 export const BODY_EXCERPT_LENGTH = 512
 
+/** Capture bounds for wiring-selected telemetry headers. */
+export const MAX_CAPTURED_HEADERS = 16
+export const MAX_CAPTURED_VALUE_LENGTH = 64
+
 /** Convert a host `Model.Ref` into the supervisor's `ModelRef` shape. */
 export function modelRefOf(ref: Model.Ref): ModelRef {
   return {
@@ -119,8 +123,16 @@ export function hookModelRequest(input: {
  * untouched for the host (verified one-shot body limitation). If the body
  * cannot be cloned (already consumed, streaming error), the report degrades
  * to status/header evidence.
+ *
+ * `capture` is an optional allowlist predicate over lowercase header names
+ * (quota telemetry only — never `authorization`, cookies, or any other
+ * credential-bearing header). Captured entries are bounded in count and value
+ * length; capture never throws.
  */
-export async function mapHttpResponse(input: SessionHttpResponse): Promise<HttpResponseReport> {
+export async function mapHttpResponse(
+  input: SessionHttpResponse,
+  options?: { capture?: (lowercaseName: string) => boolean },
+): Promise<HttpResponseReport> {
   const retryAfterHeader = input.response.headers.get("retry-after")
   let bodyExcerpt: string | undefined
   try {
@@ -131,11 +143,27 @@ export async function mapHttpResponse(input: SessionHttpResponse): Promise<HttpR
   } catch {
     // Body unreadable — status + headers evidence remains available.
   }
+  let capturedHeaders: Record<string, string> | undefined
+  if (options?.capture !== undefined) {
+    const captured: Record<string, string> = {}
+    for (const [name, value] of input.response.headers) {
+      if (Object.keys(captured).length >= MAX_CAPTURED_HEADERS) {
+        break
+      }
+      if (options.capture(name.toLowerCase())) {
+        captured[name] = value.slice(0, MAX_CAPTURED_VALUE_LENGTH)
+      }
+    }
+    if (Object.keys(captured).length > 0) {
+      capturedHeaders = captured
+    }
+  }
   return {
     kind: "http-response",
     sessionID: input.sessionID,
     status: input.response.status,
     ...(retryAfterHeader !== null ? { retryAfterHeader } : {}),
     ...(bodyExcerpt !== undefined ? { bodyExcerpt } : {}),
+    ...(capturedHeaders !== undefined ? { capturedHeaders } : {}),
   }
 }

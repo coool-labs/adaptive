@@ -56,6 +56,12 @@ export interface HttpResponseReport {
   /** Raw `Retry-After` header value; the supervisor parses it, not the adapter. */
   retryAfterHeader?: string | undefined
   bodyExcerpt?: string | undefined
+  /**
+   * Captured quota-telemetry headers selected by the wiring-supplied capture
+   * predicate (an allowlist — no other header ever leaves the response, so
+   * credentials and cookies cannot leak). Bounded in count and value length.
+   */
+  capturedHeaders?: Readonly<Record<string, string>> | undefined
 }
 
 /** Idle-boundary report from the `experimental.idle` hook (safe boundary). */
