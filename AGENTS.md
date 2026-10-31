@@ -1,0 +1,182 @@
+# AGENTS.md — working rules for this repository
+
+`@coool/opencode-adaptive` is an OpenCode v2 plugin: an **execution supervisor**
+that assigns each execution episode to a capability tier (quick / standard /
+advanced), escalates capability only on structured evidence, recovers within a
+tier through provider failures and quota limits, and restores preferred
+resources at safe boundaries. OpenCode owns sessions, agents, tools, `/goal`,
+planning, and model invocation; Adaptive owns routing, health, capacity
+awareness, failover, durable parking, and observability. It must never become
+an agent framework, planner, task manager, goal engine, or provider marketplace.
+
+Architecture and conventions are cloned from `@coool/opencode-decision-mode`
+and `@coool/opencode-custom-provider`. Product contract: `GOAL.md`.
+Requirements with stable IDs: `docs/REQUIREMENTS.md` (`ADP-xxx`).
+
+## Architecture rules (non-negotiable)
+
+- **Dependency rule**: `src/core/`, `src/health/`, `src/execution/`, and
+  `src/state/` never import `@opencode/plugin`, `@opencode/schema`, or any
+  platform SDK. Only `src/adapters/opencode/` (plus the `ui/gui` experimental
+  surface) touches the platform. `src/supervisor/` is wiring: it consumes
+  structural mirrors of the host surfaces (`SupervisorOptions`), never the
+  host package directly.
+- **Pure core**: the scheduler is a pure function of
+  `(settings, inventory, health, capacity, request context, clock) → Decision`.
+  Clock and inventory are injected. Effects (model switches, receipts, park)
+  are applied by the execution layer, not by the scheduler.
+- **Extraction test**: every module must be instantiable/exercisable with
+  fakes alone. If something needs the real plugin context to be constructed
+  or tested, the seam is wrong — add a narrow interface.
+- **OBSERVE and CONTROL share one scheduler.** There is no separate
+  "simulation" router that can drift from production behavior. OBSERVE wraps
+  the identical decision without applying it.
+- **No dead knobs**: a parameter that no caller sets is removed, not kept
+  "for later". No speculative abstractions, factories, registries, or DTO
+  layers — every abstraction must name the concrete duplication, boundary,
+  lifecycle, or testability problem it solves.
+- **No dead code**: no TODO/FIXME placeholders, no commented-out code, no
+  meaningless comments. Comments explain *why* (invariants, empirical
+  findings), never restate the code.
+
+## Product invariants (violating any of these is a bug, not a feature)
+
+- **Capability and availability are separate.** Infra failure (429, quota,
+  timeout, 503, outage) triggers horizontal recovery *within the required
+  tier*, never capability escalation. Escalation happens only on structured
+  capability evidence (explicit request, reviewer rejection, deterministic
+  verification failure, repeated structured failure, explicit blocker) with
+  the schema requiring reason + evidence.
+- **No LLM classifier and no keyword soup in the routing path.** Routing
+  priority: user pin > explicit tier request > supported role hint >
+  deterministic local evidence > default `standard`. Ambiguity defaults to
+  `standard`; the scheduler may return `defer` (OpenCode's own choice stands).
+- **Routing happens at safe boundaries only** (work-unit start/termination).
+  A work unit is one execution episode; tool continuations stay in-unit,
+  subagents are separate units sharing health. Never switch models mid-unit
+  and never pull a productive model away mid-work to save money.
+- **User cancellation (`interrupted{reason:'user'}`) never triggers
+  failover.** Permanent config/auth errors never enter retry loops. All
+  retry/escalation loops are provably bounded.
+- **Half-open admits exactly one probe.** Concurrent callers join the probe's
+  outcome or stay rejected — no thundering herd. 429s do not count toward
+  breaker trips.
+- **No hidden cross-tier borrowing.** Availability alone never silently moves
+  work to another tier; if the tier is exhausted, park/wait (unless escalation
+  independently established a stronger tier). Recovery of a preferred
+  resource makes it eligible only at the next safe boundary.
+- **Partial work is durable.** Completed tool side effects are treated as
+  durable; recovery continues from session/workspace state (native
+  continuation where the API supports it) — never a replayed original prompt,
+  never duplicated ambiguous side effects.
+- **Compatibility gates before preference.** Never route to a resource known
+  not to fit the active context (capacity, tools, modalities, availability).
+  Only user-configured providers are ever eligible.
+- **Manual intent wins.** Do not fight manual model changes; `OFF` costs
+  nothing and changes nothing.
+- **Fail-open by default.** An internal Adaptive failure (sensor, receipts,
+  optional adapter, unknown metadata) logs/notify-throttles and defers to
+  ordinary OpenCode behavior. Privacy/configured-provider restrictions fail
+  closed.
+- **Privacy**: no telemetry leaves the machine; no secrets in state,
+  receipts, logs, or RPC payloads; receipts are bounded (ring, oldest
+  evicted) and never injected into prompts.
+
+## TypeScript conventions
+
+- Strictest sensible config (see `tsconfig.json`: `strict`,
+  `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`,
+  `useUnknownInCatchVariables`, `noImplicitOverride`,
+  `noFallthroughCasesInSwitch`, `noImplicitReturns`, `noUnusedLocals`,
+  `noUnusedParameters`). No `any`, no `@ts-ignore`/`@ts-nocheck`.
+- State and error models are discriminated unions, exhaustively handled.
+  Avoid non-null assertions and type assertions; if an upstream API genuinely
+  forces one, isolate it at the adapter boundary, state why in a comment, and
+  cover it with tests.
+- Treat provider/OpenCode/persisted data as untrusted: narrow through
+  defensive readers, hard-error on malformed payloads — never silently coerce.
+  Validate RPC inputs at the boundary; error messages name the offending
+  field (the message is the user's/model's only feedback).
+- Inject time (`clock: () => number`) wherever behavior must be
+  deterministic in tests. No uncontrolled process-global mutable state.
+
+## OpenCode platform facts (empirical, from the sibling plugins)
+
+Verified live in `@coool/opencode-decision-mode` and
+`@coool/opencode-custom-provider`; re-verify against this plugin's wiring
+before relying on them on a new surface:
+
+- **RPC schemas must be zod (Standard Schema)** — raw JSON Schema literals
+  are silently ignored by `ctx.rpc.register`.
+- **RPC handler failures must be declared + returned via
+  `context.error(...)`** — a plain `throw` becomes a server DEFECT and the
+  client receives the generic `rpc.internal` message.
+- **RPC handlers are location-scoped** — every client call must pass
+  `{ location: context.location }`; a location-less request fails with
+  `rpc.unavailable`. Global installs mask this bug: test with a
+  project-local install.
+- **Command-name shadowing** — a server command with the same name as a TUI
+  slash entry appears twice in the palette; keep server commands distinctly
+  named from TUI commands.
+- **Command feedback must not wake the model** — admit via
+  `ctx.session.synthetic({ ..., resume: false })`; synthetic input schedules
+  a model turn by default.
+- **Host hooks mutate their inputs; callbacks never return replacements** —
+  the retry hook veto assigns `{ retry: false }` onto the input object.
+- **`session.switchModel` at a safe boundary only** (`session.wait` first,
+  then switch, then resume) — timestamps compared, never raced.
+
+## Testing rules
+
+- **Coverage gate is 100%** for statements, branches, functions, and lines
+  (`vitest.config.ts` thresholds; `npm run coverage` fails otherwise). If a
+  branch is unreachable, delete the branch instead of weakening the gate. No
+  blanket exclusions, no `istanbul ignore`, no empty tests.
+- **Regression policy**: every confirmed behavioral bug gets an automated
+  regression test that fails before the fix and passes after. Never fix a
+  behavioral defect without preserving a test that would catch its return;
+  never fix a bug only by changing tests.
+- Tests assert **behavior through public interfaces** with in-memory fakes;
+  not implementation trivia. Adapters are tested with injected/mocked
+  dependencies.
+- **Determinism**: no sleeps, no real network, no real clocks in the normal
+  suite. The deterministic fake provider (`test/fixtures/fake-provider/`)
+  scripts success, streaming, tool calls, 429/Retry-After, quota/reset
+  headers, 503, timeouts, disconnects, malformed responses, context
+  rejection, and recovery-after-N on an ephemeral loopback port only.
+- **Property/state-machine tests** (`fast-check`) for invariants: unavailable
+  or incompatible resources never selected; infra failure never escalates
+  capability; Observe/Control produce identical decisions; user pin always
+  wins; budgets cannot loop; half-open admits one probe; no impossible health
+  states.
+- Packed plugin tests (`@coool/opencode-plugin-test`, packed mode) target
+  `2.2.1`, `current`, and `latest` over the server and rpc surfaces —
+  see `plugin-test.config.json`. Never run the normal suite against paid
+  real models.
+
+## Verification workflow
+
+```sh
+npm install          # once
+npm run typecheck    # tsc --noEmit — must be clean
+npm test             # vitest
+npm run coverage     # vitest + 100% coverage gate
+npm run lint         # eslint
+npm run format:check # prettier
+npm run build        # tsc build + vite GUI bundle
+npm run plugin-test  # packed plugin tests against real OpenCode hosts
+```
+
+A change is done when typecheck, tests, coverage, and lint are clean — not
+merely when it compiles.
+
+## Style
+
+- Concise, imperative code; small modules with clear ownership; boring,
+  explicit code over cleverness.
+- No speculative exports or re-exports; each module's surface is what its
+  consumers use.
+- UI copy is short and human ("Unavailable until 18:42", not "Provider health
+  optimization"); TUI/GUI are views over typed RPC and hold no local routing
+  or settings state — the server is the single source of truth.
+- Version bumps are commits named exactly after the version, tagged `vX.Y.Z`.
