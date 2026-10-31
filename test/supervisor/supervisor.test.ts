@@ -21,22 +21,19 @@ import { CODEX_PROVIDER_ID } from "../../src/supervisor/types.js"
 import { CONTINUATION_PROMPT } from "../../src/supervisor/log.js"
 import { SETTINGS_KEY } from "../../src/state/settings/types.js"
 import {
+  controlStorage,
   FailAfterStorage,
   FakeSupervisorSession,
+  flush,
   KeyFailStorage,
+  makeSupervisor,
+  ref,
   seed,
   settingsJSON,
   storedParked,
   storedReceipts,
   storedSettings,
 } from "./helpers.js"
-
-/** Flush the supervisor's voided async continuations before asserting. */
-async function flush(): Promise<void> {
-  await new Promise((resolve) => {
-    setTimeout(resolve, 0)
-  })
-}
 
 /** Capture fail-open logging without polluting test output. */
 function spyErrors(): { lines: string[]; restore: () => void } {
@@ -50,48 +47,6 @@ function spyErrors(): { lines: string[]; restore: () => void } {
       spy.mockRestore()
     },
   }
-}
-
-function ref(providerID: string, id: string): { providerID: string; id: string } {
-  return { providerID, id }
-}
-
-/** A supervisor over one fake session and a fixed clock. */
-function makeSupervisor(options: {
-  storage: KeyFailStorage
-  session: FakeSupervisorSession
-  infos?: ReturnType<typeof makeInfo>[]
-  clock?: () => number
-}): Supervisor {
-  const infos = options.infos ?? [makeInfo("prov", "a"), makeInfo("prov", "b")]
-  const model = {
-    transform: (cb: (editor: unknown) => unknown) => {
-      const editor = {
-        list: () => infos,
-        get: (providerID: string, modelID: string) =>
-          infos.find((info) => info.providerID === providerID && info.id === modelID),
-      }
-      cb(editor)
-      return Promise.resolve({ dispose: () => Promise.resolve() })
-    },
-  } as unknown as ModelSource
-  return new Supervisor({
-    session: options.session.source as unknown as SupervisorSessionSource,
-    model,
-    storage: options.storage.source,
-    clock: options.clock ?? (() => 1000),
-  })
-}
-
-/** Standard tier with the two inventory models, control mode. */
-function controlStorage(): KeyFailStorage {
-  const storage = new KeyFailStorage("unused")
-  seed(
-    storage,
-    "coool.adaptive/settings",
-    settingsJSON("control", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
-  )
-  return storage
 }
 
 const STARTED_S1 = { kind: "execution-started", sessionID: "s1", at: 10 } as const
