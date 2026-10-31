@@ -16,7 +16,8 @@
     "./rpc": {
       "import": "./dist/rpc.js",
       "types": "./dist/rpc.d.ts"
-    }
+    },
+    "./gui-experimental": "./dist/gui-experimental.cjs"
   },
   "files": [
     "dist",
@@ -27,7 +28,7 @@
     "node": ">=20.19.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && vite build --config guiconfig.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
@@ -50,9 +51,17 @@
     "eslint": "^9",
     "eslint-config-prettier": "^10",
     "fast-check": "^4.10.2",
+    "jsdom": "^25.0.1",
     "prettier": "^3",
+    "solid-js": "^1.9.18",
     "typescript": "^5.9",
     "typescript-eslint": "^8",
+    "vite": "^6.4.5",
+    "vite-plugin-solid": "^2.11.15",
     "vitest": "^4"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "fsevents@2.3.3": true
   }
 }

@@ -9,7 +9,7 @@
  * via the state parsers (`applyPatch` reports per-field errors instead), and
  * output schemas are passthroughs over trusted server-side data.
  */
-import { Rpc } from "@opencode/schema"
+import { Rpc } from "@opencode/schema/rpc"
 import type { StandardSchemaV1 } from "@standard-schema/spec"
 import type { SettingsPatch, SettingsV1 } from "../state/settings/index.js"
 import type { PatchResult } from "../state/settings/types.js"

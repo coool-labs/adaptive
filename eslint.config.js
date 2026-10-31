@@ -4,14 +4,14 @@ import prettier from "eslint-config-prettier"
 
 export default tseslint.config(
   {
-    ignores: ["dist/**", "coverage/**", ".scratch/**", "node_modules/**"],
+    ignores: ["dist/**", "coverage/**", ".scratch/**", "node_modules/**", "guiconfig.ts"],
   },
   eslint.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,
   prettier,
   {
-    files: ["**/*.ts"],
+    files: ["**/*.ts", "**/*.tsx"],
     languageOptions: {
       parserOptions: {
         projectService: true,
