@@ -16,8 +16,10 @@
  *   plugin discovery at all (probed: 16 palette attempts never matched).
  * - The plugin's keymap layer registers asynchronously some seconds after
  *   the boot prompt appears, so the palette match is retried.
- * - The `/adaptive` slash form does not match in the slash menu ("No
- *   matching commands"); the command palette (ctrl+p) is the keyboard path.
+ * - The `/` slash menu lists `/adaptive` (the first entry); Enter on the
+ *   open menu activates it — the slash path is covered by its own journey.
+ *   (Typing the full "/adaptive" string races the slash filter; the reliable
+ *   keyboard path is slash-then-Enter.)
  * - Select dialogs highlight the first option on open; Arrow keys move the
  *   highlight and Enter activates it, Escape cancels. The host persists the
  *   "Settings saved" toast until manually dismissed, so toast text is only
@@ -162,6 +164,23 @@ async function bootTui(launched: Launched): Promise<void> {
   await launched.app.waitForText("Ask anything", { timeout: 150_000 })
 }
 
+/**
+ * Close the TUI and its sidecar, then kill the TUI's background service
+ * daemon: it binds the configured managed service port and outlives the TUI
+ * process, so a suite that spawns many TUIs would leak one daemon per test.
+ * The user's own TUI daemon is never touched — only this test's port.
+ */
+async function closeLaunched(launched: Launched): Promise<void> {
+  await launched.sidecar.close()
+  const listener = spawnSync(
+    "lsof",
+    ["-t", `-iTCP:${String(launched.servicePort)}`, "-sTCP:LISTEN"],
+    { encoding: "utf8" },
+  )
+  const pid = listener.stdout.trim().split("\n")[0] ?? ""
+  if (pid !== "") spawnSync("kill", [pid])
+}
+
 /** Open the command palette and wait for the unfiltered command list. */
 async function openPalette(app: Launched["app"]): Promise<void> {
   await app.press("ctrl+p")
@@ -195,6 +214,23 @@ async function runAdaptiveCommand(app: TerminalApp): Promise<void> {
     }
     break
   }
+  await app.press("Enter")
+  await app.waitForText(/OpenCode Adaptive|Health of every configured resource/, {
+    timeout: 30_000,
+  })
+}
+
+/** Open /adaptive through the editor slash menu (slash, then Enter). */
+async function runAdaptiveSlash(app: TerminalApp): Promise<void> {
+  await app.waitForQuiet({ quietMs: 2_000 })
+  // The keymap layer registers seconds after boot; a palette open/close
+  // cycle both waits for it and leaves a clean editor for the slash input.
+  await app.press("ctrl+p")
+  await app.waitForText("Commands", { timeout: 30_000 })
+  await app.press("Escape")
+  await app.waitForQuiet({ quietMs: 1_000 })
+  await app.type("/")
+  await app.waitForQuiet({ quietMs: 500 })
   await app.press("Enter")
   await app.waitForText(/OpenCode Adaptive|Health of every configured resource/, {
     timeout: 30_000,
@@ -236,7 +272,7 @@ test("the tui boots to the first-run home with the configured model", async ({
   // provider model is the active agent model.
   await launched.app.waitForText("Fake Model", { timeout: 15_000 })
   await launched.app.close()
-  await launched.sidecar.close()
+  await closeLaunched(launched)
 })
 
 test("the command palette is keyboard-operable and escapable", async ({
@@ -252,7 +288,7 @@ test("the command palette is keyboard-operable and escapable", async ({
     await launched.app.waitForText("Ask anything", { timeout: 15_000 })
   })
   await launched.app.close()
-  await launched.sidecar.close()
+  await closeLaunched(launched)
 })
 
 test("a session turn runs through the fake provider and answers", async ({
@@ -268,7 +304,7 @@ test("a session turn runs through the fake provider and answers", async ({
     await launched.app.waitForText("done", { timeout: 120_000 })
   })
   await launched.app.close()
-  await launched.sidecar.close()
+  await closeLaunched(launched)
 })
 
 test(
@@ -293,7 +329,33 @@ test(
       await app.waitForText("Ask anything", { timeout: 15_000 })
     })
     await app.close()
-    await launched.sidecar.close()
+    await closeLaunched(launched)
+  },
+)
+
+test(
+  "the /adaptive slash form opens the same flows through the editor slash menu",
+  { timeout: 120_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal)
+    const app = launched.app
+    await bootTui(launched)
+    await step("slash menu activation", async () => {
+      // The bare `/` slash menu lists /adaptive among its entries; Enter on
+      // the open menu activates the highlighted entry.
+      await runAdaptiveSlash(app)
+      await app.waitForText("Adaptive starts in Observe mode", { timeout: 15_000 })
+    })
+    await step("confirm lands in the main menu", async () => {
+      await app.press("Enter")
+      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
+    })
+    await step("escape closes the menu", async () => {
+      await app.press("Escape")
+      await app.waitForText("Ask anything", { timeout: 15_000 })
+    })
+    await app.close()
+    await closeLaunched(launched)
   },
 )
 
@@ -329,7 +391,7 @@ test(
       await app.waitForText("Ask anything", { timeout: 15_000 })
     })
     await app.close()
-    await launched.sidecar.close()
+    await closeLaunched(launched)
   },
 )
 
@@ -372,7 +434,7 @@ test(
       await app.waitForText("Ask anything", { timeout: 15_000 })
     })
     await app.close()
-    await launched.sidecar.close()
+    await closeLaunched(launched)
   },
 )
 
@@ -397,7 +459,7 @@ test(
       await app.waitForText("Ask anything", { timeout: 15_000 })
     })
     await app.close()
-    await launched.sidecar.close()
+    await closeLaunched(launched)
   },
 )
 
@@ -409,7 +471,7 @@ test("the tui boots at 80x24", async ({ termwright: tw, terminal }) => {
   await bootTui(launched)
   expect(launched.app.screen().text()).toContain("Ask anything")
   await launched.app.close()
-  await launched.sidecar.close()
+  await closeLaunched(launched)
 })
 
 test.override({ termwrightOptions: { columns: 200, rows: 50 } })
@@ -420,5 +482,5 @@ test("the command palette navigates at wide width", async ({ termwright: tw, ter
   await launched.app.press("escape")
   await launched.app.waitForText("Ask anything", { timeout: 15_000 })
   await launched.app.close()
-  await launched.sidecar.close()
+  await closeLaunched(launched)
 })
