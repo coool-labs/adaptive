@@ -51,4 +51,21 @@ return. The regression test is kept forever.
 - Tests declare the requirements they cover with a
   `// covers: ["ADP-xxx", ...]` line above the first import;
   `npm run traceability` fails if a requirement loses all coverage or an
-  E2E-applicable requirement loses its E2E coverage.
+  E2E-applicable requirement loses its E2E coverage. The report lands in
+  `test-artifacts/traceability.json`.
+- E2E suites target real OpenCode hosts (server + web + PTY TUI) with the
+  deterministic fake provider; journeys that a host version cannot support
+  carry an inverted canary plus a documented proof of the limitation.
+
+## Docs
+
+- [docs/PRODUCT.md](docs/PRODUCT.md) — what the plugin is and is not.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module map and dependency rules.
+- [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) — the requirement list the traceability gate reads.
+- [docs/TEST_STRATEGY.md](docs/TEST_STRATEGY.md) — test layers and scenario maps.
+
+## Releases
+
+A version bump is a commit named exactly after the version (for example
+`0.1.1`), tagged `v0.1.1`, with a CHANGELOG entry. `npm run verify:release`
+must be green before publishing.
