@@ -135,6 +135,32 @@ export class ResourceHealthRegistry {
     this.#config = config
   }
 
+  /**
+   * Seeds the registry from persisted records (restart / cross-instance
+   * reload). Records are swept against the current clock and inserted
+   * without persisting — hydration must not write back what it just read.
+   * A hydrated half_open record cannot keep its probe (the ticket lived in
+   * the previous instance's memory), so it re-opens due immediately — its
+   * backoff window had already elapsed when it went half-open, and the next
+   * assessment admits exactly one probe as usual.
+   */
+  hydrate(records: readonly ResourceRecord[]): void {
+    const now = this.#clock()
+    for (const record of records) {
+      const swept = sweepRecord(record, now)
+      const breaker =
+        swept.breaker.state === "half_open"
+          ? {
+              state: "open" as const,
+              failures: swept.breaker.failures,
+              openCount: swept.breaker.openCount,
+              reopenAt: now,
+            }
+          : swept.breaker
+      this.#records.set(resourceKeyID(swept.key), { ...swept, breaker, updatedAt: now })
+    }
+  }
+
   observe(event: HealthEvent): ResourceRecord {
     const now = this.#clock()
     const id = resourceKeyID(event.key)

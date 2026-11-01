@@ -91,7 +91,7 @@ describe("restart round-trips", () => {
     expect(parseParkedPayload(storedParked(storage))).toHaveLength(0)
   })
 
-  it("resets runtime health on restart (breaker + rate windows are not durable)", async () => {
+  it("keeps runtime health across a restart (breaker + rate windows are durable)", async () => {
     const storage = controlStorage()
     const session = new FakeSupervisorSession()
     const first = makeSupervisor({ storage, session })
@@ -116,12 +116,18 @@ describe("restart round-trips", () => {
     await first.handleReport({ kind: "execution-started", sessionID: "s1", at: 60 })
     const blocked = parseReceiptsPayload(storedReceipts(storage)).at(-1)
     expect(blocked?.decision).toMatchObject({ kind: "park", reason: "all-blocked" })
+    await flush()
 
     const second = makeSupervisor({ storage, session: new FakeSupervisorSession() })
     await second.handleReport({ kind: "execution-started", sessionID: "s1", at: 40 })
     const resumed = parseReceiptsPayload(storedReceipts(storage)).at(-1)
-    // A fresh supervisor has a closed breaker: a is preferred again.
-    expect(resumed?.decision).toMatchObject({ kind: "apply", reason: "preferred" })
+    // Health is rebuilt from storage on setup like every other state
+    // (ARCHITECTURE.md "Stateless in memory"): the fresh instance assesses
+    // the persisted breaker and rate windows instead of re-routing onto the
+    // resource that just failed ten times. Recovery still works — the
+    // breaker's half-open probe and window expiry are evaluated on the
+    // persisted records.
+    expect(resumed?.decision).toMatchObject({ kind: "park", reason: "all-blocked" })
   })
 
   it("gives a fresh unit a fresh veto budget across a restart", async () => {

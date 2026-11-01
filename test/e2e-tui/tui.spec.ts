@@ -69,7 +69,11 @@ interface Launched {
 }
 
 /** Launch one fresh TUI against its own fake-provider sidecar. */
-async function launchTui(tw: TermwrightFixture, terminal: TerminalFixture): Promise<Launched> {
+async function launchTui(
+  tw: TermwrightFixture,
+  terminal: TerminalFixture,
+  options: { failAfterTitle?: boolean } = {},
+): Promise<Launched> {
   // Bundle the sidecar entry to plain JS: the termwright host node has no TS
   // loader, and vite-node is not shipped by this dependency tree.
   const sidecarEntry = join(tw.tmpdir, "fake-provider-sidecar.mjs")
@@ -91,7 +95,13 @@ async function launchTui(tw: TermwrightFixture, terminal: TerminalFixture): Prom
   // never touched.
   const port = 40_000 + 2 * Math.floor(Math.random() * 9_000)
   const sidecar = await tw.sidecars.launch({
-    command: [sidecarNode, sidecarEntry, "--port", String(port)],
+    command: [
+      sidecarNode,
+      sidecarEntry,
+      "--port",
+      String(port),
+      ...(options.failAfterTitle === true ? ["--fail-after-title"] : []),
+    ],
     ready: { output: "FAKE_PROVIDER_READY", stream: "stdout" },
   })
   expect(sidecar.pid).toBeGreaterThan(0)
@@ -102,20 +112,26 @@ async function launchTui(tw: TermwrightFixture, terminal: TerminalFixture): Prom
   mkdirSync(join(home, "data"), { recursive: true })
   mkdirSync(join(home, "cache"), { recursive: true })
   const project = mkdtempSync(join(tmpdir(), "adaptive-tui-proj-"))
+  // The provider definition must be present in BOTH configs: the plugin's
+  // server-side model inventory is scoped to the location the plugin loads
+  // from — the global config in this sandbox — so a provider that exists
+  // only in the project config leaves the tier resources "not-in-inventory"
+  // and every admission parks (probed empirically: the health journey
+  // recorded `park: no-compatible-resource — not-in-inventory` before the
+  // provider was mirrored into the global config).
+  const fakeProvider = {
+    npm: "@ai-sdk/openai-compatible",
+    name: "Fake",
+    options: { baseURL: `http://127.0.0.1:${String(port)}/v1` },
+    models: {
+      "fake-model": { name: "Fake Model" },
+      "fake-model-2": { name: "Fake Model 2" },
+    },
+  }
   const opencodeJson = JSON.stringify({
     $schema: "https://opencode.ai/config.json",
     model: "fake/fake-model",
-    provider: {
-      fake: {
-        npm: "@ai-sdk/openai-compatible",
-        name: "Fake",
-        options: { baseURL: `http://127.0.0.1:${String(port)}/v1` },
-        models: {
-          "fake-model": { name: "Fake Model" },
-          "fake-model-2": { name: "Fake Model 2" },
-        },
-      },
-    },
+    provider: { fake: fakeProvider },
   })
   // The plugin must be configured in the GLOBAL config for the TUI to mount
   // its bundle: a project-local plugins entry registers the palette command
@@ -125,12 +141,25 @@ async function launchTui(tw: TermwrightFixture, terminal: TerminalFixture): Prom
   // config from the HOME-based path, so the entry is written there; the
   // XDG copy is kept because `opencode service set port` writes its
   // service.json under XDG_CONFIG_HOME.
-  const globalJson = JSON.stringify({
+  // Both global config files carry the provider (the server-side model
+  // inventory is scoped to the plugin's load location), but the `plugins`
+  // entry lives ONLY in the XDG copy: when both global configs list the
+  // plugin, the server loads it once per config source — two supervisors in
+  // one process, where the event pump records health in the first instance's
+  // registry while status.get is served by the second's empty one (probed
+  // with pid-tagged instrumentation: both instances in pid <service>, health
+  // observed by inst=1, every status read served by inst=2 with health=[]).
+  const globalJsonXdg = JSON.stringify({
     $schema: "https://opencode.ai/config.json",
+    provider: { fake: fakeProvider },
     plugins: [REPO_ROOT],
   })
-  writeFileSync(join(home, ".config", "opencode", "opencode.json"), globalJson)
-  writeFileSync(join(home, "config", "opencode", "opencode.json"), globalJson)
+  const globalJsonHome = JSON.stringify({
+    $schema: "https://opencode.ai/config.json",
+    provider: { fake: fakeProvider },
+  })
+  writeFileSync(join(home, ".config", "opencode", "opencode.json"), globalJsonHome)
+  writeFileSync(join(home, "config", "opencode", "opencode.json"), globalJsonXdg)
 
   const env = stripTokens(process.env)
   env["HOME"] = home
@@ -286,6 +315,40 @@ async function pressAll(app: TerminalApp, keys: string[]): Promise<void> {
   for (const key of keys) {
     await app.press(key)
     await app.waitForQuiet({ quietMs: 100 })
+  }
+}
+
+/**
+ * Close the main menu and land on the base screen. After any turn has run,
+ * the host shows the one-time "Getting started" onboarding popup there —
+ * its ✕ is mouse-only, Escape does not dismiss it — and the composer
+ * placeholder is no longer shown, so either popup text or the placeholder
+ * proves the menu layer is closed.
+ */
+async function leaveMenuToBase(app: TerminalApp): Promise<void> {
+  await app.press("Escape")
+  try {
+    await app.waitForText("Getting started", { timeout: 5_000 })
+  } catch {
+    await app.waitForText("Ask anything", { timeout: 15_000 })
+  }
+}
+
+/**
+ * Escape open dialog layers until the /adaptive main menu is on screen.
+ * Keystrokes can be dropped right after a dialog transition, so a fixed
+ * number of Escapes is not enough — the menu text is the condition.
+ */
+async function backToAdaptiveMenu(app: TerminalApp): Promise<void> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      await app.waitForText("Health of every configured resource", { timeout: 5_000 })
+      return
+    } catch (error) {
+      if (attempt === 3) throw error
+      await app.press("Escape")
+      await app.waitForQuiet({ quietMs: 300 })
+    }
   }
 }
 
@@ -513,17 +576,116 @@ test(
     await step("escape dismisses the alert and closes the menu", async () => {
       await app.press("Escape")
       await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await leaveMenuToBase(app)
+    })
+    await app.close()
+    await closeLaunched(launched)
+  },
+)
+
+test(
+  "switching to off disables routing and the status alert reflects it",
+  { timeout: 120_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal)
+    const app = launched.app
+    await bootTui(launched)
+    await step("switch the operating mode to off", async () => {
+      await openAdaptiveMenu(app)
+      await pressAll(app, ["ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText("Adaptive does nothing", { timeout: 30_000 })
+      // "off" is highlighted first in the mode menu; applying the patch
+      // reopens the main menu.
+      await app.press("Enter")
+      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
+    })
+    await step("the status alert reports mode: off", async () => {
+      await app.press("Enter")
+      await app.waitForText("Adaptive status", { timeout: 30_000 })
+      await app.waitForText("mode: off", { timeout: 15_000 })
+    })
+    await step("escape dismisses the alert and closes the menu", async () => {
       await app.press("Escape")
-      // After a completed turn the home screen carries the one-time
-      // "Getting started" onboarding popup, whose ✕ is mouse-only — Escape
-      // does not dismiss it — and the composer placeholder is no longer
-      // shown, so either popup text or the placeholder proves the alert and
-      // menu layers are closed.
-      try {
-        await app.waitForText("Getting started", { timeout: 5_000 })
-      } catch {
-        await app.waitForText("Ask anything", { timeout: 15_000 })
+      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await leaveMenuToBase(app)
+    })
+    await app.close()
+    await closeLaunched(launched)
+  },
+)
+
+test(
+  "the status dialog shows a resource's health after a failed turn",
+  { timeout: 300_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal, { failAfterTitle: true })
+    const app = launched.app
+    await bootTui(launched)
+    await step("switch to control and seed the quick tier", async () => {
+      await openAdaptiveMenu(app)
+      // Mode is the second menu option; "off" is highlighted in the mode
+      // menu and control is two rows down.
+      await pressAll(app, ["ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText("Adaptive does nothing", { timeout: 30_000 })
+      await pressAll(app, ["ArrowDown", "ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
+      // The patch-reopened menu can keep the highlight on the mode row, so
+      // close it and re-open fresh: a fresh menu always starts the highlight
+      // on status, which the tier navigation below relies on.
+      await app.press("Escape")
+      await app.waitForText("Ask anything", { timeout: 15_000 })
+      await openAdaptiveMenu(app)
+      await openTierMenu(app, 0)
+      // First turns route to the DEFAULT standard tier (the agent hint is
+      // unobserved on a fresh session), so the failed turn only marks the
+      // tier resource when the resource lives in standard — quick would
+      // defer with "tier-not-configured" and never engage the health story.
+      await pressAll(app, ["ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText("Tier: standard", { timeout: 30_000 })
+      await addHighlightedModel(app, ["f", "a", "k", "e"], 1, "standard")
+      // Back out to the base screen: tier menu -> main menu -> base. The
+      // helpers self-correct against dropped Escape keystrokes.
+      await backToAdaptiveMenu(app)
+      await leaveMenuToBase(app)
+    })
+    await step("the failed turn marks the resource unhealthy in status", async () => {
+      await app.type("say done")
+      await app.waitForQuiet({ quietMs: 2_000 })
+      // The provider answers a quota-shaped 429, so the turn fails instead
+      // of completing and there is no completion marker — the health event
+      // from the failed call is the signal. Enter retries cover the host's
+      // dropped-keystroke behavior: a retry only re-submits when the tag
+      // has not shown yet, and a duplicate failing turn changes nothing.
+      for (let attempt = 0; attempt < 5; attempt++) {
+        await app.press("Enter")
+        await openAdaptiveMenu(app)
+        // Status is the highlighted first menu option.
+        await app.press("Enter")
+        try {
+          await app.waitForText("Adaptive status", { timeout: 30_000 })
+          await app.waitForText("mode: control", { timeout: 15_000 })
+          // The health tag renders the record's health state first
+          // (`[rate_limited, windowed]` for a throttled resource), so the
+          // assertion anchors on the tag's comma shape rather than a bare
+          // "[windowed]" that never occurs while the state is unhealthy.
+          await app.waitForText(/\[[a-z_]+, windowed\]/, { timeout: 20_000 })
+          return
+        } catch (error) {
+          if (attempt === 4) throw error
+          await app.press("Escape")
+          await app.press("Escape")
+          await app.waitForQuiet({ quietMs: 1_000 })
+        }
       }
+    })
+    await step("escape dismisses the alert and closes the menu", async () => {
+      await app.press("Escape")
+      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await leaveMenuToBase(app)
     })
     await app.close()
     await closeLaunched(launched)
@@ -576,19 +738,21 @@ async function openQuickEditor(app: TerminalApp): Promise<void> {
 }
 
 /**
- * From the quick editor, add a model through the picker: "Add model…" is the
+ * From a tier editor, add a model through the picker: "Add model…" is the
  * highlighted first option, `keys` are typed into the picker search one key
  * at a time (with any ArrowDown moves appended), and Enter activates the
  * highlighted entry. Every picker model — the fake ones included — then opens
  * the `Variant: <model>` select (variants are host-reported), where Enter
  * accepts the highlighted "(model default)" and keeps the resource label
- * variant-free. The flow lands back on the tier menu, verified by quick's
- * count growing to `newCount`.
+ * variant-free. The flow lands back on the tier menu, verified by the tier's
+ * count growing to `newCount` (`tier` defaults to quick, whose editor is
+ * entered without any ArrowDown moves).
  */
 async function addHighlightedModel(
   app: TerminalApp,
   keys: string[],
   newCount: number,
+  tier: "quick" | "standard" | "advanced" = "quick",
 ): Promise<void> {
   await app.press("Enter")
   await app.waitForText("Search provider / model / name", { timeout: 30_000 })
@@ -597,7 +761,7 @@ async function addHighlightedModel(
   await app.press("Enter")
   await app.waitForText(/Variant: fake\/fake-model/, { timeout: 30_000 })
   await app.press("Enter")
-  await app.waitForText(`quick (${String(newCount)})`, { timeout: 30_000 })
+  await app.waitForText(`${tier} (${String(newCount)})`, { timeout: 30_000 })
 }
 
 test(

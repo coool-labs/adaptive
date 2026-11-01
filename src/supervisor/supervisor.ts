@@ -44,6 +44,9 @@ import { MAX_ESCALATION_EVIDENCE } from "../core/scheduler/types.js"
 import type { CandidateModel, Demand } from "../core/compatibility/types.js"
 import { checkCompatibility } from "../core/compatibility/gate.js"
 import { classifyFailure, CapacityRegistry, ResourceHealthRegistry } from "../health/index.js"
+import { sweepRecord } from "../health/resource-health/transitions.js"
+import type { ResourceRecord } from "../health/resource-health/types.js"
+import { HealthRecordStore, HEALTH_KEY } from "../state/health/index.js"
 import type {
   Assessment,
   CapacitySignals,
@@ -112,6 +115,7 @@ export class Supervisor {
   readonly #parked: ParkedWorkStore
   readonly #tracker = new WorkUnitTracker()
   readonly #health: ResourceHealthRegistry
+  readonly #healthRecords: HealthRecordStore
   readonly #capacity: CapacityRegistry
   readonly #codex: CodexCapacitySensor
   readonly #vetoes = new Map<string, number>()
@@ -181,6 +185,7 @@ export class Supervisor {
     this.#settings = new SettingsStore(storageSeam(SETTINGS_KEY, options.storage))
     this.#receipts = new ReceiptStore(storageSeam(RECEIPTS_KEY, options.storage))
     this.#parked = new ParkedWorkStore(storageSeam(PARKED_KEY, options.storage))
+    this.#healthRecords = new HealthRecordStore(storageSeam(HEALTH_KEY, options.storage))
     this.#ops = sessionOps(options.session, {
       beforeSwitch: (sessionID, model) => {
         this.#tracker.noteOwnSwitch(sessionID, model)
@@ -238,6 +243,13 @@ export class Supervisor {
       for (const receipt of this.#receipts.snapshot()) bump(receipt.unitID)
       for (const record of this.#parked.list()) bump(record.id)
       this.#tracker.seedEpisodes(floors)
+      // Health records hydrate the registry: the host's TUI-mode plugin
+      // reconciliation can serve RPC from an instance whose hooks (event
+      // pump) live on another instance — persisted failures are the only
+      // health that instance can see, and a fresh instance must also assess
+      // persisted failures before routing instead of starting from empty.
+      await this.#healthRecords.load()
+      this.#health.hydrate(this.#healthRecords.snapshot())
       return this.#settings.load()
     }
     this.#ready = loadState()
@@ -307,12 +319,21 @@ export class Supervisor {
     return this.#settings.update(patch)
   }
 
-  /** Bounded status snapshot for the status view (ADP-033). */
+  /**
+   * Bounded status snapshot for the status view (ADP-033). Health is read
+   * from the persisted record set (not the in-memory registry): the serving
+   * instance's registry can be empty when the host's plugin reconciliation
+   * placed the event-pump hooks on another instance, while the persisted
+   * mirror is shared by every instance.
+   */
   async status(): Promise<StatusSnapshot> {
     const settings = await this.#ensureSettings()
+    await this.#healthRecords.load()
+    const now = this.#options.clock()
+    const records = this.#healthRecords.snapshot().map((record) => sweepRecord(record, now))
     return buildStatus({
       settings,
-      health: this.#health.snapshot(),
+      health: records,
       parked: this.#parked.count(),
       receipts: this.#receipts.snapshot().length,
     })
@@ -1194,6 +1215,13 @@ export class Supervisor {
 
   #observeHealth(event: HealthEvent): void {
     this.#health.observe(event)
+    // Persist the record mirror fire-and-forget: the status surface reads
+    // persisted records so a serving instance without the event-pump hooks
+    // still reports true health. Failures are fail-open (ADP-031).
+    const records: readonly ResourceRecord[] = this.#health.snapshot()
+    void this.#healthRecords.replace(records).catch((error: unknown) => {
+      logFailOpen("health", error)
+    })
   }
 }
 

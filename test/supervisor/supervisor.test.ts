@@ -22,6 +22,7 @@ import { Supervisor } from "../../src/supervisor/index.js"
 import { CODEX_PROVIDER_ID } from "../../src/supervisor/types.js"
 import { CONTINUATION_PROMPT } from "../../src/execution/index.js"
 import { SETTINGS_KEY } from "../../src/state/settings/types.js"
+import { HEALTH_KEY } from "../../src/state/health/types.js"
 import {
   controlStorage,
   FailAfterStorage,
@@ -198,6 +199,103 @@ describe("supervisor", () => {
     })
     const receipts = parseReceiptsPayload(storedReceipts(storage))
     expect(receipts[0]?.outcome).toEqual({ status: "failed", category: "rate_limited" })
+  })
+
+  /**
+   * The host's TUI-mode plugin reconciliation can serve RPC from an instance
+   * whose event-pump hooks live on another instance. Health is the only
+   * memory-only state the status surface exposes, so it persists through the
+   * storage seam like every other state — otherwise the serving instance
+   * would report an empty registry while a turn is visibly failing.
+   */
+  it("status reflects a failure observed by another instance sharing the storage", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    const observer = makeSupervisor({ storage, session })
+    await observer.handleReport(STARTED_S1)
+    await observer.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 15,
+      model: ref("prov", "a"),
+    })
+    await observer.handleReport({
+      kind: "execution-failed",
+      sessionID: "s1",
+      at: 20,
+      error: { type: "UnknownError", message: "", status: 429 },
+    })
+    await flush()
+    const reader = makeSupervisor({ storage, session: new FakeSupervisorSession() })
+    const status = await reader.status()
+    expect(status.tiers.standard[0]?.windowed).toBe(true)
+    expect(status.tiers.standard[0]?.health).toBe("rate_limited")
+    const own = await observer.status()
+    expect(own.tiers.standard[0]?.windowed).toBe(true)
+  })
+
+  it("degrades fail-open when the health mirror cannot persist", async () => {
+    const errors = spyErrors()
+    try {
+      const session = new FakeSupervisorSession()
+      const storage = new KeyFailStorage(HEALTH_KEY)
+      seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+      const supervisor = makeSupervisor({ storage, session })
+      await supervisor.handleReport(STARTED_S1)
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: "s1",
+        at: 15,
+        model: ref("prov", "a"),
+      })
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 20,
+        error: { type: "UnknownError", message: "", status: 429 },
+      })
+      await flush()
+      // The failure was observed and recorded as a receipt; only the
+      // health-mirror write degraded (fail-open log, no crash).
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts[0]?.outcome).toEqual({ status: "failed", category: "rate_limited" })
+      expect(errors.lines.some((line) => line.includes("[coool.adaptive] health:"))).toBe(true)
+    } finally {
+      errors.restore()
+    }
+  })
+
+  it("a fresh instance assesses persisted failures before routing", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    const first = makeSupervisor({ storage, session })
+    await first.handleReport(STARTED_S1)
+    await first.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 15,
+      model: ref("prov", "a"),
+    })
+    await first.handleReport({
+      kind: "execution-failed",
+      sessionID: "s1",
+      at: 20,
+      error: { type: "UnknownError", message: "", status: 429 },
+    })
+    await flush()
+    // A restart (or a second plugin instance) must not start from an empty
+    // registry: the still-windowed resource is not reusable, so the new unit
+    // parks instead of re-routing onto it.
+    const second = makeSupervisor({ storage, session })
+    const logLength = session.log.length
+    await second.handleReport({ kind: "execution-started", sessionID: "s2", at: 30 })
+    // No new switch: the only candidate is still windowed for the fresh
+    // instance's assessment, so the episode parks on the session's model.
+    expect(session.log).toHaveLength(logLength)
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts.at(-1)?.decision).toMatchObject({ kind: "park", reason: "all-blocked" })
   })
 
   it("attaches an interrupted outcome for user cancellation without health damage", async () => {

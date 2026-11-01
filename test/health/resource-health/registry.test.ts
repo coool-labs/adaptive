@@ -459,4 +459,95 @@ describe("ResourceHealthRegistry", () => {
     advance(100)
     expect(registry.snapshot()[0]?.health).toBe("healthy")
   })
+
+  describe("hydrate (persisted-record seeding)", () => {
+    it("assesses hydrated failures without re-persisting or mutating them", () => {
+      const { now, advance } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      registry.hydrate([
+        {
+          key: MODEL_KEY,
+          health: "rate_limited",
+          breaker: { state: "closed", failures: 2, openCount: 0 },
+          window: { kind: "rate-limit", until: 500 },
+          updatedAt: 100,
+        },
+      ])
+      expect(registry.assess(MODEL_KEY)).toEqual({
+        kind: "blocked",
+        reason: "rate-limited",
+        key: MODEL_KEY,
+        retryAtMs: 500,
+      })
+      // Sweeping on the clock applies; nothing else about the record changes.
+      expect(registry.recordFor(MODEL_KEY)?.health).toBe("rate_limited")
+      advance(500)
+      expect(registry.assess(MODEL_KEY)).toEqual({ kind: "available" })
+      expect(registry.recordFor(MODEL_KEY)?.health).toBe("healthy")
+    })
+
+    it("re-opens a hydrated half-open breaker due immediately (no wedge, one probe)", () => {
+      const { now } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      registry.hydrate([
+        {
+          key: MODEL_KEY,
+          health: "degraded",
+          breaker: {
+            state: "half_open",
+            failures: 5,
+            openCount: 1,
+            reopenAt: 0,
+            probeId: "7",
+            probeAt: 0,
+          },
+          updatedAt: 100,
+        },
+      ])
+      // The lost probe's ticket cannot come back; the record re-opens due and
+      // the very next assessment admits exactly one fresh probe.
+      expect(registry.recordFor(MODEL_KEY)?.breaker.state).toBe("open")
+      const assessment = registry.assess(MODEL_KEY)
+      expect(assessment.kind).toBe("probe")
+      if (assessment.kind === "probe") {
+        expect(registry.reportProbe(assessment.ticket, { success: true })).toBe(true)
+      }
+      expect(registry.recordFor(MODEL_KEY)?.breaker.state).toBe("closed")
+    })
+
+    it("sweeps an already-expired window during hydration", () => {
+      const { now, advance } = fakeClock()
+      advance(10_000)
+      const registry = new ResourceHealthRegistry(now)
+      registry.hydrate([
+        {
+          key: MODEL_KEY,
+          health: "rate_limited",
+          breaker: { state: "closed", failures: 1, openCount: 0 },
+          window: { kind: "rate-limit", until: 5_000 },
+          updatedAt: 4_000,
+        },
+      ])
+      expect(registry.assess(MODEL_KEY)).toEqual({ kind: "available" })
+      expect(registry.recordFor(MODEL_KEY)?.window).toBeUndefined()
+      expect(registry.recordFor(MODEL_KEY)?.health).toBe("healthy")
+    })
+
+    it("leaves the registry untouched for empty or unknown-scope input", () => {
+      const { now } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      registry.hydrate([])
+      expect(registry.snapshot()).toEqual([])
+      registry.hydrate([
+        {
+          key: { providerID: "other" },
+          health: "healthy",
+          breaker: { state: "closed", failures: 0, openCount: 0 },
+          updatedAt: 1,
+        },
+      ])
+      expect(registry.assess(PROVIDER_KEY)).toEqual({ kind: "available" })
+      expect(registry.recordFor(MODEL_KEY)).toBeUndefined()
+    })
+  })
 })
