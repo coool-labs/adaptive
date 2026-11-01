@@ -25,6 +25,12 @@ export interface ParkedRecord {
   readonly detail?: string | undefined
   /** Park timestamp (adapter clock, ms epoch). */
   readonly parkedAt: number
+  /**
+   * Failed resume attempts (absent = never retried). The resume planner
+   * drops records whose attempts reach the planner's budget so a
+   * persistently failing continuation cannot retry forever (ADP-011).
+   */
+  readonly attempts?: number | undefined
 }
 
 export interface ParkedPayload {

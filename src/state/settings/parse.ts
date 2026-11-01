@@ -21,6 +21,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+/** One field's patch-path parse outcome: a validated value or a field error. */
+type FieldParse<T> = { ok: true; value: T } | { ok: false; error: string }
+
+/**
+ * Quoted, bounded rendering of an untrusted patch value inside an error
+ * message (errors travel to surfaces over RPC; JSON.stringify is only ever
+ * called on strings here, so a cyclic object cannot make applyPatch throw).
+ */
+function describePatchValue(value: unknown): string {
+  if (typeof value === "string") {
+    const quoted = JSON.stringify(value)
+    return quoted.length > 64 ? `${quoted.slice(0, 64)}…` : quoted
+  }
+  if (value === null) return "null"
+  if (typeof value === "object") return "object"
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  return typeof value
+}
+
 export function parseMode(raw: unknown): OperatingMode | undefined {
   if (typeof raw !== "string") return undefined
   return OPERATING_MODES.find((mode) => mode === raw)
@@ -32,14 +51,18 @@ export function parseTierLists(
   if (!isRecord(raw)) return undefined
   const tiers = {} as Record<TierName, readonly ModelRef[]>
   for (const tier of TIERS) {
-    const list = raw[tier]
-    tiers[tier] = Array.isArray(list)
-      ? normalizeTierList(
-          list.map(parseModelRef).filter((ref): ref is ModelRef => ref !== undefined),
-        ).slice(0, MAX_TIER_RESOURCES)
-      : []
+    tiers[tier] = normalizeTierListValue(raw[tier])
   }
   return tiers
+}
+
+/** Shared per-tier normalization (drop invalid, dedupe, cap) for both paths. */
+function normalizeTierListValue(list: unknown): readonly ModelRef[] {
+  return Array.isArray(list)
+    ? normalizeTierList(
+        list.map(parseModelRef).filter((ref): ref is ModelRef => ref !== undefined),
+      ).slice(0, MAX_TIER_RESOURCES)
+    : []
 }
 
 export function parseModelRef(raw: unknown): ModelRef | undefined {
@@ -79,6 +102,66 @@ export function parseAgentTiers(raw: unknown): Readonly<Record<string, TierName>
 function parseModelessTier(raw: unknown): TierName | undefined {
   if (typeof raw !== "string") return undefined
   return TIERS.find((tier) => tier === raw)
+}
+
+/**
+ * Patch-path tier-list validation. Unlike the read path (which fills missing
+ * or unusable tiers with `[]`), a patch that names `tiers` REPLACES the whole
+ * map — silently filling an omitted key with `[]` would wipe that tier's
+ * configured resources, so every key must be present and array-typed. List
+ * contents still go through the shared normalization (drop invalid, dedupe,
+ * cap), which is repair of user-typed entries rather than data loss.
+ */
+function parseTierListsPatch(
+  raw: unknown,
+): FieldParse<Readonly<Record<TierName, readonly ModelRef[]>>> {
+  if (!isRecord(raw)) return { ok: false, error: "invalid tiers" }
+  const missing = TIERS.filter((tier) => raw[tier] === undefined)
+  if (missing.length > 0) {
+    const named = missing.map((tier) => JSON.stringify(tier)).join(", ")
+    return { ok: false, error: `invalid tiers: missing ${named}` }
+  }
+  const tiers = {} as Record<TierName, readonly ModelRef[]>
+  for (const tier of TIERS) {
+    const list = raw[tier]
+    if (!Array.isArray(list)) {
+      return { ok: false, error: `invalid tiers: ${JSON.stringify(tier)} must be an array` }
+    }
+    tiers[tier] = normalizeTierListValue(list)
+  }
+  return { ok: true, value: tiers }
+}
+
+/**
+ * Patch-path agent-tier validation. Unlike the read path (which drops invalid
+ * entries as migration-on-read repair), a patch REPLACES the whole map —
+ * silently dropping entries would let a single typo wipe the persisted hints,
+ * so any invalid entry (and an over-cap patch) is rejected with an error that
+ * names the offending field and value.
+ */
+function parseAgentTiersPatch(raw: unknown): FieldParse<Readonly<Record<string, TierName>>> {
+  if (!isRecord(raw)) return { ok: false, error: "invalid agentTiers" }
+  const entries: [string, TierName][] = []
+  for (const [agent, tier] of Object.entries(raw)) {
+    if (entries.length === MAX_AGENT_TIERS) {
+      return {
+        ok: false,
+        error: `invalid agentTiers: more than ${String(MAX_AGENT_TIERS)} entries`,
+      }
+    }
+    if (agent === "") return { ok: false, error: "invalid agentTiers: empty agent name" }
+    const parsed = parseModelessTier(tier)
+    if (parsed === undefined) {
+      return {
+        ok: false,
+        error: `invalid agentTiers entry ${describePatchValue(agent)}: ${describePatchValue(tier)}`,
+      }
+    }
+    entries.push([agent, parsed])
+  }
+  // `Object.fromEntries` creates own data properties, so even a "__proto__"
+  // key from JSON input cannot pollute the prototype here.
+  return { ok: true, value: Object.fromEntries(entries) }
 }
 
 /** Settings with nothing configured: OBSERVE, empty tiers, no pin (ADP-029/032). */
@@ -150,9 +233,9 @@ export function applyPatch(
     else mode = parsed
   }
   if (request.tiers !== undefined) {
-    const parsed = parseTierLists(request.tiers)
-    if (parsed === undefined) errors.push("invalid tiers")
-    else tiers = parsed
+    const parsed = parseTierListsPatch(request.tiers)
+    if (parsed.ok) tiers = parsed.value
+    else errors.push(parsed.error)
   }
   // `pin === null` is a meaningful clear and must not read as absence.
   if (request.pin !== undefined) {
@@ -161,9 +244,9 @@ export function applyPatch(
     else pin = parsed
   }
   if (request.agentTiers !== undefined) {
-    const parsed = parseAgentTiers(request.agentTiers)
-    if (parsed === undefined) errors.push("invalid agentTiers")
-    else agentTiers = parsed
+    const parsed = parseAgentTiersPatch(request.agentTiers)
+    if (parsed.ok) agentTiers = parsed.value
+    else errors.push(parsed.error)
   }
   if (request.inviteDismissed !== undefined) {
     if (typeof request.inviteDismissed !== "boolean") errors.push("invalid inviteDismissed")

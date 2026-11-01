@@ -19,6 +19,18 @@ export interface EscalationRequest {
 }
 
 /**
+ * Truncates to `max` UTF-16 code units without splitting a surrogate pair:
+ * a trailing high surrogate whose low half was cut is dropped, so the
+ * persisted evidence never carries a lone surrogate.
+ */
+export function truncateBounded(text: string, max: number): string {
+  if (text.length <= max) return text
+  const cut = text.slice(0, max)
+  const last = cut.charCodeAt(cut.length - 1)
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut
+}
+
+/**
  * Total parser for the tool input (the host forwards model-produced JSON, so
  * the runtime shape is untrusted even though the standard schema describes
  * it). Both fields are required, non-empty, and bounded.
@@ -31,12 +43,12 @@ export function parseEscalationRequest(input: unknown): EscalationRequest | unde
   if (typeof reason !== "string" || reason.length === 0) return undefined
   if (typeof evidence !== "string" || evidence.length === 0) return undefined
   return {
-    reason: reason.slice(0, MAX_ESCALATION_FIELD_LENGTH),
-    evidence: evidence.slice(0, MAX_ESCALATION_FIELD_LENGTH),
+    reason: truncateBounded(reason, MAX_ESCALATION_FIELD_LENGTH),
+    evidence: truncateBounded(evidence, MAX_ESCALATION_FIELD_LENGTH),
   }
 }
 
 /** One-line summary recorded as escalation evidence (bounded). */
 export function escalationDetail(request: EscalationRequest): string {
-  return `${request.reason}: ${request.evidence}`
+  return truncateBounded(`${request.reason}: ${request.evidence}`, MAX_ESCALATION_FIELD_LENGTH)
 }

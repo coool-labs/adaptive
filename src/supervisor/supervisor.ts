@@ -22,7 +22,12 @@
  *   never escalate, and the per-unit budget is finite.
  */
 import { WorkUnitTracker } from "../core/work-unit/tracker.js"
-import type { ActiveUnit, ApplyResult, ModelRef } from "../core/work-unit/types.js"
+import {
+  sameModelRef,
+  type ActiveUnit,
+  type ApplyResult,
+  type ModelRef,
+} from "../core/work-unit/types.js"
 import { INTERRUPT_REASONS } from "../core/work-unit/interruption.js"
 import type { InterruptReason } from "../core/work-unit/interruption.js"
 import { resolveRouting } from "../core/tier-policy/resolve.js"
@@ -36,7 +41,8 @@ import {
 } from "../core/scheduler/index.js"
 import type { ApplyDecision, EscalationEvidence, SchedulerInput } from "../core/scheduler/types.js"
 import { MAX_ESCALATION_EVIDENCE } from "../core/scheduler/types.js"
-import type { Demand } from "../core/compatibility/types.js"
+import type { CandidateModel, Demand } from "../core/compatibility/types.js"
+import { checkCompatibility } from "../core/compatibility/gate.js"
 import { classifyFailure, CapacityRegistry, ResourceHealthRegistry } from "../health/index.js"
 import type {
   Assessment,
@@ -64,14 +70,13 @@ import {
   forMode as retryForMode,
   planContinuation,
   selectResumable,
-  SideEffectLedger,
 } from "../execution/index.js"
-import { MAX_ESCALATION_FIELD_LENGTH, escalationDetail } from "../execution/escalation/index.js"
-import type { ContinuationPrompts, RecoveryOption } from "../execution/index.js"
+import { escalationDetail } from "../execution/escalation/index.js"
+import type { RecoveryOption } from "../execution/index.js"
 import { listCandidates, sessionOps, storageSeam } from "../adapters/opencode/index.js"
 import type { EventReport } from "../adapters/opencode/index.js"
 import { CodexCapacitySensor } from "../adapters/codex-capacity/index.js"
-import { CONTINUATION_PROMPT, logFailOpen } from "./log.js"
+import { logFailOpen } from "./log.js"
 import type { RetryHookInput, SupervisorOptions } from "./types.js"
 import { CODEX_PROVIDER_ID } from "./types.js"
 
@@ -109,13 +114,16 @@ export class Supervisor {
   readonly #health: ResourceHealthRegistry
   readonly #capacity: CapacityRegistry
   readonly #codex: CodexCapacitySensor
-  readonly #ledger = new SideEffectLedger()
   readonly #vetoes = new Map<string, number>()
   readonly #escalations = new Map<string, number>()
   readonly #admissionTiers = new Map<string, TierName>()
   /** Recorded escalation-tool requests per unit (ADP-015 agent self-reports). */
   readonly #escalationEvidence = new Map<string, EscalationEvidence[]>()
   /** Last agent observed per session (role-hint routing evidence, ADP-002). */
+  // Bounded like every other per-session map: long-lived hosts meet many
+  // short-lived subagent sessions, and agent hints for long-gone sessions
+  // are worthless. Insertion order gives the eviction (oldest hint first).
+  static readonly MAX_AGENT_HINTS = 1024
   readonly #agents = new Map<string, string>()
   /**
    * Sessions with an owned continuation prompt in flight: the prompt hook
@@ -151,6 +159,16 @@ export class Supervisor {
    * model is already applied to the very turn that triggered admission).
    */
   readonly #promptAdmission = new Map<string, { tier?: TierName }>()
+  /**
+   * Tier intent for an owned continuation (retry recovery, escalation,
+   * parked resume) set before its prompt is delivered. The continuation's
+   * prompt hook re-arms the prompt-admission marker from this so the
+   * continuation's execution-started skips re-routing — a fresh admission
+   * would flip an escalated episode back to the preferred model mid-unit
+   * (a switch only lands on the next turn). Cleared when the continuation
+   * unit opens, its prompt is rejected, or the session dies.
+   */
+  readonly #continuationTiers = new Map<string, TierName>()
   readonly #ready: Promise<SettingsV1>
   readonly #ops: ReturnType<typeof sessionOps>
 
@@ -186,7 +204,10 @@ export class Supervisor {
             // The last in-flight owned prompt never reached the host's hook:
             // its ownership mark would swallow the next user prompt's
             // admission, so it is dropped here (the hook can no longer fire).
+            // The continuation's tier intent dies with it — no episode will
+            // open to carry it.
             this.#continuationPending.delete(sessionID)
+            this.#continuationTiers.delete(sessionID)
           }
         } else {
           this.#continuationsInFlight.set(sessionID, depth - 1)
@@ -198,6 +219,25 @@ export class Supervisor {
     const loadState = async (): Promise<SettingsV1> => {
       await this.#receipts.load()
       await this.#parked.load()
+      // Unit ids are durable keys (`${sessionID}#${episode}`) persisted in
+      // receipts and parked work. Seed the tracker's per-session episode
+      // counters above every persisted id: after a restart the counters
+      // must never re-mint a colliding id, which would replace a parked
+      // record (the store parks one record per id) and misattribute
+      // receipt outcomes.
+      const floors = new Map<string, number>()
+      const bump = (unitID: string | undefined): void => {
+        if (unitID === undefined) return
+        const cut = unitID.lastIndexOf("#")
+        if (cut <= 0) return
+        const sessionID = unitID.slice(0, cut)
+        const episode = Number(unitID.slice(cut + 1))
+        if (!Number.isInteger(episode) || episode <= 0) return
+        if (episode > (floors.get(sessionID) ?? 0)) floors.set(sessionID, episode)
+      }
+      for (const receipt of this.#receipts.snapshot()) bump(receipt.unitID)
+      for (const record of this.#parked.list()) bump(record.id)
+      this.#tracker.seedEpisodes(floors)
       return this.#settings.load()
     }
     this.#ready = loadState()
@@ -248,7 +288,7 @@ export class Supervisor {
     const recorded = this.#escalationEvidence.get(unit.id) ?? []
     recorded.push({
       kind: "agent-request",
-      detail: escalationDetail({ reason, evidence }).slice(0, MAX_ESCALATION_FIELD_LENGTH),
+      detail: escalationDetail({ reason, evidence }),
     })
     this.#escalationEvidence.set(unit.id, recorded.slice(-MAX_ESCALATION_EVIDENCE))
     return true
@@ -310,6 +350,17 @@ export class Supervisor {
         return
       case "model-request":
         if (report.agent !== undefined) {
+          if (
+            !this.#agents.has(report.sessionID) &&
+            this.#agents.size >= Supervisor.MAX_AGENT_HINTS
+          ) {
+            // The guard above ensures the map is at its cap (>= 1 entries),
+            // so the first key always exists; the assertion avoids a branch
+            // the coverage gate would reject as unreachable.
+            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+            const oldest = this.#agents.keys().next().value!
+            this.#agents.delete(oldest)
+          }
           this.#agents.set(report.sessionID, report.agent)
         }
         this.#tracker.apply({
@@ -343,7 +394,19 @@ export class Supervisor {
    */
   async #onPrompt(sessionID: string, settings: SettingsV1): Promise<void> {
     if (settings.mode !== "control") return
-    if (this.#continuationPending.delete(sessionID)) return
+    if (this.#continuationPending.delete(sessionID)) {
+      // An owned continuation (retry recovery, escalation, parked resume)
+      // already owns this unit's routing: re-arm the admission marker from
+      // the continuation's tier intent so execution-started skips a fresh
+      // (continuation-unaware) admission.
+      const tier = this.#continuationTiers.get(sessionID)
+      this.#promptAdmission.set(sessionID, tier !== undefined ? { tier } : {})
+      return
+    }
+    // A fresh user prompt cancels any stale continuation intent and marker:
+    // this admission re-routes from scratch.
+    this.#continuationTiers.delete(sessionID)
+    this.#promptAdmission.delete(sessionID)
     // A pending probe ticket from an earlier prompt admission (or a failed
     // recovery) can only be carried by the unit the ORIGINAL prompt opens;
     // a fresh admission means that episode never ran, so the ticket re-arms
@@ -403,12 +466,13 @@ export class Supervisor {
     // discard it and re-route an already-admitted turn.
     const admitted = this.#promptAdmission.get(report.sessionID)
     // A superseding start closes the previous episode — release its
-    // per-unit bookkeeping (ledger marks, veto budget) too.
+    // per-unit bookkeeping (veto budget) too.
     this.#afterUnitClose(opened)
     // The prompt hook already admitted and applied for this unit — carry the
     // tier into escalation context and skip re-routing.
     if (admitted !== undefined) {
       this.#promptAdmission.delete(report.sessionID)
+      this.#continuationTiers.delete(report.sessionID)
       if (admitted.tier !== undefined) this.#admissionTiers.set(unit.id, admitted.tier)
       // The prompt-time admission receipt was recorded before this unit
       // existed; adopt it so outcomes attach to it like any unit receipt.
@@ -481,6 +545,10 @@ export class Supervisor {
     }
     const input: SchedulerInput = {
       routing,
+      // The host exposes no per-episode demand source in the v2 wiring
+      // (no tool/modality/context requirement reaches the plugin), so the
+      // compatibility gate runs on availability metadata only. Documented
+      // limitation — see TEST_STRATEGY "Compatibility gate demand".
       demand: {} satisfies Demand,
       inventory,
       tierCandidates,
@@ -639,6 +707,40 @@ export class Supervisor {
   }
 
   /**
+   * Escalation targets must be usable: the scheduler contract hands
+   * planEscalation "already gated" resources, so the wiring filters the next
+   * tier's configured refs to candidates that exist in the inventory, pass
+   * the compatibility gate, are not health-blocked, and differ from the
+   * model that just failed. Evaluated WITHOUT probe admission (evaluate,
+   * not assess) — gating an escalation must never flip a breaker or strand
+   * an unowned ticket.
+   */
+  async #eligibleEscalationTargets(
+    refs: readonly ModelRef[],
+    failed: ModelRef,
+  ): Promise<ModelRef[]> {
+    let inventory: readonly CandidateModel[]
+    try {
+      inventory = await listCandidates(this.#options.model)
+    } catch (error) {
+      // No inventory means no verifiable target: escalating would switch
+      // blind, so the budget is kept instead of burned.
+      logFailOpen("escalation", error)
+      return []
+    }
+    const eligible: ModelRef[] = []
+    for (const ref of refs) {
+      if (sameModelRef(ref, failed)) continue
+      const candidate = inventory.find((entry) => sameModelRef(candidateRef(entry), ref))
+      if (candidate === undefined) continue
+      if (!checkCompatibility(candidate, {} satisfies Demand).compatible) continue
+      if (this.#health.evaluate(refKey(ref)).kind !== "available") continue
+      eligible.push(ref)
+    }
+    return eligible
+  }
+
+  /**
    * Escalation on a terminally failed unit (ADP-015..017): structured
    * capability evidence only, same-model variant first then next tier,
    * finite budget. Control continues the interrupted work on the escalated
@@ -667,26 +769,30 @@ export class Supervisor {
       ...toolEvidence,
       { kind: "repeated-failure", detail: classification.category },
     ]
+    const nextResources = next !== undefined ? settings.tiers[next] : []
+    const eligible = await this.#eligibleEscalationTargets(nextResources, model)
     const plan = planEscalation({
       currentModel: model,
       currentTier: admissionTier,
-      nextTierResources: next !== undefined ? settings.tiers[next] : [],
+      nextTierResources: eligible,
       evidence,
       budget: { used: escalationUsed, max: MAX_ESCALATIONS_PER_UNIT },
     })
     const wrapped = schedulerForMode(plan, settings.mode)
     if (wrapped.kind === "escalate") {
       this.#escalations.set(unitID, escalationUsed + 1)
+      // Recorded unit-less on purpose: the receipt describes the CONTINUATION
+      // decision, so the continuation unit adopts it and its outcome attaches
+      // here (the failed unit's own outcome attaches to its apply receipt).
       await this.#recordReceipt({
         sessionID: report.sessionID,
-        unitID,
         tier: wrapped.tier,
         decision: wrapped,
       })
       // Continue the interrupted work on the escalated resource; the unit is
       // terminally failed, so an ops failure is only logged (never parked).
       try {
-        await this.#ownRecovery(report.sessionID, wrapped.target)
+        await this.#ownRecovery(report.sessionID, wrapped.target, wrapped.tier)
       } catch (error) {
         logFailOpen("escalation-ops", error)
       }
@@ -753,7 +859,6 @@ export class Supervisor {
           ? closed.superseded?.id
           : undefined
     if (unitID !== undefined) {
-      this.#ledger.forget(unitID)
       this.#vetoes.delete(unitID)
       this.#escalations.delete(unitID)
       this.#admissionTiers.delete(unitID)
@@ -773,7 +878,10 @@ export class Supervisor {
       // keeps the wipe out of an in-flight continuation's mark window (its
       // own close events are pumped concurrently with the mark).
       const sid = closed.unit.sessionID
-      if ((this.#continuationsInFlight.get(sid) ?? 0) === 0) {
+      // A continuation tier intent pins the marker: the failed unit's close
+      // event can arrive after the continuation's prompt hook set it, and
+      // wiping then would re-route the continuation unit.
+      if ((this.#continuationsInFlight.get(sid) ?? 0) === 0 && !this.#continuationTiers.has(sid)) {
         this.#continuationPending.delete(sid)
         this.#promptAdmission.delete(sid)
       }
@@ -817,6 +925,7 @@ export class Supervisor {
     let recovery: RecoveryOption = { kind: "none" }
     let routingTier: TierName | undefined
     let probeTicket: ProbeTicket | undefined
+    let admission: ReturnType<typeof admit> | undefined
     try {
       const {
         routing,
@@ -825,6 +934,7 @@ export class Supervisor {
       } = await this.#admit(settings, input.sessionID)
       routingTier = routing.kind === "pin" ? undefined : routing.tier
       if (decision.kind === "apply") {
+        admission = decision
         recovery = {
           kind: "switch",
           model: decision.model,
@@ -842,6 +952,7 @@ export class Supervisor {
     const vetoesUsed = unitID !== undefined ? (this.#vetoes.get(unitID) ?? 0) : 0
     const core = decideRetry({
       classification,
+      failingModel: input.model,
       native: input.decision,
       recovery,
       vetoesUsed,
@@ -872,7 +983,20 @@ export class Supervisor {
       }
       this.#sessionProbeTickets.set(input.sessionID, probeTicket)
     }
-    void this.#ownRecovery(input.sessionID, wrapped.model)
+    // The continuation episode is not re-admitted — its prompt hook is
+    // consumed as an owned continuation — so the recovery admission is
+    // recorded here, unit-less; the unit that opens next adopts this receipt
+    // and carries the outcome.
+    // A veto implies the admission was an apply: the recovery option exists
+    // only when the fresh admission selected a resource, so the assertion
+    // cannot be undefined on this path.
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- see justification above
+    await this.#recordReceipt({
+      sessionID: input.sessionID,
+      tier: routingTier,
+      decision: admission!,
+    })
+    void this.#ownRecovery(input.sessionID, wrapped.model, routingTier)
       .then(() => undefined)
       .catch(async (error: unknown) => {
         logFailOpen("recovery-ops", error)
@@ -902,17 +1026,29 @@ export class Supervisor {
       })
   }
 
-  /** Owned horizontal recovery: settle → switch → continue from session state. */
-  async #ownRecovery(sessionID: string, model: ModelRef): Promise<void> {
+  /**
+   * Owned horizontal recovery: settle → switch → continue from session
+   * state. `tier` is the continuation unit's routing tier — recorded so the
+   * continuation's prompt hook re-arms the admission marker (the unit must
+   * not be re-routed: that would discard the recovery/escalation decision).
+   */
+  async #ownRecovery(sessionID: string, model: ModelRef, tier?: TierName): Promise<void> {
+    if (tier !== undefined) this.#continuationTiers.set(sessionID, tier)
     const alive = await this.#isSessionAlive(sessionID)
     const recovery: RecoveryOption = { kind: "switch", model }
     const action = planContinuation({
       recovery,
-      sideEffects: true,
       continuationPossible: alive,
     })
-    const prompts: ContinuationPrompts = { continuation: CONTINUATION_PROMPT, original: "" }
-    await executeContinuation({ sessionID, action, sideEffects: true, prompts, ops: this.#ops })
+    try {
+      await executeContinuation({ sessionID, action, ops: this.#ops })
+    } catch (error) {
+      // The continuation prompt never reached the host, so no unit will open
+      // to consume the tier intent — drop it or it would pin the marker
+      // wipes and mislabel a later user prompt's admission.
+      if (tier !== undefined) this.#continuationTiers.delete(sessionID)
+      throw error
+    }
   }
 
   // ---------- parked-work resume (safe boundary: idle) ----------
@@ -931,8 +1067,23 @@ export class Supervisor {
     for (const dropped of plan.drop) {
       await this.#dropParked(dropped)
     }
+    // At most ONE continuation per session per sweep: prompting a session
+    // with an active unit would supersede the user's in-flight episode (not
+    // a safe boundary), and several back-to-back continuation prompts could
+    // redo work an earlier one already completed (ADP-023).
+    const attempted = new Set<string>()
     for (const record of plan.attempt) {
+      if (this.#tracker.active(record.sessionID) !== undefined) continue
+      if (attempted.has(record.sessionID)) continue
+      attempted.add(record.sessionID)
       await this.#resumeAttempt(record, settings)
+    }
+    for (const [sessionID, isAlive] of alive) {
+      if (!isAlive) {
+        this.#continuationTiers.delete(sessionID)
+        this.#promptAdmission.delete(sessionID)
+        this.#continuationPending.delete(sessionID)
+      }
     }
   }
 
@@ -974,8 +1125,19 @@ export class Supervisor {
     }
     const popped = await this.#popParked(record)
     if (popped === undefined) return
+    // The resume continuation is not re-admitted (owned continuation), so
+    // the freshly routed admission is recorded here, unit-less; the unit
+    // that opens next adopts it and carries the outcome.
+    await this.#recordReceipt({
+      sessionID: record.sessionID,
+      tier: record.tier,
+      decision,
+    })
+    // The resume continuation is an owned recovery: settle first, apply the
+    // freshly routed model, then prompt — the episode's first LLM call must
+    // not hit the model the work was parked away from.
     try {
-      await this.#ops.prompt(record.sessionID, CONTINUATION_PROMPT)
+      await this.#ownRecovery(record.sessionID, decision.model, record.tier)
     } catch (error) {
       logFailOpen("resume", error)
       await this.#rePark(record)
@@ -993,7 +1155,11 @@ export class Supervisor {
 
   async #rePark(record: ParkedRecord): Promise<void> {
     try {
-      await this.#parked.park({ ...record, parkedAt: this.#options.clock() })
+      await this.#parked.park({
+        ...record,
+        attempts: (record.attempts ?? 0) + 1,
+        parkedAt: this.#options.clock(),
+      })
     } catch (error) {
       logFailOpen("parked", error)
     }

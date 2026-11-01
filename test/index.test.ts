@@ -12,7 +12,7 @@ import { SETTINGS_KEY } from "../src/state/settings/types.js"
 import { parseReceiptsPayload } from "../src/state/receipts/index.js"
 import { makeInfo, fakeEvents, wireRef } from "./adapters/opencode/helpers.js"
 import type { ModelSource } from "../src/adapters/opencode/index.js"
-import { CONTINUATION_PROMPT } from "../src/supervisor/log.js"
+import { CONTINUATION_PROMPT } from "../src/execution/index.js"
 import {
   FakeSupervisorSession,
   KeyFailStorage,

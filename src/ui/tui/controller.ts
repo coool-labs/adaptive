@@ -260,11 +260,26 @@ async function runReceiptsView(env: AdaptiveEnv): Promise<void> {
     await env.view.alert({ title: "Receipts", message: "No decisions recorded yet." })
     return
   }
-  const pick = await env.view.select({
-    title: `Receipts (${String(list.length)}, newest first)`,
-    options: receiptPage(list).map((receipt) => ({ title: receiptLine(receipt), value: receipt })),
-  })
-  if (pick !== undefined) {
+  // Paginated browse: every page is a bounded view, and "Next page" reaches
+  // the rest of the list the title count promises. Viewing a detail returns
+  // to the same page; Escape (undefined pick) leaves the browser.
+  for (let offset = 0; ;) {
+    const page = receiptPage(list.slice(offset))
+    const hasNext = offset + RECEIPTS_PAGE_SIZE < list.length
+    const options: SelectOption<Receipt | "next">[] = page.map((receipt) => ({
+      title: receiptLine(receipt),
+      value: receipt,
+    }))
+    if (hasNext) options.push({ title: "Next page", value: "next" })
+    const pick = await env.view.select({
+      title: `Receipts (${String(list.length)}, newest first)`,
+      options,
+    })
+    if (pick === undefined) return
+    if (pick === "next") {
+      offset += RECEIPTS_PAGE_SIZE
+      continue
+    }
     await env.view.alert({ title: `Receipt #${String(pick.id)}`, message: receiptDetail(pick) })
   }
 }

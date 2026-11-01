@@ -108,6 +108,20 @@ describe("WorkUnitTracker", () => {
     expect(tracker.lastModel(SID_A)).toBeUndefined()
   })
 
+  it("seedEpisodes raises the per-session floor so ids are never reused after restart (C2)", () => {
+    const tracker = new WorkUnitTracker()
+    tracker.seedEpisodes(new Map([[SID_A, 3]]))
+    const result = tracker.apply(started(SID_A, 100))
+    expect(result.kind === "opened" && result.unit.id).toBe(`${SID_A}#4`)
+    // A session without a seed starts at 1 as before.
+    const other = tracker.apply(started(SID_B, 100))
+    expect(other.kind === "opened" && other.unit.id).toBe(`${SID_B}#1`)
+    // Seeding never lowers an existing counter.
+    tracker.seedEpisodes(new Map([[SID_A, 1]]))
+    const next = tracker.apply(started(SID_A, 200))
+    expect(next.kind === "opened" && next.unit.id).toBe(`${SID_A}#5`)
+  })
+
   it("keeps a tool continuation inside the same unit", () => {
     const tracker = new WorkUnitTracker()
     tracker.apply(started(SID_A, 100))

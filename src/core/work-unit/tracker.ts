@@ -41,6 +41,19 @@ export class WorkUnitTracker {
     this.#pendingOwn.set(sessionID, model)
   }
 
+  /**
+   * Raises each session's episode floor. Used at startup: unit ids are
+   * durable keys (`${sessionID}#${episode}`) persisted in receipts and
+   * parked work, so after a restart the counters must never re-mint an id
+   * a persisted record already carries — a collision would replace parked
+   * work and misattribute receipt outcomes.
+   */
+  seedEpisodes(seeds: ReadonlyMap<string, number>): void {
+    for (const [sessionID, episode] of seeds) {
+      if (episode > (this.#episodes.get(sessionID) ?? 0)) this.#episodes.set(sessionID, episode)
+    }
+  }
+
   /** Apply an execution-started event; the tracker always opens a unit. */
   apply(event: Extract<WorkUnitEvent, { kind: "execution-started" }>): OpenedResult
   apply(event: WorkUnitEvent): ApplyResult

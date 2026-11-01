@@ -23,6 +23,8 @@ export type RecoveryOption =
 export interface RetryInput {
   /** Classification of the failure that triggered the retry hook. */
   readonly classification: FailureClassification
+  /** The resource whose execution just failed. */
+  readonly failingModel: ModelRef
   /** The host's own retry decision; left untouched unless we veto. */
   readonly native: NativeRetryDecision
   readonly recovery: RecoveryOption

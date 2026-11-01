@@ -26,6 +26,7 @@ Documented limitations (minimal proofs per GOAL):
 - **Draining** is unit-covered only: the drain health event has no runtime emitter in the host wiring (verified by source search); no runtime trigger exists.
 - **Variant/effort escalation** is unit-covered: escalating at runtime requires a model inventory entry with a variant ladder; the fake provider's host config exposes none, and strength is never guessed from variant names (ADP-004).
 - **Native `/goal` through a mid-goal model transition** is impossible on host 2.2.5: goal auto-continuation turns run inside one execution unit with no prompt hook and no execution boundary between them; the lifecycle /goal test instead proves the GOAL.md flow (goal starts → preferred fails → veto → owned recovery continues the goal on the fallback → completes → preferred again at the next boundary) and records the limitation.
+- **Compatibility-gate demand is empty in production**: the host exposes no per-episode demand source (tools/modalities/context tokens) in the v2 wiring, so runtime admission passes `demand: {}` and only the `model-unavailable` dimension can fire live; the remaining gate dimensions (tools, modalities, context capacity, variant availability) are exercised at the unit layer (`checkCompatibility` tests). The `drain`/`reset` health-event kinds are likewise requirement-driven surfaces with no runtime producer; capacity signals flow through `CapacityRegistry` directly.
 
 ## Web E2E journeys (ADP-042)
 

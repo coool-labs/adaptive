@@ -19,7 +19,6 @@ describe("planContinuation", () => {
     expect(
       planContinuation({
         recovery: { kind: "none" },
-        sideEffects: true,
         continuationPossible: true,
       }),
     ).toEqual({
@@ -31,7 +30,6 @@ describe("planContinuation", () => {
     expect(
       planContinuation({
         recovery: { kind: "none" },
-        sideEffects: false,
         continuationPossible: false,
       }),
     ).toEqual({
@@ -44,7 +42,6 @@ describe("planContinuation", () => {
     expect(
       planContinuation({
         recovery: switchRecovery(model),
-        sideEffects: false,
         continuationPossible: true,
       }),
     ).toEqual({ kind: "in-session", model })
@@ -54,7 +51,6 @@ describe("planContinuation", () => {
     const model = ref("p", "m")
     const planned = planContinuation({
       recovery: switchRecovery(model, "probe-1"),
-      sideEffects: true,
       continuationPossible: true,
     })
     expect(planned).toEqual({ kind: "in-session", model, probeId: "probe-1" })
@@ -66,25 +62,13 @@ describe("planContinuation", () => {
     expect(
       planContinuation({
         recovery: switchRecovery(model),
-        sideEffects: true,
-        continuationPossible: false,
-      }),
-    ).toEqual({ kind: "clean-continuation" })
-  })
-
-  it("plans a clean continuation even without side effects when nothing else is possible", () => {
-    const model = ref("p", "m")
-    expect(
-      planContinuation({
-        recovery: switchRecovery(model),
-        sideEffects: false,
         continuationPossible: false,
       }),
     ).toEqual({ kind: "clean-continuation" })
   })
 
   it("is deterministic", () => {
-    const input = { recovery: switchRecovery(ref()), sideEffects: true, continuationPossible: true }
+    const input = { recovery: switchRecovery(ref()), continuationPossible: true }
     expect(planContinuation(input)).toEqual(planContinuation(input))
   })
 })
@@ -108,7 +92,6 @@ describe("planContinuation properties", () => {
 
   const inputArb = fc.record({
     recovery: recoveryArb,
-    sideEffects: fc.boolean(),
     continuationPossible: fc.boolean(),
   })
 

@@ -232,23 +232,24 @@ describe("ParkedWorkStore", () => {
     expect(garbage.list()).toEqual([])
   })
 
-  test("park write failure propagates but keeps the record in memory", async () => {
+  test("park write failure propagates and memory stays unchanged", async () => {
     const storage = new FakeParkedStorage()
     const store = new ParkedWorkStore(storage)
     storage.failWrite()
     const pending = store.park(record())
     await expect(pending).rejects.toThrow("storage write failed")
-    expect(store.count()).toBe(1)
+    expect(store.count()).toBe(0)
   })
 
-  test("resume write failure propagates but keeps removal in memory", async () => {
+  test("resume write failure propagates and the record stays parked", async () => {
     const storage = new FakeParkedStorage()
     const store = new ParkedWorkStore(storage)
     await store.park(record())
     storage.failWrite()
     const pending = store.resume("s#1")
     await expect(pending).rejects.toThrow("storage write failed")
-    expect(store.count()).toBe(0)
+    expect(store.count()).toBe(1)
+    expect(store.list()[0]?.id).toBe("s#1")
   })
 })
 

@@ -12,9 +12,15 @@
  *   the resource degraded. They never hard-quarantine on their own: a single
  *   definitive outage signal can be a blip, so the breaker owns transient
  *   failure quarantine with backoff windows and probe recovery.
- * - The `definitive` flag is scheduling evidence (deference, ADP-012), not a
- *   health input: health states track what is known about the resource, and
- *   both definitive and non-definitive infra failures leave it degraded.
+ * - Definitive configuration failures (auth, invalid model) hard-quarantine
+ *   the resource: the evidence proves the resource cannot work. Non-definitive
+ *   evidence of the same categories (the textual last resort, ADP-008) is
+ *   transient and breaker-owned instead — one fuzzy substring in an error
+ *   body must never permanently blacklist a resource with no recovery path
+ *   (ADP-012).
+ * - The `definitive` flag otherwise guides scheduling deference, not health:
+ *   both definitive and non-definitive infra failures leave the resource
+ *   degraded.
  * - Ambiguous or request-level failures (context overflow, content policy,
  *   user cancellation, unknown) never change health: they say nothing about
  *   the resource.
@@ -103,13 +109,23 @@ function failureEvent(
       return { ...record, health, breaker: breaker.record, updatedAt: now }
     }
     case "auth_failure":
-      return { ...record, health: "unavailable", updatedAt: now }
     case "invalid_model": {
       // An invalid model says nothing about the provider or account; only
       // model-scoped and variant-scoped keys may be quarantined by it.
-      const scope = resourceScope(record.key)
-      if (scope !== "model" && scope !== "variant") {
-        return touched(record, now)
+      if (event.category === "invalid_model") {
+        const scope = resourceScope(record.key)
+        if (scope !== "model" && scope !== "variant") {
+          return touched(record, now)
+        }
+      }
+      if (!event.definitive) {
+        // Non-definitive evidence (bounded-textual last resort) is not proof
+        // the resource cannot work: quarantine through the breaker's bounded
+        // failure counting instead of a windowless, unrecoverable state.
+        const breaker = recordBreakerFailure(record.breaker, event.category, now, config.breaker)
+        const health =
+          record.health === "healthy" || record.health === "draining" ? "degraded" : record.health
+        return { ...record, health, breaker: breaker.record, updatedAt: now }
       }
       return { ...record, health: "unavailable", updatedAt: now }
     }

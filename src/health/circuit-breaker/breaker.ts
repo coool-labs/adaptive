@@ -91,6 +91,29 @@ export type ProbeAdmission =
  * returned record synchronously; the returned record carries no probeId — the
  * registry stamps its own ticket id on the persisted copy.
  */
+/**
+ * Non-mutating wait computation for an open breaker, admission view: the
+ * remaining backoff in ms, or `undefined` when the window has elapsed (or the
+ * record is not open). Used to decide whether a probe may be admitted.
+ */
+export function breakerWait(record: BreakerRecord, now: number): number | undefined {
+  if (record.state !== "open") return undefined
+  const reopenAt = record.reopenAt
+  if (reopenAt !== undefined && now < reopenAt) return reopenAt - now
+  return undefined
+}
+
+/**
+ * Non-mutating block computation for an open breaker, observer view: an open
+ * breaker blocks regardless of elapsed backoff — recovery counts only once a
+ * probe proved it — so an elapsed (or, unreachable through the state machine,
+ * missing) stamp simply means zero remaining wait.
+ */
+export function breakerBlockWait(record: BreakerRecord, now: number): number | undefined {
+  if (record.state !== "open") return undefined
+  return Math.max(0, (record.reopenAt ?? 0) - now)
+}
+
 export function admitProbe(record: BreakerRecord, now: number): ProbeAdmission {
   if (record.state === "closed") {
     return { kind: "closed", record }
@@ -98,9 +121,9 @@ export function admitProbe(record: BreakerRecord, now: number): ProbeAdmission {
   if (record.state === "half_open") {
     return { kind: "in-flight", record }
   }
-  const reopenAt = record.reopenAt
-  if (reopenAt !== undefined && now < reopenAt) {
-    return { kind: "waiting", record, retryAtMs: reopenAt - now }
+  const wait = breakerWait(record, now)
+  if (wait !== undefined) {
+    return { kind: "waiting", record, retryAtMs: wait }
   }
   return {
     kind: "admitted",
@@ -114,6 +137,27 @@ export function recordProbeSuccess(record: BreakerRecord): BreakerRecord {
     return record
   }
   return { state: "closed", failures: 0, openCount: 0 }
+}
+
+/**
+ * Expires a probe whose episode never reported an outcome. A lost probe is
+ * no health evidence: the breaker re-arms the SAME backoff window (no
+ * doubling) so a fresh probe can be admitted after it. Evaluated lazily by
+ * the registry's assessment sweep — there are no timers.
+ */
+export function expireProbe(
+  record: BreakerRecord,
+  now: number,
+  config: BreakerConfig,
+): BreakerRecord {
+  if (
+    record.state !== "half_open" ||
+    record.probeAt === undefined ||
+    now - record.probeAt < config.probeTimeoutMs
+  ) {
+    return record
+  }
+  return openBreaker(record, record.openCount, now, config)
 }
 
 /**

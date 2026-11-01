@@ -214,7 +214,14 @@ function parseReceipt(raw: unknown): Receipt | undefined {
   }
   const unitID = parseOptionalBounded(raw["unitID"])
   const tier = parseTier(raw["tier"])
-  const outcome = raw["outcome"] === undefined ? undefined : parseOutcome(raw["outcome"])
+  // A present-but-invalid outcome invalidates the whole record: stripping
+  // just the outcome would break first-outcome-wins across a restart (the
+  // receipt would accept a later, different outcome as its first).
+  let outcome: ReceiptOutcome | undefined
+  if (raw["outcome"] !== undefined) {
+    outcome = parseOutcome(raw["outcome"])
+    if (outcome === undefined) return undefined
+  }
   return {
     id,
     at,

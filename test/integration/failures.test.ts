@@ -111,22 +111,49 @@ describe("fault-injection matrix", () => {
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
     await startTracking(supervisor, ref("prov", "a"))
+    // A tier sibling gives the veto a real horizontal target: without one,
+    // vetoing into a same-model "switch" would only discard OpenCode's
+    // backoff and immediately re-prompt the resource that just failed.
+    seed(
+      storage,
+      SETTINGS_KEY,
+      settingsJSON("control", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
+    )
+    // A rate-limited a carries a hard-block window, so fresh admission
+    // selects the sibling b as the recovery candidate.
+    await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 429 })
     const input = intervalAttempt(1, 100)
     input.error = { type: "UnknownError", message: "", status: 408 }
     await supervisor.handleRetry(input)
     // Timeout is definitive infrastructure failure: veto native retry and
-    // continue the work on the recovery candidate that fresh routing picks.
-    // A single 408 only degrades a (no window, breaker closed), so fresh
-    // admission legitimately re-selects a — the settle-first continuation
-    // still avoids OpenCode's immediate native retry.
+    // continue the work on the tier sibling fresh routing picks (a is only
+    // degraded by a single 408, so admission re-selects it first; the
+    // settle-first continuation then moves the episode onto b).
     expect(input.decision).toEqual({ retry: false })
     await flush()
     expect(session.log).toEqual([
       "switch:s1:prov/a",
       "wait:s1",
-      "switch:s1:prov/a",
+      "switch:s1:prov/b",
       "prompt:s1:Continue the interrupted work from the current session state. Do not repeat completed work; resume from what the session already produced.",
     ])
+  })
+
+  it("leaves a same-model recovery to native retry (E3 regression)", async () => {
+    const storage = controlStorage()
+    const session = new FakeSupervisorSession()
+    const supervisor = makeSupervisor({ storage, session })
+    await startTracking(supervisor, ref("prov", "a"))
+    const input = intervalAttempt(1, 100)
+    input.error = { type: "UnknownError", message: "", status: 408 }
+    await supervisor.handleRetry(input)
+    // The only tier candidate is the model that just failed: vetoing would
+    // replace the host's backoff-honoring retry with an immediate re-prompt
+    // of the same resource. Native retry stands; the admission still applies
+    // the ready resource for future turns, but no owned continuation runs.
+    expect(input.decision).toEqual({ retry: true, delay: 100 })
+    await flush()
+    expect(session.log).toEqual(["switch:s1:prov/a"])
   })
 
   it("leaves ambiguous failures (no status) to native retry", async () => {

@@ -17,6 +17,7 @@ interface FakeView extends AdaptiveView {
   alerts: { title: string; message: string }[]
   toasts: { message: string; variant?: string }[]
   selects: string[]
+  selectOptions: { title: string; value: unknown }[][]
 }
 
 function fakeView(): FakeView {
@@ -26,10 +27,12 @@ function fakeView(): FakeView {
     alerts: [] as { title: string; message: string }[],
     toasts: [] as { message: string; variant?: string }[],
     selects: [] as string[],
+    selectOptions: [] as { title: string; value: unknown }[][],
   }
   const view: AdaptiveView = {
     select: (spec) => {
       state.selects.push(spec.title)
+      state.selectOptions.push(spec.options.map((option) => ({ ...option })))
       const next = state.selectQueue.shift()
       return next as never
     },
@@ -528,6 +531,25 @@ describe("controller: receipts branch", () => {
     e.view.selectQueue.push("receipts", undefined, ...EXIT)
     await runAdaptive(e)
     expect(e.view.alerts).toEqual([])
+  })
+
+  it("paginates the receipts browser instead of hiding receipts past the first page (A8)", async () => {
+    const many: Receipt[] = Array.from({ length: 25 }, (_, index) =>
+      receipt({ id: index + 1, decision: { kind: "defer", reason: "routing-defer" } }),
+    )
+    const e = env({ api: fakeApi({ receipts: () => Promise.resolve(many) }) })
+    // Browse: open receipts → next page → pick the last receipt → detail → leave.
+    e.view.selectQueue.push("receipts", "next", many[24], undefined)
+    await runAdaptive(e)
+
+    // Page 1 of the browser (selectOptions[0] is the main menu).
+    expect(e.view.selectOptions[1]).toHaveLength(21)
+    expect(e.view.selectOptions[1]?.at(-1)).toEqual({ title: "Next page", value: "next" })
+    // Second page: the remaining 5 receipts, no further page.
+    expect(e.view.selectOptions[2]).toHaveLength(5)
+    expect(e.view.selectOptions[2]?.some((option) => option.title === "Next page")).toBe(false)
+    // The picked receipt's detail was shown.
+    expect(e.view.alerts[0]?.title).toContain("#25")
   })
 })
 

@@ -11,6 +11,8 @@ import { defaultSettings } from "./parse.js"
 
 export class SettingsStore {
   #current: SettingsV1 = defaultSettings()
+  /** Tail of the update chain; keeps awaiting updates serialized. */
+  #queue: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly storage: SettingsStorage) {}
 
@@ -35,12 +37,21 @@ export class SettingsStore {
     return this.#current
   }
 
-  /** Validate, persist, then adopt. Invalid patches change nothing. */
-  async update(patch: SettingsPatch): Promise<PatchResult> {
-    const result = applyPatch(this.#current, patch)
-    if (!result.ok) return result
-    await this.storage.write(result.settings)
-    this.#current = result.settings
-    return result
+  /**
+   * Validate, persist, then adopt. Invalid patches change nothing. Updates
+   * serialize through a promise chain so two concurrent callers cannot both
+   * patch the same base snapshot and lose one write (the chain swallows
+   * rejections — a failed update must not poison the next one).
+   */
+  update(patch: SettingsPatch): Promise<PatchResult> {
+    const run = this.#queue.then(async () => {
+      const result = applyPatch(this.#current, patch)
+      if (!result.ok) return result
+      await this.storage.write(result.settings)
+      this.#current = result.settings
+      return result
+    })
+    this.#queue = run.catch(() => undefined)
+    return run
   }
 }

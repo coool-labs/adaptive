@@ -52,4 +52,19 @@ describe("adaptiveRpc definition", () => {
     expect(validate(schema, { version: 1 })).toEqual({ value: { version: 1 } })
     expect("issues" in validate(schema, 3)).toBe(true)
   })
+
+  it("gate failures name the expectation, not just 'invalid input'", () => {
+    const firstIssue = (result: Result | Promise<Result>): string | undefined => {
+      if (result instanceof Promise) return undefined
+      return "issues" in result ? result.issues[0]?.message : undefined
+    }
+    const setInput = adaptiveRpc.methods["settings.set"].input
+    expect(firstIssue(validate(setInput, null))).toBe("input must be an object")
+    const voidInput = adaptiveRpc.methods["settings.get"].input
+    expect(firstIssue(validate(voidInput, 1))).toBe("unexpected input: no input expected")
+    const listOutput = adaptiveRpc.methods["receipts.list"].output
+    expect(firstIssue(validate(listOutput, {}))).toBe("output must be an array")
+    const event = adaptiveRpc.events["settings-changed"].schema
+    expect(firstIssue(validate(event, 3))).toBe("event data must be an object")
+  })
 })

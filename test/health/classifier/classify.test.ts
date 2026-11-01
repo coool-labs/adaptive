@@ -41,9 +41,12 @@ const KNOWN_STRUCTURED_TYPES = [
 function expectConsistentPolicy(c: FailureClassification): void {
   expect(FAILOVER_ELIGIBLE.has(c.category)).toBe(c.failoverEligible)
   expect(RETRYABLE.has(c.category)).toBe(c.retry.retryable)
+  // A present retryAfterMs is a KNOWN RESET TIME, not a recommendation to
+  // retry: non-retryable categories (quota exhaustion) carry it so the health
+  // layer can lift the block when the window resets.
   if (c.retry.retryAfterMs !== undefined) {
-    expect(c.retry.retryable).toBe(true)
     expect(c.retry.retryAfterMs).toBeGreaterThanOrEqual(0)
+    expect(c.retry.retryAfterMs).toBeLessThanOrEqual(24 * 60 * 60 * 1000)
   }
   expect(EVIDENCE_LAYERS).toContain(c.layer)
   if (c.layer === "textual" || c.layer === "none") {
@@ -220,6 +223,27 @@ describe("classifyFailure: retry-after extraction", () => {
       status: 429,
     })
     expect(c2.retry.retryAfterMs).toBeUndefined()
+  })
+
+  it("carries the known reset through a non-retryable quota classification", () => {
+    // The health layer needs the quota window even though the classification
+    // is non-retryable: without it the resource would block forever.
+    const c = classifyFailure({
+      status: 429,
+      headers: {
+        "x-ratelimit-remaining-requests": "0",
+        "retry-after": "3600",
+      },
+    })
+    expect(c.category).toBe("quota_exhausted")
+    expect(c.retry.retryable).toBe(false)
+    expect(c.retry.retryAfterMs).toBe(3_600_000)
+  })
+
+  it("caps absurd Retry-After values at one day", () => {
+    const c = classifyFailure({ status: 429, headers: { "retry-after": "999999999" } })
+    expect(c.retry.retryable).toBe(true)
+    expect(c.retry.retryAfterMs).toBe(24 * 60 * 60 * 1000)
   })
 
   it("classifies Retry-After without a decisive status as non-definitive rate limiting", () => {

@@ -16,9 +16,35 @@ import type {
 
 /**
  * Response bodies are bounded here (and bounded again by the classifier) so a
- * hostile provider payload can never inflate memory or receipts.
+ * hostile provider payload can never inflate memory or receipts. The excerpt
+ * is read with a streaming reader and the stream is cancelled once the cap is
+ * reached — a multi-megabyte body never materializes in memory.
  */
 export const BODY_EXCERPT_LENGTH = 512
+
+/**
+ * Reads at most `BODY_EXCERPT_LENGTH` characters from the response body via a
+ * streaming reader, cancelling the underlying stream when the cap is reached.
+ * Returns `undefined` for missing or empty bodies.
+ */
+async function readBodyExcerpt(response: Response): Promise<string | undefined> {
+  const reader = response.body?.getReader()
+  if (reader === undefined) return undefined
+  const decoder = new TextDecoder()
+  let text = ""
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    text += decoder.decode(value, { stream: true })
+    if (text.length >= BODY_EXCERPT_LENGTH) {
+      // Fire-and-forget: cancellation failure must not fail the observation.
+      void reader.cancel().catch(() => undefined)
+      break
+    }
+  }
+  text = text.slice(0, BODY_EXCERPT_LENGTH)
+  return text === "" ? undefined : text
+}
 
 /** Capture bounds for wiring-selected telemetry headers. */
 export const MAX_CAPTURED_HEADERS = 16
@@ -140,10 +166,7 @@ export async function mapHttpResponse(
   const retryAfterHeader = input.response.headers.get("retry-after")
   let bodyExcerpt: string | undefined
   try {
-    const clone = input.response.clone()
-    const text = await clone.text()
-    const excerpt = text.slice(0, BODY_EXCERPT_LENGTH)
-    bodyExcerpt = excerpt === "" ? undefined : excerpt
+    bodyExcerpt = await readBodyExcerpt(input.response.clone())
   } catch {
     // Body unreadable — status + headers evidence remains available.
   }

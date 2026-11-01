@@ -6,7 +6,7 @@
 // covers: ["ADP-002", "ADP-010", "ADP-015", "ADP-021", "ADP-028", "ADP-029", "ADP-030"]
 import { describe, expect, it } from "vitest"
 
-import { CONTINUATION_PROMPT } from "../../src/supervisor/log.js"
+import { CONTINUATION_PROMPT } from "../../src/execution/index.js"
 import { SETTINGS_KEY } from "../../src/state/settings/types.js"
 import { parseReceiptsPayload } from "../../src/state/receipts/index.js"
 import { storedReceipts } from "../supervisor/helpers.js"

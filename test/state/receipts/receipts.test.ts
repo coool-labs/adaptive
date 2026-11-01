@@ -233,19 +233,23 @@ describe("parseReceiptsPayload", () => {
     expect(parseReceiptsPayload({ version: 1, receipts: broken })).toEqual([])
   })
 
-  test("keeps receipts with invalid optional fields, minus the field", () => {
+  test("keeps receipts with an invalid optional tier, minus the field", () => {
     const parsedTier = parseReceiptsPayload([{ ...validReceipt, tier: "massive" }])
     expect(parsedTier).toEqual([{ ...validReceipt, tier: undefined }])
+  })
+
+  test("a present-but-invalid outcome drops the whole receipt", () => {
     const outcomeInvalid: unknown[] = [
       { ...validReceipt, outcome: { status: "failed", category: "made-up" } },
       { ...validReceipt, outcome: { status: "interrupted", reason: "sneaky" } },
       { ...validReceipt, outcome: { status: "exploded" } },
+      { ...validReceipt, outcome: "junk" },
+      { ...validReceipt, outcome: { status: "failed", category: 42 } },
     ]
     const parsed = parseReceiptsPayload({ version: 1, receipts: outcomeInvalid })
-    expect(parsed).toHaveLength(3)
-    for (const receipt of parsed) {
-      expect(receipt.outcome).toBeUndefined()
-    }
+    // Silently stripping the outcome would break first-outcome-wins across a
+    // restart; an outcome that cannot be trusted invalidates the record.
+    expect(parsed).toEqual([])
   })
 
   test("validates decision vocabularies on read", () => {
@@ -386,8 +390,9 @@ describe("parseReceiptsPayload", () => {
     ]
     const parsed = parseReceiptsPayload(malformed)
     // id 1 (evidence non-record), id 2 (skipped non-array), id 5 (escalate
-    // evidence non-array) drop; everything else degrades gracefully.
-    expect(parsed.map((receipt) => receipt.id)).toEqual([3, 4, 6, 7, 8, 9, 10, 11])
+    // evidence non-array), id 8 (outcome non-record), id 9 (outcome category
+    // non-string) drop; everything else degrades gracefully.
+    expect(parsed.map((receipt) => receipt.id)).toEqual([3, 4, 6, 7, 10, 11])
     const firstApply = parsed[0]?.decision
     if (firstApply?.kind !== "apply") throw new Error("expected apply")
     expect(firstApply.evidence.skipped).toEqual([])
@@ -398,10 +403,8 @@ describe("parseReceiptsPayload", () => {
     }
     expect(escalateEvidence.evidence).toEqual([])
     expect(escalateKind.evidence).toEqual([])
-    expect(parsed[4]?.outcome).toBeUndefined()
-    expect(parsed[5]?.outcome).toBeUndefined()
-    expect(parsed[6]?.outcome).toEqual({ status: "succeeded" })
-    expect(parsed[7]?.outcome).toEqual({ status: "interrupted", reason: "user" })
+    expect(parsed[4]?.outcome).toEqual({ status: "succeeded" })
+    expect(parsed[5]?.outcome).toEqual({ status: "interrupted", reason: "user" })
   })
 
   test("re-bounds free text on read and drops empty identifiers", () => {
@@ -600,29 +603,65 @@ describe("ReceiptStore", () => {
     expect(garbage.snapshot()).toEqual([])
   })
 
-  test("record write failure propagates but keeps the receipt in memory", async () => {
+  test("record write failure propagates and memory stays unchanged", async () => {
     const storage = new FakeReceiptsStorage()
     const store = new ReceiptStore(storage)
     storage.failWrite()
     const pending = store.record(input())
     await expect(pending).rejects.toThrow("storage write failed")
-    expect(store.snapshot()).toHaveLength(1)
+    expect(store.snapshot()).toHaveLength(0)
   })
 
-  test("attachOutcome write failure propagates", async () => {
+  test("attachOutcome write failure propagates and memory stays unchanged", async () => {
     const storage = new FakeReceiptsStorage()
     const store = new ReceiptStore(storage)
     await store.record(input())
     storage.failWrite()
     const pending = store.attachOutcome({ sessionID: "s", unitID: "s#1" }, { status: "succeeded" })
     await expect(pending).rejects.toThrow("storage write failed")
+    expect(store.snapshot()[0]?.outcome).toBeUndefined()
+  })
+
+  test("adoptUnit write failure propagates and memory stays unchanged", async () => {
+    const storage = new FakeReceiptsStorage()
+    const store = new ReceiptStore(storage)
+    await store.record(input({ unitID: undefined }))
+    storage.failWrite()
+    const pending = store.adoptUnit("s", "s#1")
+    await expect(pending).rejects.toThrow("storage write failed")
+    expect(store.snapshot()[0]?.unitID).toBeUndefined()
+  })
+
+  test("bounds persisted identifiers at the read bound so they round-trip", async () => {
+    const storage = new FakeReceiptsStorage()
+    const store = new ReceiptStore(storage)
+    const receipt = await store.record(
+      input({ sessionID: "s".repeat(500), unitID: "u".repeat(500) }),
+    )
+    expect(receipt.sessionID).toHaveLength(MAX_RECEIPT_TEXT)
+    expect(receipt.unitID).toHaveLength(MAX_RECEIPT_TEXT)
+    const restarted = new ReceiptStore(storage)
+    await restarted.load()
+    expect(restarted.snapshot()).toEqual(store.snapshot())
+  })
+
+  test("rejects an empty or whitespace-only sessionID", async () => {
+    const storage = new FakeReceiptsStorage()
+    const store = new ReceiptStore(storage)
+    await expect(store.record(input({ sessionID: "" }))).rejects.toThrow(/sessionID/)
+    await expect(store.record(input({ sessionID: "   " }))).rejects.toThrow(/sessionID/)
+    expect(store.snapshot()).toHaveLength(0)
+    expect(storage.writes).toBe(0)
   })
 })
 
 describe("receipt properties", () => {
   const freeText = fc.string({ minLength: 0, maxLength: 200 })
-  // Identifiers are non-empty on the write path (host data); free text may be "".
-  const identifier = fc.string({ minLength: 1, maxLength: 200 })
+  // Identifiers are non-empty and not whitespace-only on the write path (the
+  // store rejects a session that could never be attributed); free text may be "".
+  const identifier = fc
+    .string({ minLength: 1, maxLength: 200 })
+    .filter((value) => value.trim() !== "")
   const refArb = fc.record({
     providerID: identifier,
     id: identifier,

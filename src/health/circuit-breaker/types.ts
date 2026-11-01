@@ -22,12 +22,20 @@ export interface BreakerConfig {
   readonly baseOpenMs: number
   /** Upper bound for the backoff window. */
   readonly maxBackoffMs: number
+  /**
+   * How long a half-open probe may stay unreported before assessment treats
+   * it as lost. Generous by design: a probe episode is a real work unit and
+   * may run for minutes; the deadline only exists so a probe whose terminal
+   * event never arrives cannot wedge the resource in half_open forever.
+   */
+  readonly probeTimeoutMs: number
 }
 
 export const DEFAULT_BREAKER_CONFIG: BreakerConfig = {
   failureThreshold: 5,
   baseOpenMs: 30_000,
   maxBackoffMs: 1_800_000,
+  probeTimeoutMs: 600_000,
 }
 
 export const BREAKER_EXEMPT_CATEGORIES: readonly FailureCategory[] = [
@@ -45,7 +53,9 @@ export const BREAKER_EXEMPT_CATEGORIES: readonly FailureCategory[] = [
  * already known to need a cooldown), and a user-interrupted probe says
  * nothing about resource health, so an interrupted probe re-arms the same
  * window rather than doubling it. `probeId` identifies the single admitted
- * probe while half-open so stale or forged probe reports can be rejected.
+ * probe while half-open so stale or forged probe reports can be rejected;
+ * `probeAt` records when it was admitted so a probe whose outcome report is
+ * lost can expire instead of wedging the resource half-open forever.
  */
 export interface BreakerRecord {
   readonly state: BreakerState
@@ -53,4 +63,5 @@ export interface BreakerRecord {
   readonly openCount: number
   readonly reopenAt?: number | undefined
   readonly probeId?: string | undefined
+  readonly probeAt?: number | undefined
 }

@@ -4,9 +4,11 @@
  * storage seam on every mutation. Ids are monotonic across restarts (they
  * continue from the persisted maximum) so a receipt can always be told apart
  * from its neighbors. Write failures propagate to the caller — the wiring
- * layer's fail-open wrapper decides how to degrade (ADP-031).
+ * layer's fail-open wrapper decides how to degrade (ADP-031) — and the
+ * in-memory ring is only advanced after a successful write, so memory and
+ * disk never diverge.
  */
-import { boundDecision } from "./bound.js"
+import { boundDecision, boundText } from "./bound.js"
 import { parseReceiptsPayload } from "./parse.js"
 import { MAX_RECEIPTS, RECEIPTS_VERSION } from "./types.js"
 import type {
@@ -49,20 +51,32 @@ export class ReceiptStore {
   }
 
   async record(input: ReceiptInput): Promise<Receipt> {
-    const id = ++this.#counter
+    // A receipt with no session can never be attributed to anything, and the
+    // read path drops empty identifiers — persisting one would make it vanish
+    // across a restart. Throw instead; the wiring layer fail-open-catches.
+    if (input.sessionID.trim() === "") {
+      throw new Error("invalid receipt: sessionID must be a non-empty string")
+    }
+    const id = this.#counter + 1
     const receipt: Receipt = {
       id,
       at: input.at,
-      sessionID: input.sessionID,
-      ...(input.unitID !== undefined ? { unitID: input.unitID } : {}),
+      // Identifiers are bounded with the same bound the read path applies, so
+      // what is persisted is exactly what comes back (types.ts invariant).
+      sessionID: boundText(input.sessionID),
+      ...(input.unitID !== undefined ? { unitID: boundText(input.unitID) } : {}),
       ...(input.tier !== undefined ? { tier: input.tier } : {}),
       decision: boundDecision(input.decision),
     }
-    this.#receipts =
+    const next =
       this.#receipts.length >= MAX_RECEIPTS
         ? [...this.#receipts.slice(1 - MAX_RECEIPTS), receipt]
         : [...this.#receipts, receipt]
-    await this.#persist()
+    // Persist BEFORE committing memory: a write failure must leave memory and
+    // disk consistent (the caller decides how to fail open).
+    await this.#persist(next)
+    this.#receipts = next
+    this.#counter = id
     return receipt
   }
 
@@ -73,7 +87,7 @@ export class ReceiptStore {
    */
   async attachOutcome(ref: ReceiptRef, outcome: ReceiptOutcome): Promise<number> {
     let updated = 0
-    this.#receipts = this.#receipts.map((receipt) => {
+    const next = this.#receipts.map((receipt) => {
       if (receipt.outcome !== undefined) return receipt
       if (receipt.sessionID !== ref.sessionID) return receipt
       const matches =
@@ -82,7 +96,9 @@ export class ReceiptStore {
       updated++
       return { ...receipt, outcome }
     })
-    if (updated > 0) await this.#persist()
+    if (updated === 0) return 0
+    await this.#persist(next)
+    this.#receipts = next
     return updated
   }
 
@@ -106,17 +122,19 @@ export class ReceiptStore {
     })
     if (target === undefined) return 0
     const at = target
-    this.#receipts = this.#receipts.map((receipt, index) =>
+    const next = this.#receipts.map((receipt, index) =>
       index === at ? { ...receipt, unitID } : receipt,
     )
-    await this.#persist()
+    await this.#persist(next)
+    this.#receipts = next
     return 1
   }
 
-  async #persist(): Promise<void> {
+  /** Writes the given next state; the caller commits memory only on success. */
+  async #persist(receipts: readonly Receipt[]): Promise<void> {
     const payload: ReceiptsPayload = {
       version: RECEIPTS_VERSION,
-      receipts: this.#receipts,
+      receipts,
     }
     await this.storage.write(payload)
   }

@@ -222,6 +222,66 @@ describe("ResourceHealthRegistry", () => {
       expect(assessment.kind === "probe" ? assessment.ticket.key : undefined).toEqual(PROVIDER_KEY)
     })
 
+    it("evaluate never mutates breaker state (a due-open breaker blocks without issuing a probe)", () => {
+      const { now, advance } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      tripBreaker(registry, PROVIDER_KEY)
+      advance(DEFAULT_HEALTH_CONFIG.breaker.baseOpenMs + 1)
+      const first = registry.evaluate(PROVIDER_KEY)
+      const second = registry.evaluate(PROVIDER_KEY)
+      expect(first).toEqual(second)
+      expect(first).toMatchObject({ kind: "blocked", reason: "breaker-open" })
+      // Only assess flips the breaker to half-open and issues the ticket.
+      expect(registry.assess(PROVIDER_KEY).kind).toBe("probe")
+    })
+
+    it("evaluate reports a hard-blocked window without mutating it", () => {
+      const { now } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      registry.observe({
+        kind: "failure",
+        key: MODEL_KEY,
+        category: "rate_limited",
+        definitive: false,
+        retryAfterMs: 1_000,
+      })
+      expect(registry.evaluate(MODEL_KEY)).toEqual({
+        kind: "blocked",
+        reason: "rate-limited",
+        key: MODEL_KEY,
+        retryAtMs: 1_000,
+      })
+    })
+
+    it("evaluate reports a half-open probe as in flight without consuming it", () => {
+      const { now, advance } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      tripBreaker(registry, PROVIDER_KEY)
+      advance(DEFAULT_HEALTH_CONFIG.breaker.baseOpenMs + 1)
+      // assess flips to half-open and issues the ticket; evaluate must see
+      // the probe as in flight while leaving it available for assess.
+      expect(registry.assess(PROVIDER_KEY).kind).toBe("probe")
+      expect(registry.evaluate(PROVIDER_KEY)).toEqual({
+        kind: "blocked",
+        reason: "probe-in-flight",
+        key: PROVIDER_KEY,
+        retryAtMs: undefined,
+      })
+      expect(registry.assess(PROVIDER_KEY).kind).toBe("blocked")
+    })
+
+    it("evaluate reports a draining resource as blocked", () => {
+      const { now } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      registry.observe({ kind: "drain", key: MODEL_KEY })
+      expect(registry.evaluate(MODEL_KEY)).toEqual({
+        kind: "blocked",
+        reason: "draining",
+        key: MODEL_KEY,
+        retryAtMs: undefined,
+      })
+    })
+
     it("resolves a successful probe and becomes available", () => {
       const { now, advance } = fakeClock()
       const registry = new ResourceHealthRegistry(now)
@@ -282,6 +342,40 @@ describe("ResourceHealthRegistry", () => {
       expect(
         registry.reportProbe(second.ticket, { success: false, category: "rate_limited" }),
       ).toBe(true)
+    })
+
+    it("expires a probe whose outcome never arrives and re-arms the same window", () => {
+      const { now, advance } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      tripBreaker(registry, PROVIDER_KEY)
+      advance(DEFAULT_HEALTH_CONFIG.breaker.baseOpenMs + 1)
+      const assessment = registry.assess(PROVIDER_KEY)
+      if (assessment.kind !== "probe") {
+        throw new Error("expected a probe admission")
+      }
+      // The probe's terminal event never arrives. Just before the probe
+      // deadline the resource stays wedged in half-open...
+      advance(DEFAULT_HEALTH_CONFIG.breaker.probeTimeoutMs - 1)
+      expect(registry.assess(PROVIDER_KEY)).toEqual({
+        kind: "blocked",
+        reason: "probe-in-flight",
+        key: PROVIDER_KEY,
+      })
+      // ...at the deadline the lost probe is discarded (same window, no
+      // doubling) and after that window a fresh probe is admitted.
+      advance(1)
+      expect(registry.assess(PROVIDER_KEY)).toEqual({
+        kind: "blocked",
+        reason: "breaker-open",
+        key: PROVIDER_KEY,
+        retryAtMs: DEFAULT_HEALTH_CONFIG.breaker.baseOpenMs,
+      })
+      advance(DEFAULT_HEALTH_CONFIG.breaker.baseOpenMs)
+      const fresh = registry.assess(PROVIDER_KEY)
+      expect(fresh.kind).toBe("probe")
+      if (fresh.kind === "probe") {
+        expect(fresh.ticket.id).not.toBe(assessment.ticket.id)
+      }
     })
 
     it("keeps the breaker open while a hard state shadows it, then admits the probe", () => {

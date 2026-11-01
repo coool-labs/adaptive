@@ -3,11 +3,8 @@ import fc from "fast-check"
 import { describe, expect, it } from "vitest"
 
 import { executeContinuation } from "../../../src/execution/continuation/execute.js"
-import {
-  CONTINUATION_ACTIONS,
-  PROMPT_STRATEGIES,
-  promptStrategy,
-} from "../../../src/execution/continuation/types.js"
+import { CONTINUATION_ACTIONS } from "../../../src/execution/continuation/types.js"
+import { CONTINUATION_PROMPT } from "../../../src/execution/continuation/prompts.js"
 import type {
   ContinuationAction,
   ContinuationExecuteInput,
@@ -38,32 +35,23 @@ class FakeOps implements ContinuationOps {
   }
 }
 
-const CONTINUATION = "continue where you left off"
-const ORIGINAL = "refactor the parser"
-
 function baseInput(overrides?: Partial<ContinuationExecuteInput>): ContinuationExecuteInput {
   return {
     sessionID: "s1",
     action: { kind: "clean-continuation" },
-    sideEffects: true,
-    prompts: { continuation: CONTINUATION, original: ORIGINAL },
     ops: new FakeOps(),
     ...overrides,
   }
 }
 
 describe("continuation vocabulary", () => {
-  it("pins the prompt strategies", () => {
-    expect(PROMPT_STRATEGIES).toEqual(["continue-from-state", "re-dispatch"])
-  })
-
   it("pins the continuation actions", () => {
     expect(CONTINUATION_ACTIONS).toEqual(["allow-native", "in-session", "clean-continuation"])
   })
 
-  it("maps side effects to the prompt strategy", () => {
-    expect(promptStrategy(true)).toBe("continue-from-state")
-    expect(promptStrategy(false)).toBe("re-dispatch")
+  it("pins the fixed continuation prompt (never empty, never caller-chosen)", () => {
+    expect(typeof CONTINUATION_PROMPT).toBe("string")
+    expect(CONTINUATION_PROMPT.length).toBeGreaterThan(0)
   })
 })
 
@@ -75,13 +63,13 @@ describe("executeContinuation", () => {
     expect(ops.calls).toEqual([])
   })
 
-  it("settles, switches, then resumes the in-session path", async () => {
+  it("settles, switches, then resumes the in-session path with the continuation prompt", async () => {
     const ops = new FakeOps()
     const action: ContinuationAction = { kind: "in-session", model: { providerID: "p", id: "m" } }
     await expect(executeContinuation(baseInput({ action, ops }))).resolves.toEqual({
       kind: "resumed",
     })
-    expect(ops.calls).toEqual([`settle:s1`, `switch:s1:p/m`, `prompt:s1:${CONTINUATION}`])
+    expect(ops.calls).toEqual([`settle:s1`, `switch:s1:p/m`, `prompt:s1:${CONTINUATION_PROMPT}`])
   })
 
   it("skips the switch when the plan carries none (clean continuation)", async () => {
@@ -89,21 +77,7 @@ describe("executeContinuation", () => {
     await expect(executeContinuation(baseInput({ ops }))).resolves.toEqual({
       kind: "continuation-started",
     })
-    expect(ops.calls).toEqual([`settle:s1`, `prompt:s1:${CONTINUATION}`])
-  })
-
-  it("sends the continuation prompt when side effects exist", async () => {
-    const ops = new FakeOps()
-    await executeContinuation(baseInput({ ops, sideEffects: true }))
-    expect(ops.calls.some((call) => call.includes(ORIGINAL))).toBe(false)
-    expect(ops.calls.some((call) => call.includes(CONTINUATION))).toBe(true)
-  })
-
-  it("re-dispatches the original instruction only without side effects", async () => {
-    const ops = new FakeOps()
-    await executeContinuation(baseInput({ ops, sideEffects: false }))
-    expect(ops.calls.some((call) => call.includes(CONTINUATION))).toBe(false)
-    expect(ops.calls.some((call) => call.includes(ORIGINAL))).toBe(true)
+    expect(ops.calls).toEqual([`settle:s1`, `prompt:s1:${CONTINUATION_PROMPT}`])
   })
 
   it("propagates settle failures before any switch or prompt", async () => {
@@ -126,7 +100,7 @@ describe("executeContinuation", () => {
     const ops = new FakeOps()
     ops.failOn = "prompt"
     await expect(executeContinuation(baseInput({ ops }))).rejects.toThrow("prompt failed")
-    expect(ops.calls).toEqual([`settle:s1`, `prompt:s1:${CONTINUATION}`])
+    expect(ops.calls).toEqual([`settle:s1`, `prompt:s1:${CONTINUATION_PROMPT}`])
   })
 })
 
@@ -153,73 +127,56 @@ describe("executeContinuation properties", () => {
         )
     })
 
-  it("enforces settle-first ordering and the never-replay prompt choice", async () => {
+  it("enforces settle-first ordering and delivers exactly the continuation prompt", async () => {
     await fc.assert(
-      fc.asyncProperty(
-        actionArb,
-        fc.boolean(),
-        fc.string({ minLength: 1 }),
-        async (action, sideEffects, tag) => {
-          const ops = new FakeOps()
-          const prompts = { continuation: `cont-${tag}`, original: `orig-${tag}` }
-          const outcome = await executeContinuation({
-            sessionID: "sX",
-            action,
-            sideEffects,
-            prompts,
-            ops,
-          })
-          const promptCalls = ops.calls.filter((call) => call.startsWith("prompt:"))
-          if (action.kind === "allow-native") {
-            expect(outcome).toEqual({ kind: "left-native" })
-            expect(ops.calls).toEqual([])
-            return
-          }
-          expect(ops.calls[0]).toBe("settle:sX")
-          const expectedText = sideEffects ? prompts.continuation : prompts.original
-          const forbiddenText = sideEffects ? prompts.original : prompts.continuation
-          expect(promptCalls).toEqual([`prompt:sX:${expectedText}`])
-          expect(promptCalls.some((call) => call.includes(forbiddenText))).toBe(false)
-          if (action.kind === "in-session") {
-            expect(ops.calls).toEqual([
-              `settle:sX`,
-              `switch:sX:${action.model.providerID}/${action.model.id}`,
-              `prompt:sX:${expectedText}`,
-            ])
-            expect(outcome).toEqual({ kind: "resumed" })
-          } else {
-            expect(outcome).toEqual({ kind: "continuation-started" })
-          }
-        },
-      ),
+      fc.asyncProperty(actionArb, async (action) => {
+        const ops = new FakeOps()
+        const outcome = await executeContinuation({ sessionID: "sX", action, ops })
+        const promptCalls = ops.calls.filter((call) => call.startsWith("prompt:"))
+        if (action.kind === "allow-native") {
+          expect(outcome).toEqual({ kind: "left-native" })
+          expect(ops.calls).toEqual([])
+          return
+        }
+        expect(ops.calls[0]).toBe("settle:sX")
+        expect(promptCalls).toEqual([`prompt:sX:${CONTINUATION_PROMPT}`])
+        if (action.kind === "in-session") {
+          expect(ops.calls).toEqual([
+            `settle:sX`,
+            `switch:sX:${action.model.providerID}/${action.model.id}`,
+            `prompt:sX:${CONTINUATION_PROMPT}`,
+          ])
+          expect(outcome).toEqual({ kind: "resumed" })
+        } else {
+          expect(outcome).toEqual({ kind: "continuation-started" })
+        }
+      }),
       { numRuns: 200 },
     )
   })
 
-  it("never sends the original instruction once side effects exist", async () => {
+  it("never replays an original instruction — every delivered prompt is the fixed continuation prompt", async () => {
+    // Originals that happen to be substrings of the only prompt call the
+    // executor can make (prefix + prompt text) cannot distinguish a replay
+    // from continue-from-state; exclude them from the generated space.
+    const onlyCall = `prompt:s1:${CONTINUATION_PROMPT}`
+    const originalArb = fc.string({ minLength: 1 }).filter((s) => !onlyCall.includes(s))
     await fc.assert(
-      fc.asyncProperty(
-        fc.option(fc.string({ minLength: 1 }), { nil: undefined }),
-        fc.string({ minLength: 1 }),
-        async (probeId, tag) => {
-          const ops = new FakeOps()
-          const model = { providerID: "p", id: "m" }
-          const action: ContinuationAction =
-            probeId === undefined
-              ? { kind: "in-session", model }
-              : { kind: "in-session", model, probeId }
-          await executeContinuation({
-            sessionID: "s1",
-            action,
-            sideEffects: true,
-            prompts: { continuation: `cont-${tag}`, original: `orig-${tag}` },
-            ops,
-          })
-          expect(
-            ops.calls.some((call) => call.startsWith("prompt:") && call.includes(`orig-`)),
-          ).toBe(false)
-        },
-      ),
+      fc.asyncProperty(actionArb, originalArb, async (action, originalInstruction) => {
+        const ops = new FakeOps()
+        await executeContinuation({ sessionID: "s1", action, ops })
+        // No generated text ever reaches the session: the executor has no
+        // path to anything but the fixed continuation prompt, so a replay
+        // of the original instruction is unrepresentable.
+        expect(ops.calls.some((call) => call.startsWith("prompt:") && call !== onlyCall)).toBe(
+          false,
+        )
+        expect(
+          ops.calls.some(
+            (call) => call.startsWith("prompt:") && call.includes(originalInstruction),
+          ),
+        ).toBe(false)
+      }),
       { numRuns: 200 },
     )
   })

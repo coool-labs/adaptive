@@ -90,6 +90,23 @@ function isHttpStatus(status: number | undefined): status is number {
   return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599
 }
 
+/**
+ * Upper bound on a provider-claimed retry delay. `Retry-After` and structured
+ * retry metadata are untrusted provider data: a hostile or misconfigured
+ * value ("999999999" seconds) must not convert one response into a
+ * near-permanent resource blacklist. The host's own retry scheduling waits
+ * out the raw header verbatim — this bound only concerns the health window
+ * the supervisor derives from the classification (ADP-011 boundedness).
+ */
+const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1000
+
+function boundedRetryAfterMs(retryAfterMs: number | undefined): number | undefined {
+  if (retryAfterMs === undefined) {
+    return undefined
+  }
+  return Math.min(retryAfterMs, MAX_RETRY_AFTER_MS)
+}
+
 function isNonNegativeInteger(value: number | undefined): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0
 }
@@ -141,10 +158,11 @@ function fixedWindowExhausted(headers: ReadonlyMap<string, string>): boolean {
 
 function retryAdvice(category: FailureCategory, retryAfterMs: number | undefined): RetryAdvice {
   const policy = CATEGORY_POLICY[category]
-  if (!policy.retryable || retryAfterMs === undefined) {
+  const bounded = boundedRetryAfterMs(retryAfterMs)
+  if (bounded === undefined) {
     return { retryable: policy.retryable }
   }
-  return { retryable: true, retryAfterMs }
+  return { retryable: policy.retryable, retryAfterMs: bounded }
 }
 
 function classification(

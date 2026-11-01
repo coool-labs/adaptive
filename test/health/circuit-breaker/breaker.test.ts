@@ -4,6 +4,9 @@ import { describe, expect, it } from "vitest"
 
 import {
   admitProbe,
+  breakerBlockWait,
+  breakerWait,
+  expireProbe,
   initialBreaker,
   recordBreakerFailure,
   recordBreakerSuccess,
@@ -22,6 +25,7 @@ const CONFIG: BreakerConfig = {
   failureThreshold: 3,
   baseOpenMs: 1_000,
   maxBackoffMs: 8_000,
+  probeTimeoutMs: 600_000,
 }
 
 function tripBreaker(now: number, config: BreakerConfig = CONFIG): BreakerRecord {
@@ -181,11 +185,65 @@ describe("circuit breaker state machine", () => {
     expect(reopened.opened).toBe(false)
   })
 
+  describe("non-mutating wait computations (observer vs admission view)", () => {
+    it("breakerWait returns the remaining backoff, undefined once due or not open", () => {
+      const open = tripBreaker(0)
+      expect(breakerWait(open, 0)).toBe(CONFIG.baseOpenMs)
+      expect(breakerWait(open, CONFIG.baseOpenMs)).toBeUndefined()
+      expect(breakerWait(initialBreaker(), 0)).toBeUndefined()
+    })
+
+    it("breakerBlockWait blocks an open breaker regardless of elapsed backoff", () => {
+      const open = tripBreaker(0)
+      expect(breakerBlockWait(open, 0)).toBe(CONFIG.baseOpenMs)
+      // Due: still blocked, with zero remaining wait.
+      expect(breakerBlockWait(open, CONFIG.baseOpenMs)).toBe(0)
+      expect(breakerBlockWait(open, CONFIG.baseOpenMs * 2)).toBe(0)
+      expect(breakerBlockWait(initialBreaker(), 0)).toBeUndefined()
+    })
+
+    it("an open record without a stamp (unreachable via the state machine) blocks with zero wait", () => {
+      const unstamped: BreakerRecord = { state: "open", failures: 3, openCount: 1 }
+      expect(breakerWait(unstamped, 0)).toBeUndefined()
+      expect(breakerBlockWait(unstamped, 0)).toBe(0)
+    })
+  })
+
+  describe("probe expiry (a lost probe report must not wedge half-open)", () => {
+    it("re-arms the same backoff window without doubling when the probe deadline passes", () => {
+      const open = tripBreaker(0)
+      const admitted = admitProbe(open, 1_000)
+      if (admitted.kind !== "admitted") {
+        throw new Error("expected a probe admission")
+      }
+      const halfOpen = { ...admitted.record, probeAt: 1_000 }
+      // Just before the deadline: untouched.
+      expect(expireProbe(halfOpen, 1_000 + CONFIG.probeTimeoutMs - 1, CONFIG)).toBe(halfOpen)
+      // At the deadline: back to open with the SAME window (no doubling).
+      const expired = expireProbe(halfOpen, 1_000 + CONFIG.probeTimeoutMs, CONFIG)
+      expect(expired.state).toBe("open")
+      expect(expired.openCount).toBe(open.openCount)
+      expect(expired.reopenAt).toBe(1_000 + CONFIG.probeTimeoutMs + CONFIG.baseOpenMs)
+    })
+
+    it("ignores records that are not half-open or carry no probe stamp", () => {
+      const open = tripBreaker(0)
+      expect(expireProbe(open, 10_000_000, CONFIG)).toBe(open)
+      const admitted = admitProbe(open, 1_000)
+      if (admitted.kind !== "admitted") {
+        throw new Error("expected a probe admission")
+      }
+      // No probeAt stamp (legacy record): nothing to expire.
+      expect(expireProbe(admitted.record, 10_000_000, CONFIG)).toBe(admitted.record)
+    })
+  })
+
   describe("properties", () => {
     const configArb = fc.record({
       failureThreshold: fc.integer({ min: 1, max: 6 }),
       baseOpenMs: fc.integer({ min: 1, max: 5_000 }),
       maxBackoffMs: fc.integer({ min: 1, max: 60_000 }),
+      probeTimeoutMs: fc.integer({ min: 1, max: 60_000 }),
     })
     const categoryArb = fc.constantFrom(
       "rate_limited",

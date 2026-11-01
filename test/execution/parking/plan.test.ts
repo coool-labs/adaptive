@@ -82,6 +82,17 @@ describe("selectResumable", () => {
     expect(plan.drop).toEqual([])
   })
 
+  it("drops records whose resume attempts reached the budget (E4 regression: the resume loop is bounded)", () => {
+    // A persistently failing rePark used to refresh parkedAt (eviction-immune)
+    // and retry forever at every idle boundary. Records at the attempt budget
+    // must now be dropped, not retried.
+    const exhausted = record("s#1", 10, { attempts: 5 })
+    const fresh = record("s#2", 20, { attempts: 4 })
+    const plan = selectResumable([exhausted, fresh], allAlive())
+    expect(plan.attempt.map((r) => r.id)).toEqual(["s#2"])
+    expect(plan.drop.map((r) => r.id)).toEqual(["s#1"])
+  })
+
   it("drops records whose session is gone", () => {
     const records = [record("gone#1", 10), record("alive#1", 20)]
     const plan = selectResumable(records, {

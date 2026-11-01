@@ -3,7 +3,9 @@
  * same unit again replaces the record (latest park wins). The cap
  * `MAX_PARKED` evicts the oldest `parkedAt` first: parked work is waiting
  * work, and unbounded growth would mean recovery never happens. Write
- * failures propagate to the caller (fail-open is the wiring layer's call).
+ * failures propagate to the caller (fail-open is the wiring layer's call), and
+ * the in-memory list is only advanced after a successful write — memory and
+ * disk never diverge.
  */
 import { parseParkedPayload } from "./parse.js"
 import { MAX_PARKED, MAX_PARKED_TEXT, PARKED_VERSION } from "./types.js"
@@ -45,9 +47,11 @@ export class ParkedWorkStore {
       ...(record.detail !== undefined ? { detail: boundDetail(record.detail) } : {}),
     }
     const withoutId = this.#records.filter((entry) => entry.id !== bounded.id)
-    const next = [...withoutId, bounded]
-    this.#records = this.#evictOldest(next)
-    await this.#persist()
+    const next = this.#evictOldest([...withoutId, bounded])
+    // Persist BEFORE committing memory: a failed resume must not silently
+    // drop the parked unit (memory and disk stay consistent on failure).
+    await this.#persist(next)
+    this.#records = next
   }
 
   /**
@@ -57,8 +61,9 @@ export class ParkedWorkStore {
   async resume(id: string): Promise<ParkedRecord | undefined> {
     const record = this.#records.find((entry) => entry.id === id)
     if (record === undefined) return undefined
-    this.#records = this.#records.filter((entry) => entry.id !== id)
-    await this.#persist()
+    const next = this.#records.filter((entry) => entry.id !== id)
+    await this.#persist(next)
+    this.#records = next
     return record
   }
 
@@ -69,10 +74,11 @@ export class ParkedWorkStore {
     return records.filter((record) => !dropped.has(record.id))
   }
 
-  async #persist(): Promise<void> {
+  /** Writes the given next state; the caller commits memory only on success. */
+  async #persist(parked: readonly ParkedRecord[]): Promise<void> {
     const payload: ParkedPayload = {
       version: PARKED_VERSION,
-      parked: this.#records,
+      parked,
     }
     await this.storage.write(payload)
   }

@@ -2,17 +2,6 @@ import type { ModelRef } from "../../core/work-unit/types.js"
 import type { RecoveryOption } from "../retry/types.js"
 
 /**
- * How a continuation prompt relates to the original user instruction
- * (ADP-014/ADP-023). Once tool side effects exist, the only legal strategy
- * is `continue-from-state`: the prompt is a continuation instruction over
- * the existing session/workspace state, never the original instruction
- * re-sent as though nothing happened. Without side effects there is nothing
- * to duplicate, so re-dispatching the original instruction is safe.
- */
-export const PROMPT_STRATEGIES = ["continue-from-state", "re-dispatch"] as const
-export type PromptStrategy = (typeof PROMPT_STRATEGIES)[number]
-
-/**
  * What Adaptive does for a failed work unit's recovery (ADP-013/ADP-014).
  * - `allow-native`: Adaptive did not take ownership (no veto) — OpenCode's
  *   native retry lifecycle is the preferred recovery and stays untouched.
@@ -40,22 +29,11 @@ export interface ContinuationPlanInput {
    * recovery); `switch` means Adaptive vetoed and owns the recovery.
    */
   readonly recovery: RecoveryOption
-  /** Tool side effects already recorded for this work unit. */
-  readonly sideEffects: boolean
   /**
    * True when the in-session owned path is possible (session alive, settle
    * + switch + resume available). Only consulted for `switch` recovery.
    */
   readonly continuationPossible: boolean
-}
-
-/**
- * Continuation prompt strategy for the current unit (ADP-023). With side
- * effects the continuation must reference existing state; without them the
- * original instruction may be re-dispatched verbatim.
- */
-export function promptStrategy(sideEffects: boolean): PromptStrategy {
-  return sideEffects ? "continue-from-state" : "re-dispatch"
 }
 
 /**
@@ -77,19 +55,9 @@ export interface ContinuationOps {
   prompt(sessionID: string, text: string): Promise<void>
 }
 
-/** Prompts prepared by the wiring. The executor picks by prompt strategy. */
-export interface ContinuationPrompts {
-  /** Continuation instruction over existing session/workspace state. */
-  readonly continuation: string
-  /** The original user instruction (re-dispatch only without side effects). */
-  readonly original: string
-}
-
 export interface ContinuationExecuteInput {
   readonly sessionID: string
   readonly action: ContinuationAction
-  readonly sideEffects: boolean
-  readonly prompts: ContinuationPrompts
   readonly ops: ContinuationOps
 }
 

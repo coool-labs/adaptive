@@ -1,3 +1,4 @@
+import { CONTINUATION_PROMPT } from "./prompts.js"
 import type { ContinuationOutcome } from "./types.js"
 import type { ContinuationExecuteInput } from "./types.js"
 
@@ -7,10 +8,9 @@ import type { ContinuationExecuteInput } from "./types.js"
  *
  * 1. Every owned path settles the session FIRST — Adaptive never switches
  *    or prompts while a failed execution is still settling.
- * 2. The prompt is chosen by the side-effect ledger: with side effects the
- *    original instruction is never sent — only the continuation prompt
- *    over existing state. Without side effects the original may be
- *    re-dispatched (nothing to duplicate).
+ * 2. The delivered prompt is always the fixed continuation prompt over the
+ *    existing session/workspace state — the original instruction is never
+ *    re-sent, so the never-replay invariant holds by construction.
  * 3. `allow-native` performs no host operations at all.
  *
  * Ops failures propagate to the caller (the wiring's fail-open wrapper
@@ -20,16 +20,15 @@ import type { ContinuationExecuteInput } from "./types.js"
 export async function executeContinuation(
   input: ContinuationExecuteInput,
 ): Promise<ContinuationOutcome> {
-  const { action, sideEffects, prompts, ops, sessionID } = input
+  const { action, ops, sessionID } = input
   if (action.kind === "allow-native") return { kind: "left-native" }
-  const text = sideEffects ? prompts.continuation : prompts.original
   if (action.kind === "in-session") {
     await ops.settle(sessionID)
     await ops.switchModel(sessionID, action.model)
-    await ops.prompt(sessionID, text)
+    await ops.prompt(sessionID, CONTINUATION_PROMPT)
     return { kind: "resumed" }
   }
   await ops.settle(sessionID)
-  await ops.prompt(sessionID, text)
+  await ops.prompt(sessionID, CONTINUATION_PROMPT)
   return { kind: "continuation-started" }
 }

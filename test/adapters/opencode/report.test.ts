@@ -158,12 +158,78 @@ describe("mapHttpResponse", () => {
     expect(report.bodyExcerpt?.length).toBe(BODY_EXCERPT_LENGTH)
   })
 
+  it("stops reading an endless body at the excerpt cap (A5)", async () => {
+    let pulls = 0
+    // An endless body: a full-buffering reader (clone().text()) would pull
+    // forever and never resolve; the bounded reader must stop at the cap.
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1
+        controller.enqueue(new Uint8Array(100).fill(120)) // "x"
+      },
+    })
+    const report = await mapHttpResponse({
+      sessionID: "s1",
+      response: new Response(stream, { status: 500 }),
+    } as never)
+    expect(report.bodyExcerpt?.length).toBe(BODY_EXCERPT_LENGTH)
+    // Reading stops at the 512-char cap (6 chunks of 100); the clone's tee
+    // may double the count. Either way the pulls are a constant bounded by
+    // the cap — a full-body reader pulls proportionally to the endless body.
+    expect(pulls).toBeLessThanOrEqual(2 * (BODY_EXCERPT_LENGTH / 100 + 1))
+  })
+
   it("omits the excerpt for an empty body", async () => {
     const report = await mapHttpResponse({
       sessionID: "s1",
       response: new Response("", { status: 502 }),
     } as never)
     expect("bodyExcerpt" in report).toBe(false)
+  })
+
+  it("swallows a cancel rejection from the capped read (A5)", async () => {
+    // The fire-and-forget reader.cancel() must not surface a rejection as an
+    // unhandled promise — vitest fails the run on those, so this test fails
+    // if the swallow is ever removed. clone() tees the body, so the source's
+    // cancel only runs once BOTH branches are canceled: the test cancels the
+    // original after the mapped read, and the tee forwards the source's
+    // rejection back to the clone branch's cancel promise.
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(100).fill(121)) // "y"
+      },
+      cancel() {
+        return Promise.reject(new Error("cancel refused"))
+      },
+    })
+    const original = new Response(stream, { status: 500 })
+    const report = await mapHttpResponse({
+      sessionID: "s1",
+      response: original,
+    } as never)
+    expect(report.bodyExcerpt?.length).toBe(BODY_EXCERPT_LENGTH)
+    // Both branches reject here; the production swallow handles the clone
+    // branch (the one readBodyExcerpt canceled), the test handles the original.
+    await original.body?.cancel().catch(() => undefined)
+    // Let the rejected-cancel microtask settle before the test ends.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+
+  it("omits the excerpt for a bodyless response (A5)", async () => {
+    const report = await mapHttpResponse({
+      sessionID: "s1",
+      response: new Response(null, { status: 500 }),
+    } as never)
+    expect("bodyExcerpt" in report).toBe(false)
+  })
+
+  it("returns a short body whole when it ends before the cap (A5)", async () => {
+    const report = await mapHttpResponse({
+      sessionID: "s1",
+      response: new Response("abc", { status: 500 }),
+    } as never)
+    expect(report.bodyExcerpt).toBe("abc")
   })
 
   it("omits retryAfterHeader when absent", async () => {

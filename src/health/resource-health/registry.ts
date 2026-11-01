@@ -11,7 +11,13 @@
  * flips a due open breaker to half-open and issues the probe ticket, so
  * concurrent assessors can never observe two admissions.
  */
-import { admitProbe, recordProbeFailure, recordProbeSuccess } from "../circuit-breaker/breaker.js"
+import {
+  admitProbe,
+  breakerBlockWait,
+  expireProbe,
+  recordProbeFailure,
+  recordProbeSuccess,
+} from "../circuit-breaker/breaker.js"
 import { resourceChain, resourceKeyID } from "./key.js"
 import { applyHealthEvent, initialRecord, sweepRecord } from "./transitions.js"
 import {
@@ -97,6 +103,27 @@ function hardBlocker(record: ResourceRecord, now: number): HardBlock | undefined
   }
 }
 
+/** Most severe hard block across a chain; narrowest scope wins ties. */
+function hardest(
+  records: readonly (ResourceRecord | undefined)[],
+  now: number,
+): HardBlock | undefined {
+  let hard: HardBlock | undefined
+  for (const record of records) {
+    if (record === undefined) {
+      continue
+    }
+    const candidate = hardBlocker(record, now)
+    if (candidate === undefined) {
+      continue
+    }
+    if (hard === undefined || candidate.severity >= hard.severity) {
+      hard = candidate
+    }
+  }
+  return hard
+}
+
 export class ResourceHealthRegistry {
   readonly #records = new Map<string, ResourceRecord>()
   readonly #clock: Clock
@@ -143,19 +170,7 @@ export class ResourceHealthRegistry {
     const now = this.#clock()
     const records = resourceChain(key).map((chainKey) => this.#sweptRecord(chainKey, now))
 
-    let hard: HardBlock | undefined
-    for (const record of records) {
-      if (record === undefined) {
-        continue
-      }
-      const candidate = hardBlocker(record, now)
-      if (candidate === undefined) {
-        continue
-      }
-      if (hard === undefined || candidate.severity >= hard.severity) {
-        hard = candidate
-      }
-    }
+    const hard = hardest(records, now)
     if (hard !== undefined) {
       return blocked(hard.reason, hard.key, hard.retryAtMs)
     }
@@ -164,7 +179,16 @@ export class ResourceHealthRegistry {
       if (record === undefined) {
         continue
       }
-      const admission = admitProbe(record.breaker, now)
+      // A probe whose outcome report never arrived must not wedge the
+      // resource in half_open: expire it (same backoff window, no doubling)
+      // before attempting admission.
+      const expired = expireProbe(record.breaker, now, this.#config.breaker)
+      const current =
+        expired === record.breaker ? record : { ...record, breaker: expired, updatedAt: now }
+      if (current !== record) {
+        this.#records.set(resourceKeyID(record.key), current)
+      }
+      const admission = admitProbe(current.breaker, now)
       if (admission.kind === "closed") {
         continue
       }
@@ -177,7 +201,7 @@ export class ResourceHealthRegistry {
       const probeId = String(++this.#probeCounter)
       this.#records.set(resourceKeyID(record.key), {
         ...record,
-        breaker: { ...admission.record, probeId },
+        breaker: { ...admission.record, probeId, probeAt: now },
         updatedAt: now,
       })
       return { kind: "probe", ticket: { id: probeId, key: record.key } }
@@ -194,6 +218,43 @@ export class ResourceHealthRegistry {
       return blocked("draining", draining.key, undefined)
     }
 
+    return { kind: "available" }
+  }
+
+  /**
+   * Non-mutating assessment for decisions that must not admit a probe
+   * (escalation-target gating): identical hard-state and draining walk, but
+   * an open or half-open breaker blocks without being flipped or ticketed.
+   */
+  evaluate(key: ResourceKey): Assessment {
+    const now = this.#clock()
+    const records = resourceChain(key).map((chainKey) => this.#sweptRecord(chainKey, now))
+    const hard = hardest(records, now)
+    if (hard !== undefined) {
+      return blocked(hard.reason, hard.key, hard.retryAtMs)
+    }
+    for (const record of records) {
+      if (record === undefined) continue
+      // Observer view (non-mutating): an open breaker blocks even when its
+      // backoff elapsed — assess is what flips it to half_open and issues
+      // the probe ticket.
+      const wait = breakerBlockWait(record.breaker, now)
+      if (wait !== undefined) {
+        return blocked("breaker-open", record.key, wait)
+      }
+      if (record.breaker.state === "half_open") {
+        return blocked("probe-in-flight", record.key, undefined)
+      }
+    }
+    let draining: ResourceRecord | undefined
+    for (const record of records) {
+      if (record?.health === "draining") {
+        draining = record
+      }
+    }
+    if (draining !== undefined) {
+      return blocked("draining", draining.key, undefined)
+    }
     return { kind: "available" }
   }
 

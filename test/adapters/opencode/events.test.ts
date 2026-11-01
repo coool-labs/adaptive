@@ -1,7 +1,92 @@
 // covers: ["ADP-001"]
 import { describe, expect, it } from "vitest"
 import { SESSION_EVENT_TYPES, subscribeSessions } from "../../../src/adapters/opencode/events.js"
+import type { EventSource } from "../../../src/adapters/opencode/events.js"
 import { fakeEvents, sessionEvent, wireRef } from "./helpers.js"
+
+/** Macrotask-yielding pause so resubscribe tests never wait on long timers but timers still fire. */
+const instant = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
+/** Independent single-use streams: one per subscribe call, each with its own queue. */
+function resubscribeEvents(): {
+  source: EventSource
+  failFirst: (error: unknown) => void
+  closeFirst: () => void
+  deliver: (event: unknown) => void
+  subscriptions: () => number
+  signals: () => (AbortSignal | undefined)[]
+} {
+  interface StreamState {
+    queue: unknown[]
+    failure: { error: unknown } | null
+    closed: boolean
+    wake: (() => void) | null
+    signal: AbortSignal | undefined
+  }
+  const streams: StreamState[] = []
+  const signals: (AbortSignal | undefined)[] = []
+  const source = {
+    subscribe: (options?: { signal?: AbortSignal }) => {
+      signals.push(options?.signal)
+      const state: StreamState = {
+        queue: [],
+        failure: null,
+        closed: false,
+        wake: null,
+        signal: options?.signal,
+      }
+      streams.push(state)
+      // Real host streams reject pending next() on abort; the fixture does
+      // the same so dispose can break a pending wait.
+      options?.signal?.addEventListener("abort", () => {
+        state.wake?.()
+      })
+      const stream: AsyncIterable<unknown> = {
+        [Symbol.asyncIterator]: () => ({
+          next: async () => {
+            for (;;) {
+              if (state.signal?.aborted) return { done: true as const, value: undefined }
+              if (state.queue.length > 0) return { done: false, value: state.queue.shift() }
+              if (state.failure !== null) throw state.failure.error
+              if (state.closed) return { done: true as const, value: undefined }
+              await new Promise<void>((resolve) => {
+                state.wake = resolve
+              })
+            }
+          },
+        }),
+      }
+      return stream
+    },
+  } as unknown as EventSource
+  const first = (): (typeof streams)[number] | undefined => streams[0]
+  return {
+    source,
+    failFirst: (error) => {
+      const stream = first()
+      if (stream !== undefined) {
+        stream.failure = { error }
+        stream.wake?.()
+      }
+    },
+    closeFirst: () => {
+      const stream = first()
+      if (stream !== undefined) {
+        stream.closed = true
+        stream.wake?.()
+      }
+    },
+    deliver: (event) => {
+      const stream = streams.at(-1)
+      if (stream !== undefined) {
+        stream.queue.push(event)
+        stream.wake?.()
+      }
+    },
+    subscriptions: () => streams.length,
+    signals: () => signals,
+  }
+}
 
 describe("SESSION_EVENT_TYPES", () => {
   it("subscribes to exactly the five lifecycle/selection events", () => {
@@ -31,6 +116,7 @@ describe("subscribeSessions", () => {
       sessionEvent("session.model.selected", { sessionID: "s1", model: wireRef("p", "m") }, 2),
     )
     events.push(sessionEvent("session.execution.succeeded", { sessionID: "s1" }, 3))
+    subscription.dispose()
     events.close()
     await subscription.done
     expect(reports).toEqual([
@@ -63,24 +149,80 @@ describe("subscribeSessions", () => {
       (e) => errors.push(e),
     )
     events.push({ type: "session.status", created: 1, data: {} })
+    subscription.dispose()
     events.close()
     await subscription.done
     expect(reports).toEqual([])
     expect(errors).toEqual([])
   })
 
-  it("reports pump errors to onError", async () => {
+  it("reports pump errors to onError and resubscribes instead of dying (A4)", async () => {
     const events = fakeEvents()
+    const reports: unknown[] = []
     const errors: unknown[] = []
     const subscription = subscribeSessions(
       events.source,
-      () => undefined,
+      (report) => reports.push(report),
       (error) => errors.push(error),
+      instant,
     )
     events.push(sessionEvent("session.execution.started", { sessionID: "s1" }, 1))
     events.fail(new Error("transport broke"))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // The failure surfaced once; the pump did not die — the shared fake
+    // stream is subscribed again (the failure stays sticky in the fixture,
+    // so the exact retry count is not asserted here).
+    expect(errors[0]).toEqual(new Error("transport broke"))
+    expect(reports).toEqual([{ kind: "execution-started", sessionID: "s1", at: 1 }])
+    subscription.dispose()
+    events.close()
     await subscription.done
-    expect(errors).toEqual([new Error("transport broke")])
+  })
+
+  it("resubscribes onto a fresh stream after a transient error and keeps pumping (A4)", async () => {
+    const events = resubscribeEvents()
+    const reports: unknown[] = []
+    const errors: unknown[] = []
+    const subscription = subscribeSessions(
+      events.source,
+      (report) => reports.push(report),
+      (error) => errors.push(error),
+      instant,
+    )
+    expect(events.subscriptions()).toBe(1)
+    events.failFirst(new Error("hiccup"))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(errors).toEqual([new Error("hiccup")])
+    expect(events.subscriptions()).toBe(2)
+    expect(events.signals()[1]).toBeInstanceOf(AbortSignal)
+    events.deliver(sessionEvent("session.execution.started", { sessionID: "s1" }, 1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(reports).toEqual([{ kind: "execution-started", sessionID: "s1", at: 1 }])
+    subscription.dispose()
+    await subscription.done
+  })
+
+  it("resubscribes when the host closes the stream cleanly (A4)", async () => {
+    const events = resubscribeEvents()
+    const reports: unknown[] = []
+    const errors: unknown[] = []
+    const subscription = subscribeSessions(
+      events.source,
+      (report) => reports.push(report),
+      (error) => errors.push(error),
+      instant,
+    )
+    events.closeFirst()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(events.subscriptions()).toBe(2)
+    expect(errors).toHaveLength(1)
+    events.deliver(sessionEvent("session.execution.started", { sessionID: "s1" }, 1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(reports).toEqual([{ kind: "execution-started", sessionID: "s1", at: 1 }])
+    subscription.dispose()
+    await subscription.done
   })
 
   it("stays quiet when the stream errors after dispose (abort)", async () => {

@@ -1,5 +1,4 @@
 export * from "./retry/index.js"
 export * from "./continuation/index.js"
 export * from "./parking/index.js"
-export * from "./recovery/index.js"
 export * from "./escalation/index.js"

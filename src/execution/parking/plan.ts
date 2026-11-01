@@ -1,6 +1,13 @@
 import type { ParkedRecord } from "../../state/parked-work/types.js"
 
 /**
+ * Resume-attempt budget (ADP-011): a record whose continuation prompt kept
+ * failing is dropped once its attempts reach this count — the idle loop
+ * must be provably bounded, not "as long as idle events keep firing".
+ */
+export const MAX_PARKED_ATTEMPTS = 5
+
+/**
  * Predicates supplied by the wiring at each safe boundary. Kept as
  * injected predicates so this module stays host-agnostic and fully
  * unit-testable with fakes.
@@ -21,7 +28,10 @@ export interface ResumePlan {
   readonly attempt: readonly ParkedRecord[]
   /** Tier no longer configured — keep parked until the user configures it. */
   readonly hold: readonly ParkedRecord[]
-  /** Session gone — the record can never resume; the wiring drops it. */
+  /**
+   * Session gone, or the record exhausted its resume-attempt budget — the
+   * record can never (or may no longer) resume; the wiring drops it.
+   */
   readonly drop: readonly ParkedRecord[]
 }
 
@@ -40,6 +50,10 @@ export function selectResumable(
   const byAge = [...records].sort((a, b) => a.parkedAt - b.parkedAt)
   for (const record of byAge) {
     if (!context.sessionAlive(record.sessionID)) {
+      drop.push(record)
+      continue
+    }
+    if ((record.attempts ?? 0) >= MAX_PARKED_ATTEMPTS) {
       drop.push(record)
       continue
     }

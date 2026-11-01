@@ -46,6 +46,25 @@ describe("escalation request", () => {
     expect(parsed?.evidence).toHaveLength(MAX_ESCALATION_FIELD_LENGTH)
   })
 
+  it("never splits a UTF-16 surrogate pair when truncating (E6 regression)", () => {
+    // An astral-plane character straddling the truncation point used to leave
+    // a lone high surrogate in the persisted evidence.
+    const text = `${"a".repeat(MAX_ESCALATION_FIELD_LENGTH - 1)}\u{1F600}${"b".repeat(10)}`
+    const parsed = parseEscalationRequest({ reason: text, evidence: "e" })
+    const reason = parsed?.reason ?? ""
+    expect(reason.length).toBeLessThanOrEqual(MAX_ESCALATION_FIELD_LENGTH)
+    const last = reason.at(-1) ?? ""
+    expect(last.codePointAt(0)).not.toBeGreaterThanOrEqual(0xd800)
+    const detail = escalationDetail({ reason: text, evidence: "e" })
+    expect(detail.length).toBeLessThanOrEqual(MAX_ESCALATION_FIELD_LENGTH * 2 + 2)
+    // for-of on a string iterates whole code points, so a lone surrogate —
+    // the defect — shows up as a single unit in the surrogate range.
+    for (const unit of detail) {
+      const cp = unit.codePointAt(0) ?? 0
+      expect(cp >= 0xd800 && cp <= 0xdfff).toBe(false)
+    }
+  })
+
   it("builds a bounded detail line", () => {
     expect(escalationDetail({ reason: "context", evidence: "413 overflow" })).toBe(
       "context: 413 overflow",

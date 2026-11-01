@@ -22,15 +22,16 @@ const RPC_VENDOR = "coool.adaptive"
 /**
  * Identity schema: the wire value passes through unchanged; the type
  * parameters carry the transport contract. `gate` optionally rejects values
- * before they reach a handler.
+ * before they reach a handler; the failure message names the expectation so a
+ * rejected call is diagnosable from the wire error alone.
  */
-function schema<T>(gate: (value: unknown) => boolean): StandardSchemaV1<T, T> {
+function schema<T>(gate: (value: unknown) => boolean, expectation: string): StandardSchemaV1<T, T> {
   return {
     "~standard": {
       version: 1,
       vendor: RPC_VENDOR,
       validate: (value) =>
-        gate(value) ? { value: value as T } : { issues: [{ message: "invalid input" }] },
+        gate(value) ? { value: value as T } : { issues: [{ message: expectation }] },
     },
   }
 }
@@ -41,7 +42,9 @@ function voidSchema(): StandardSchemaV1<undefined, undefined> {
       version: 1,
       vendor: RPC_VENDOR,
       validate: (value) =>
-        value === undefined ? { value: undefined } : { issues: [{ message: "unexpected input" }] },
+        value === undefined
+          ? { value: undefined }
+          : { issues: [{ message: "unexpected input: no input expected" }] },
     },
   }
 }
@@ -54,23 +57,25 @@ export const adaptiveRpc = Rpc.define({
   methods: {
     "settings.get": {
       input: voidSchema(),
-      output: schema<SettingsV1>(isRecord),
+      output: schema<SettingsV1>(isRecord, "output must be an object"),
     },
     "settings.set": {
-      input: schema<SettingsPatch>(isRecord),
-      output: schema<PatchResult>(isRecord),
+      input: schema<SettingsPatch>(isRecord, "input must be an object"),
+      output: schema<PatchResult>(isRecord, "output must be an object"),
     },
     "status.get": {
       input: voidSchema(),
-      output: schema<StatusSnapshot>(isRecord),
+      output: schema<StatusSnapshot>(isRecord, "output must be an object"),
     },
     "receipts.list": {
       input: voidSchema(),
-      output: schema<Receipt[]>(Array.isArray),
+      output: schema<Receipt[]>(Array.isArray, "output must be an array"),
     },
   },
   events: {
-    "settings-changed": { schema: schema<{ version: number }>(isRecord) },
+    "settings-changed": {
+      schema: schema<{ version: number }>(isRecord, "event data must be an object"),
+    },
   },
 })
 

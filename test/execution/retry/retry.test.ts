@@ -29,6 +29,7 @@ const FAILOVER_ELIGIBLE: ReadonlySet<FailureCategory> = new Set([
 
 const REF: ModelRef = { providerID: "provider-a", id: "model-a" }
 const OTHER: ModelRef = { providerID: "provider-b", id: "model-b" }
+const FAILED: ModelRef = { providerID: "provider-a", id: "model-a" }
 
 function classification(category: FailureCategory, definitive: boolean): FailureClassification {
   return {
@@ -43,6 +44,7 @@ function classification(category: FailureCategory, definitive: boolean): Failure
 function input(overrides: Partial<RetryInput> = {}): RetryInput {
   return {
     classification: overrides.classification ?? classification("rate_limited", true),
+    failingModel: overrides.failingModel ?? FAILED,
     native: overrides.native ?? { retry: true, delay: 1000 },
     recovery: overrides.recovery ?? { kind: "switch", model: OTHER },
     vetoesUsed: overrides.vetoesUsed ?? 0,
@@ -72,6 +74,44 @@ describe("decideRetry", () => {
   it("vetoes at the last budget slot", () => {
     const decision = decideRetry(input({ vetoesUsed: MAX_VETOES_PER_UNIT - 1 }))
     expect(decision.kind).toBe("veto")
+  })
+
+  it("leaves when the recovery target is the failing model itself (E3 regression)", () => {
+    // A degraded resource still assesses available, so the admission sweep can
+    // offer the just-failed model as its own "recovery". Vetoing would discard
+    // the host's backoff and immediately re-prompt the resource that is
+    // actively failing. Probe recoveries are exempt: the probe targets the
+    // failed resource by design.
+    const sameModel: RecoveryOption = { kind: "switch", model: FAILED }
+    expect(decideRetry(input({ recovery: sameModel }))).toEqual({ kind: "leave" })
+    const sameVariant: RecoveryOption = {
+      kind: "switch",
+      model: { providerID: FAILED.providerID, id: FAILED.id, variant: "default" },
+    }
+    expect(decideRetry(input({ recovery: sameVariant }))).toEqual({ kind: "leave" })
+    // The host's "default" spelling appears on the failing side too (the
+    // retry hook reports the model actually invoked, variant included).
+    expect(
+      decideRetry(
+        input({
+          recovery: { kind: "switch", model: FAILED },
+          failingModel: { providerID: FAILED.providerID, id: FAILED.id, variant: "default" },
+        }),
+      ),
+    ).toEqual({ kind: "leave" })
+    // A genuinely different variant of the same model IS a different
+    // resource: the veto stands.
+    expect(
+      decideRetry(
+        input({
+          recovery: {
+            kind: "switch",
+            model: { providerID: FAILED.providerID, id: FAILED.id, variant: "strong" },
+          },
+          failingModel: { providerID: FAILED.providerID, id: FAILED.id, variant: "fast" },
+        }),
+      ),
+    ).toMatchObject({ kind: "veto" })
   })
 })
 
@@ -173,6 +213,7 @@ describe("properties", () => {
 
   const inputArb: fc.Arbitrary<RetryInput> = fc.record({
     classification: classificationArb,
+    failingModel: fc.constant(FAILED),
     native: nativeArb,
     recovery: recoveryArb,
     vetoesUsed: fc.integer({ min: 0, max: MAX_VETOES_PER_UNIT + 2 }),
@@ -224,6 +265,7 @@ describe("properties", () => {
         (native, recovery, vetoesUsed) => {
           const i: RetryInput = {
             classification: classification("user_cancelled", true),
+            failingModel: FAILED,
             native,
             recovery,
             vetoesUsed,
@@ -248,6 +290,7 @@ describe("properties", () => {
           for (let step = 0; step < chainLength; step++) {
             const decision = decideRetry({
               classification: classification(category, true),
+              failingModel: FAILED,
               native: { retry: true, delay: 100 },
               recovery: { kind: "switch", model: { providerID: "p" + String(step), id: "m" } },
               vetoesUsed,
@@ -260,6 +303,7 @@ describe("properties", () => {
           }
           const atEnd: RetryInput = {
             classification: classification(category, true),
+            failingModel: FAILED,
             native: { retry: true, delay: 100 },
             recovery: { kind: "switch", model: { providerID: "p", id: "m" } },
             vetoesUsed,

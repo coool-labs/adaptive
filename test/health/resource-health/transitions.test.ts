@@ -20,7 +20,7 @@ import {
 } from "../../../src/health/resource-health/types.js"
 
 const CONFIG: ResourceHealthConfig = {
-  breaker: { failureThreshold: 3, baseOpenMs: 1_000, maxBackoffMs: 8_000 },
+  breaker: { failureThreshold: 3, baseOpenMs: 1_000, maxBackoffMs: 8_000, probeTimeoutMs: 600_000 },
   defaultRateLimitWindowMs: 20_000,
 }
 
@@ -207,6 +207,66 @@ describe("resource health transitions", () => {
         CONFIG,
       )
       expect(result.health).toBe("unavailable")
+    })
+  })
+
+  describe("configuration failures (auth_failure, invalid_model)", () => {
+    it("quarantines definitively as an unrecoverable unavailable state", () => {
+      for (const category of ["auth_failure", "invalid_model"] as const) {
+        const result = applyHealthEvent(
+          record("healthy"),
+          { kind: "failure", key: { providerID: "p", modelID: "m" }, category, definitive: true },
+          100,
+          CONFIG,
+        )
+        expect(result.health).toBe("unavailable")
+        expect(result.window).toBeUndefined()
+      }
+    })
+
+    it("never hard-quarantines on non-definitive evidence — the breaker owns it instead", () => {
+      for (const category of ["auth_failure", "invalid_model"] as const) {
+        const result = applyHealthEvent(
+          record("healthy"),
+          { kind: "failure", key: { providerID: "p", modelID: "m" }, category, definitive: false },
+          100,
+          CONFIG,
+        )
+        expect(result.health).toBe("degraded")
+        expect(result.breaker.failures).toBe(1)
+        expect(result.window).toBeUndefined()
+      }
+    })
+
+    it("leaves an already-degraded or unavailable record's health alone on non-definitive evidence", () => {
+      for (const health of ["degraded", "unavailable"] as const) {
+        for (const category of ["auth_failure", "invalid_model"] as const) {
+          const result = applyHealthEvent(
+            record(health),
+            {
+              kind: "failure",
+              key: { providerID: "p", modelID: "m" },
+              category,
+              definitive: false,
+            },
+            100,
+            CONFIG,
+          )
+          expect(result.health).toBe(health)
+          expect(result.breaker.failures).toBe(1)
+        }
+      }
+    })
+
+    it("keeps invalid_model scope-restricted even when non-definitive", () => {
+      const result = applyHealthEvent(
+        recordWithKey({ providerID: "p" }, "healthy"),
+        { kind: "failure", key: { providerID: "p" }, category: "invalid_model", definitive: false },
+        100,
+        CONFIG,
+      )
+      expect(result.health).toBe("healthy")
+      expect(result.breaker.failures).toBe(0)
     })
   })
 

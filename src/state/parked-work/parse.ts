@@ -49,6 +49,11 @@ function parseParked(raw: unknown): ParkedRecord | undefined {
   const reason = PARK_REASONS.find((entry) => entry === reasonRaw)
   if (tier === undefined || reason === undefined) return undefined
   const detail = parseDetailBounded(raw["detail"])
+  const attemptsRaw = raw["attempts"]
+  const attempts =
+    typeof attemptsRaw === "number" && Number.isInteger(attemptsRaw) && attemptsRaw >= 0
+      ? attemptsRaw
+      : undefined
   return {
     id,
     sessionID,
@@ -56,6 +61,7 @@ function parseParked(raw: unknown): ParkedRecord | undefined {
     reason,
     ...(detail !== undefined ? { detail } : {}),
     parkedAt,
+    ...(attempts !== undefined ? { attempts } : {}),
   }
 }
 

@@ -73,6 +73,40 @@ class FakeStorage implements SettingsStorage {
   }
 }
 
+/**
+ * Storage whose FIRST write stays pending until released by the test — the
+ * knob for proving two concurrent updates cannot interleave their reads and
+ * writes (lost-update regression).
+ */
+class GatedStorage implements SettingsStorage {
+  #raw: unknown = undefined
+  #gated: Promise<void> | undefined
+  #release: (() => void) | undefined
+  writes = 0
+
+  read(): Promise<unknown> {
+    return Promise.resolve(this.#raw)
+  }
+
+  write(settings: SettingsV1): Promise<void> {
+    this.writes += 1
+    if (this.#gated === undefined) {
+      this.#gated = new Promise<void>((resolve) => {
+        this.#release = resolve
+      })
+      return this.#gated.then(() => {
+        this.#raw = settings
+      })
+    }
+    this.#raw = settings
+    return Promise.resolve()
+  }
+
+  releaseFirstWrite(): void {
+    this.#release?.()
+  }
+}
+
 describe("runtime constants", () => {
   test("settings key is namespaced under the plugin", () => {
     expect(SETTINGS_KEY).toBe("coool.adaptive/settings")
@@ -307,6 +341,40 @@ describe("applyPatch", () => {
     expect(result.ok && result.settings.inviteDismissed).toBe(true)
   })
 
+  test("a patch agentTiers error names the offending value whatever its type (S1)", () => {
+    const longAgent = `x-${"y".repeat(80)}` // past the 64-char value-render cap
+    for (const bad of [
+      null,
+      3,
+      { plan: null },
+      { plan: 7 },
+      { plan: undefined },
+      { plan: {} },
+      { [longAgent]: "nope" },
+      { "": "quick" },
+    ]) {
+      const result = applyPatch(defaultSettings(), {
+        agentTiers: bad as unknown as Record<string, "quick">,
+      })
+      expect(result.ok).toBe(false)
+      if (result.ok) continue
+      expect(result.errors.length).toBe(1)
+      expect(result.errors[0]).toMatch(/^invalid agentTiers/)
+    }
+  })
+
+  test("a patch with more agentTiers entries than the cap is rejected (S1)", () => {
+    const tooMany: Record<string, "quick"> = {}
+    for (let index = 0; index < MAX_AGENT_TIERS + 1; index += 1) {
+      tooMany[`agent-${String(index)}`] = "quick"
+    }
+    const result = applyPatch(defaultSettings(), { agentTiers: tooMany })
+    expect(result).toMatchObject({
+      ok: false,
+      errors: [`invalid agentTiers: more than ${String(MAX_AGENT_TIERS)} entries`],
+    })
+  })
+
   test("invalid fields collect bounded errors in field order", () => {
     const bad = {
       mode: "auto",
@@ -347,6 +415,56 @@ describe("applyPatch", () => {
     const snapshot = structuredClone(STORED)
     applyPatch(STORED, { mode: "off", pin: ref("q", "n") })
     expect(STORED).toEqual(snapshot)
+  })
+
+  test("an all-invalid agentTiers patch is rejected, not silently wiped", () => {
+    const result = applyPatch(STORED, { agentTiers: { plan: "adanced" } })
+    expect(result).toEqual({
+      ok: false,
+      errors: ['invalid agentTiers entry "plan": "adanced"'],
+    })
+  })
+
+  test("a partially invalid agentTiers patch is rejected naming the first bad entry", () => {
+    const result = applyPatch(STORED, { agentTiers: { build: "advanced", plan: "nope" } })
+    expect(result).toEqual({
+      ok: false,
+      errors: ['invalid agentTiers entry "plan": "nope"'],
+    })
+  })
+
+  test("an agentTiers patch beyond the cap is rejected, not silently truncated", () => {
+    const raw: Record<string, string> = {}
+    for (let i = 0; i <= MAX_AGENT_TIERS; i += 1) raw[String(i)] = "quick"
+    const result = applyPatch(STORED, { agentTiers: raw })
+    expect(result).toEqual({
+      ok: false,
+      errors: ["invalid agentTiers: more than 64 entries"],
+    })
+  })
+
+  test("a partial tiers patch is rejected naming the missing tiers", () => {
+    const current: SettingsV1 = {
+      version: 1,
+      mode: "observe",
+      tiers: { quick: [], standard: [ref("p", "a")], advanced: [ref("p", "c")] },
+      pin: null,
+      agentTiers: {},
+      inviteDismissed: false,
+    }
+    const result = applyPatch(current, { tiers: { quick: [ref("p", "x")] } })
+    expect(result).toEqual({
+      ok: false,
+      errors: ['invalid tiers: missing "standard", "advanced"'],
+    })
+  })
+
+  test("a non-array tier value in a patch is rejected instead of clearing the tier", () => {
+    const result = applyPatch(STORED, { tiers: { quick: [], standard: "nope", advanced: [] } })
+    expect(result).toEqual({
+      ok: false,
+      errors: ['invalid tiers: "standard" must be an array'],
+    })
   })
 })
 
@@ -407,6 +525,43 @@ describe("SettingsStore", () => {
     storage.failWrite()
     await expect(store.update({ mode: "control" })).rejects.toThrow("storage write failed")
     expect(store.get().mode).toBe("observe")
+  })
+
+  test("an all-invalid agentTiers patch changes nothing and persists nothing", async () => {
+    const storage = new FakeStorage()
+    storage.seed(STORED)
+    const store = new SettingsStore(storage)
+    await store.load()
+    const result = await store.update({
+      agentTiers: { plan: "adanced" },
+    } as unknown as SettingsPatch)
+    expect(result.ok).toBe(false)
+    expect(store.get().agentTiers).toEqual({ build: "advanced" })
+    expect(storage.writes).toBe(0)
+  })
+
+  test("concurrent updates serialize so both changes survive (no lost update)", async () => {
+    const storage = new GatedStorage()
+    const store = new SettingsStore(storage)
+    await store.load()
+    const first = store.update({ mode: "control" })
+    const second = store.update({ inviteDismissed: true })
+    let secondSettled = false
+    const trackedSecond = second.then((result) => {
+      secondSettled = true
+      return result
+    })
+    // The second update must wait behind the first's unresolved write.
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(secondSettled).toBe(false)
+    storage.releaseFirstWrite()
+    const [firstResult, secondResult] = await Promise.all([first, trackedSecond])
+    expect(firstResult.ok).toBe(true)
+    expect(secondResult.ok).toBe(true)
+    const stored = (await storage.read()) as SettingsV1
+    expect(stored.mode).toBe("control")
+    expect(stored.inviteDismissed).toBe(true)
+    expect(store.get()).toEqual(stored)
   })
 })
 

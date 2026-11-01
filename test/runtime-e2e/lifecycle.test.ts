@@ -166,14 +166,16 @@ describe("runtime e2e: supervision lifecycle", () => {
       expect(escalate.sessionID).toBe(run.sessionID)
 
       // The owned continuation opens a fresh unit on the escalated resource;
-      // its provider call succeeds (per-model queue for fake-model-2).
+      // its provider call succeeds (per-model queue for fake-model-2). The
+      // escalation receipt is recorded unit-less and adopted by the
+      // continuation unit, so the outcome lands on the escalate receipt.
       const continued = await pollReceipts(
         host,
         (all) =>
           all.some(
             (r) =>
-              r.id > escalate.id &&
               r.sessionID === run.sessionID &&
+              r.decision.kind === "escalate" &&
               r.outcome?.status === "succeeded",
           ),
         60_000,
@@ -181,8 +183,8 @@ describe("runtime e2e: supervision lifecycle", () => {
       expect(
         continued.some(
           (r) =>
-            r.id > escalate.id &&
             r.sessionID === run.sessionID &&
+            r.decision.kind === "escalate" &&
             r.outcome?.status === "succeeded",
         ),
       ).toBe(true)

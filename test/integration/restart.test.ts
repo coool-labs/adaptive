@@ -6,7 +6,7 @@
 // covers: ["ADP-024", "ADP-030", "ADP-036"]
 import { describe, expect, it } from "vitest"
 
-import { CONTINUATION_PROMPT } from "../../src/supervisor/log.js"
+import { CONTINUATION_PROMPT } from "../../src/execution/index.js"
 import { SETTINGS_KEY } from "../../src/state/settings/types.js"
 import {
   INTERRUPTED_USER,
