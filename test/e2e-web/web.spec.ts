@@ -9,7 +9,7 @@
  */
 // covers: ["ADP-035", "ADP-042"]
 import { expect, test, type Page } from "@playwright/test"
-import { HOST_PASSWORD } from "../runtime-e2e/helpers.js"
+import { HOST_PASSWORD, startHost } from "../runtime-e2e/helpers.js"
 import { connect, hostUrl, rpc, rpcRaw } from "./app.js"
 
 /** Open the host settings from the home view, on either viewport layout. */
@@ -111,6 +111,40 @@ test.describe("settings surfaces", () => {
     await openSettings(page)
     await expect(page.getByRole("button", { name: "Back to app" })).toBeVisible()
     await expect(page.getByRole("tabpanel")).toBeVisible()
+  })
+})
+
+test.describe("server disconnect", () => {
+  test("a dead server degrades the app instead of failing silently", async ({ page }) => {
+    // Own host: the shared run host must stay alive for the other projects.
+    const host = await startHost({})
+    try {
+      await connect(page, HOST_PASSWORD, host.baseUrl)
+      // The connection state lives in the page; killing the host must not be
+      // silently absorbed. On 2.2.5 the next server round-trip (here: the
+      // lazy-loaded add-project dialog) surfaces the loss as a visible
+      // application error instead of an error banner or disabled actions —
+      // host-SPA behavior, pinned here so it can never regress to silence.
+      // A host that failed to boot would have thrown in startHost, and a
+      // started host always has a pid; narrow the union for process.kill.
+      const pid = host.pid
+      if (pid === undefined) throw new Error("host pid missing")
+      process.kill(pid, "SIGKILL")
+      const addProject = page.getByRole("button", { name: "Add project" }).first()
+      if (!(await addProject.isVisible().catch(() => false))) {
+        // Narrow layout: Add project lives in the Projects drawer.
+        await page
+          .getByRole("button", { name: "Projects" })
+          .click()
+          .catch(() => undefined)
+      }
+      await addProject.click().catch(() => undefined)
+      await expect(page.getByText("An error occurred while loading the application")).toBeVisible({
+        timeout: 30_000,
+      })
+    } finally {
+      await host.close()
+    }
   })
 })
 

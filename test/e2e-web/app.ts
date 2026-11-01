@@ -12,9 +12,13 @@ import { HOST_STATE_PATH } from "./state.js"
 export const hostUrl = (): string =>
   (JSON.parse(readFileSync(HOST_STATE_PATH, "utf8")) as { url: string }).url
 
+/** Host serve process id from the global setup state file. */
+export const hostPid = (): number =>
+  (JSON.parse(readFileSync(HOST_STATE_PATH, "utf8")) as { url: string; pid: number }).pid
+
 /** Connect the SPA to the test host through its own password form. */
-export const connect = async (page: Page, password: string): Promise<void> => {
-  await page.goto(hostUrl())
+export const connect = async (page: Page, password: string, url = hostUrl()): Promise<void> => {
+  await page.goto(url)
   await page.getByRole("button", { name: "Use password" }).click()
   await page.getByRole("textbox", { name: "Password" }).fill(password)
   await page.getByRole("button", { name: "Connect" }).click()

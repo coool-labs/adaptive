@@ -104,3 +104,12 @@ Stateless in memory: health, parked work, settings, receipts are rebuilt from st
 ## Experimental API isolation
 
 All experimental surfaces (`experimental.idle`, `experimental.ws.*`, GUI surface) are reachable only from `adapters/opencode` and `ui/gui`, each behind a narrow interface documented as experimental in code; core modules compile and test without them.
+
+## Privacy and threat model
+
+Adaptive is a local supervisor: it makes no outbound network calls of its own and sends no telemetry. The threats it defends against are all local:
+
+- **Secrets never enter durable state or prompts.** Receipt and parked-work free text is vocabulary-checked and truncated (`MAX_RECEIPT_TEXT`); provider header capture uses a fixed allowlist that can never match `authorization` or credential-bearing headers; the only prompt the plugin ever sends is the fixed continuation prompt, so receipts, decisions, and metadata cannot reach a model call.
+- **Untrusted inputs are narrowed, not trusted.** Provider data (status lines, `Retry-After`, bodies) is parsed defensively and bounded (24 h Retry-After cap, 512-byte body excerpt); persisted plugin state is validated on load — corrupt settings degrade to defaults, invalid receipts/parked records are dropped, never coerced.
+- **RPC is the only remote-control surface** (settings.get/set, status.get, receipts.list), schema-gated on the wire, and exposes no credentials or host capabilities; surfaces hold no state and cannot act beyond patching settings.
+- **Failure policy is direction-aware:** internal Adaptive failures fail open (log, defer to ordinary OpenCode behavior) so the plugin can never wedge a session; privacy and configured-provider restrictions fail closed (only user-configured resources are ever eligible).

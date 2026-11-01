@@ -90,4 +90,6 @@ jobs:
       - run: npm ci
       - run: npm i -g @opencode/cli@$OPENCODE_VERSION
       - run: echo "OPENCODE_BIN=$(which opencode)" >> "$GITHUB_ENV"
+      # Core tests also run on macOS where practical (GOAL CI requirement).
+      - run: npm test
       - run: npm run e2e:tui

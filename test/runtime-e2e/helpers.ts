@@ -63,6 +63,8 @@ export interface StartedHost {
   stderrLines(): string[]
   home: string
   project: string
+  /** Host serve process id (undefined if the child exited before boot finished). */
+  pid: number | undefined
   run(input: { text: string; script?: FakeProviderScript; sessionID?: string }): Promise<HostRun>
   close(): Promise<void>
 }
@@ -243,11 +245,16 @@ export async function startHost(
     // processes survived it), so give it a short grace period, then SIGKILL
     // and await exit — a leaked server would keep ports and state files held.
     child.kill("SIGTERM")
-    const exited = new Promise<void>((resolve) => {
-      child.once("exit", () => {
-        resolve()
-      })
-    })
+    // A child that already exited (killed externally, boot crash) never emits
+    // `exit` again — resolve immediately instead of awaiting a lost event.
+    const exited =
+      child.exitCode !== null || child.signalCode !== null
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => {
+            child.once("exit", () => {
+              resolve()
+            })
+          })
     const grace = wait(500).then(() => {
       child.kill("SIGKILL")
     })
@@ -260,7 +267,17 @@ export async function startHost(
     }
     STARTED_HOSTS.splice(STARTED_HOSTS.indexOf(started), 1)
   }
-  const started: StartedHost = { client, baseUrl, provider, stderrLines, home, project, run, close }
+  const started: StartedHost = {
+    client,
+    baseUrl,
+    provider,
+    stderrLines,
+    home,
+    project,
+    pid: child.pid,
+    run,
+    close,
+  }
   STARTED_HOSTS.push(started)
   return started
 }

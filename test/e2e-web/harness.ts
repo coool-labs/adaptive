@@ -11,5 +11,5 @@ export default async function boot(): Promise<void> {
   rmSync(HOST_STATE_PATH, { force: true })
   const host = await startHost({})
   mkdirSync("test-artifacts", { recursive: true })
-  writeFileSync(HOST_STATE_PATH, JSON.stringify({ url: host.baseUrl }))
+  writeFileSync(HOST_STATE_PATH, JSON.stringify({ url: host.baseUrl, pid: host.pid }))
 }

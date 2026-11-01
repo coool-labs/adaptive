@@ -1,6 +1,6 @@
 # Test Strategy
 
-Deterministic by construction: injected clocks everywhere; no sleeps; no paid models.
+Deterministic by construction: injected clocks everywhere; no paid models; unit/integration/property/web/TUI suites use no sleeps — the real-host runtime E2E additionally uses fixed `settle()` pauses where the host's own retry/grind timing cannot be observed conditionally (polling is used wherever a condition exists).
 
 ## Layers
 
@@ -8,10 +8,10 @@ Deterministic by construction: injected clocks everywhere; no sleeps; no paid mo
 2. **Property / state-machine** — `fast-check` (ADP-038): classification totality; health-state legality; scheduler invariants (unavailable/incompatible never selected; availability failure never escalates; Observe≡Control decisions; Observe never changes execution; pin wins; no silent downgrade; finite budgets terminate; one half-open probe; preferred resource returns only at a safe boundary); receipt no-secrets/boundedness.
 3. **Integration** — real seams with fake adapters: scheduler→health→state; retry hook policy→adapter; rpc validation; settings migration; restart round-trips; fail-open (throwing dependencies → defer).
 4. **Fault injection** — deterministic provider fixture + clock: 429, quota reset, 503, timeout, disconnect, malformed error, context overflow, auth failure, recovery-after-N, concurrent sessions, child-session failure, OpenCode restart, Adaptive internal exception.
-5. **Packed-plugin** — `@coool/opencode-plugin-test` packed mode against real isolated OpenCode hosts: targets 2.2.1, current, latest; surfaces server/tui/rpc; behavioral scenarios (routing defer in Observe, settings round-trip via rpc, receipt generation) — not just "plugin becomes active" (ADP-040).
+5. **Packed-plugin** — `@coool/opencode-plugin-test` packed mode against real isolated OpenCode hosts: targets 2.2.1, current, latest; surfaces server/rpc (the `tui` surface is not declared — host 2.2.5 does not load plugin TUI bundles, proven by the TUI canary below); behavioral scenarios (first-install defaults, settings round-trip via rpc incl. invalid-patch rejection, status mirror, receipts.list, unknown-method rejection, host session API still works) — not just "plugin becomes active" (ADP-040).
 6. **Server E2E (real host + fake provider)** — runtime scenario list below (ADP-041).
 7. **Web E2E (Playwright)** — real OpenCode Web UI + packed plugin; Chromium + WebKit; desktop + narrow viewports; semantic locators; zero retries; screenshot checks as secondary assertions (ADP-042).
-8. **TUI E2E (Termwright)** — real PTY; 80x24 / narrow / wide; `wait_for_idle` conditions only; failure artifacts captured (ADP-043).
+8. **TUI E2E (Termwright)** — real PTY; 80x24 (narrow floor) / default / wide; condition-based waits only; failure artifacts captured (ADP-043).
 9. **Cross-surface E2E** — Web→TUI and TUI→Web settings sync (ADP-044).
 10. **Headless** — full CONTROL recovery flow with no UI surface loaded (ADP-045).
 
@@ -27,12 +27,16 @@ Documented limitations (minimal proofs per GOAL):
 - **Variant/effort escalation** is unit-covered: escalating at runtime requires a model inventory entry with a variant ladder; the fake provider's host config exposes none, and strength is never guessed from variant names (ADP-004).
 - **Native `/goal` through a mid-goal model transition** is impossible on host 2.2.5: goal auto-continuation turns run inside one execution unit with no prompt hook and no execution boundary between them; the lifecycle /goal test instead proves the GOAL.md flow (goal starts → preferred fails → veto → owned recovery continues the goal on the fallback → completes → preferred again at the next boundary) and records the limitation.
 - **Compatibility-gate demand is empty in production**: the host exposes no per-episode demand source (tools/modalities/context tokens) in the v2 wiring, so runtime admission passes `demand: {}` and only the `model-unavailable` dimension can fire live; the remaining gate dimensions (tools, modalities, context capacity, variant availability) are exercised at the unit layer (`checkCompatibility` tests). The `drain`/`reset` health-event kinds are likewise requirement-driven surfaces with no runtime producer; capacity signals flow through `CapacityRegistry` directly.
+- **Explicit tier requests and auxiliary-request tiering are unwired**: the priority ladder and the core honor `tierRequest` and auxiliary→`quick`, but the v2 host wiring has no source for either (no slash/RPC channel; auxiliary `model.request` kinds are observed but not routed separately — switching for an auxiliary request would move the primary model). Covered at the unit layer (`resolve.test.ts`).
+- **Before-dispatch parking defers to OpenCode**: when a required tier has no usable resource at admission time, the scheduler emits `park`, but the wiring records the decision as a receipt and lets the episode proceed on OpenCode's own model (fail-open; the host's own selection is not overridden). Persisted parked records arise from owned-recovery failures and are resumed at idle boundaries; the restart/resume journey is proven in `lifecycle.test.ts`.
+- **Prompt overhead**: the plugin sends exactly one fixed continuation prompt and nothing else — `test/execution/continuation/execute.test.ts` property-proves every owned prompt is `CONTINUATION_PROMPT` and a generated original never appears, so receipts and operational metadata cannot reach a prompt; routing CPU overhead is bounded by `test/core/scheduler/perf.test.ts` (ADP-052/053).
+- **Headless (ADP-045)** is covered by construction: every runtime E2E scenario runs against bare `opencode serve` with no UI surface loaded (`supervision.test.ts` declares ADP-045).
 
 ## Web E2E journeys (ADP-042)
 
 Real-web coverage (`test/e2e-web/web.spec.ts` via `npm run e2e:web`: Playwright against the real OpenCode v2 web app served by `opencode serve` with the packed plugin on an isolated host; Chromium desktop, Chromium narrow 390x844, WebKit; zero retries):
 
-Password connect → home empty state; wrong password → error state (stays on the form); keyboard-operable connect (pressSequentially + Enter); settings page reachable and renders at every viewport width (narrow reaches Settings through the banner Tabs dialog); documented settings tabs visible; models catalog search finds the configured model and shows its empty state for unknown models; Extensions → Plugins lists `coool.adaptive`; plugin RPC integration from browser page context (settings.get Observe default on first install, settings.set control → reload → persistence → back to observe, invalid patch rejected at the schema gate, status.get mirroring mode/tiers/receipts).
+Password connect → home empty state; wrong password → error state (stays on the form); keyboard-operable connect (pressSequentially + Enter); server disconnect kills the host process (own host per test) and the app surfaces the loss visibly — the next server round-trip produces the SPA's application-error screen on 2.2.5 (host-UI behavior, pinned so it can never regress to silence); settings page reachable and renders at every viewport width (narrow reaches Settings through the banner Tabs dialog); documented settings tabs visible; models catalog search finds the configured model and shows its empty state for unknown models; Extensions → Plugins lists `coool.adaptive`; plugin RPC integration from browser page context (settings.get Observe default on first install, settings.set control → reload → persistence → back to observe, invalid patch rejected at the schema gate, status.get mirroring mode/tiers/receipts).
 
 Documented limitations (minimal proofs per GOAL):
 
@@ -41,7 +45,7 @@ Documented limitations (minimal proofs per GOAL):
 
 ## TUI E2E journeys (ADP-043)
 
-Real PTY (Termwright) against the real OpenCode TUI + fake-provider sidecar: boot/first-run state (empty editor, configured model active); keyboard-only command-palette navigation with Escape/cancel; a full session turn through the provider; 80x24 and wide-dimension runs (`npm run e2e:tui`).
+Real PTY (Termwright) against the real OpenCode TUI + fake-provider sidecar: boot/first-run state (empty editor, configured model active); keyboard-only command-palette navigation with Escape/cancel; a full session turn through the provider; dimension runs at 80x24 (the narrow floor), the 100x30 default, and 200x50 wide (`npm run e2e:tui`).
 
 Documented limitation (2.2.5, proven by the minimal reproducible canary in `test/e2e-tui/tui.spec.ts`): the interactive TUI does not load plugin `./tui` bundles from project-config or config-dir discovery — plugin TUI commands (`/adaptive`, and with them the Observe/Control switch, model search/selection/reorder/remove, save/persistence, status/health/validation and restart/reconnect dialog journeys) cannot surface. The canary asserts the plugin command is absent from the palette; a host that mounts plugin TUI bundles flips it and those journeys get implemented.
 

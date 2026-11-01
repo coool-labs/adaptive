@@ -990,10 +990,10 @@ export class Supervisor {
     // A veto implies the admission was an apply: the recovery option exists
     // only when the fresh admission selected a resource, so the assertion
     // cannot be undefined on this path.
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- see justification above
     await this.#recordReceipt({
       sessionID: input.sessionID,
       tier: routingTier,
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- a veto implies the admission was an apply (the recovery exists only then)
       decision: admission!,
     })
     void this.#ownRecovery(input.sessionID, wrapped.model, routingTier)
