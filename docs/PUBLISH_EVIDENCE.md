@@ -48,7 +48,7 @@ commit adds documentation only). Machine-readable artifacts live under
 
 ## Termwright TUI E2E (ADP-043)
 
-6/6 passed on a real PTY with the packed plugin: boot/first-run, keyboard-only palette navigation, session turn, narrow/normal/wide layouts, plus the inverted limitation canary (the interactive TUI does not load plugin TUI bundles on 2.2.5).
+9/9 passed on a real PTY with the packed plugin mounted from the sandbox's global config: boot/first-run, keyboard-only palette navigation, the `/adaptive` dialog flow driven end-to-end (first-run invitation confirmed, status alert with the observe snapshot, observe→control mode switch verified by re-reading the status after closing and reopening the flow, receipts empty-state alert, Escape cancellation at every dialog level), session turn, narrow/normal/wide layouts. Sandbox requirements established empirically on 2.2.5: the plugin must be configured in the HOME-based global config (`~/.config/opencode/opencode.json`) for the TUI to mount its bundle and resolve its RPC (a project-local entry registers the command but every rpc call fails with `rpc.unavailable`; the `$XDG_CONFIG_HOME` config file is not consulted for plugin discovery), and the keymap layer needs `mode: "global"` (fixed in `src/tui.ts`).
 
 ## Packaging validation (ADP-048/050)
 
@@ -68,7 +68,6 @@ Real screenshots of both surfaces captured and inspected (kept under gitignored 
 ## Known limitations
 
 - **OpenCode 2.2.5 plugin GUI surface:** the browser-served web app does not load plugin GUI bundles, so the Adaptive settings page does not mount there (covered by an inverted canary test; the page's copy/DOM is asserted at unit level; mounts on the desktop shell's experimental GUI surface).
-- **OpenCode 2.2.5 plugin TUI surface:** the interactive TUI does not load plugin TUI bundles, so `/adaptive` may not appear until a newer OpenCode release (inverted canary + documented proof; settings still work over RPC from any client).
 - **Termwright PTY backend is darwin-only** (`@termwright/pty-darwin-arm64`); the CI `tui-e2e` job therefore runs on macOS.
 - **Capacity sensing is best-effort:** WebSocket-native providers (OpenAI OAuth/Codex) bypass the `http.request/response` hooks OpenCode exposes; header-based capacity views are never load-bearing.
 - **By design:** no cross-tier borrowing (a tier exhausted means work waits or parks); no de-escalation of a running episode; no failback mode; no telemetry.

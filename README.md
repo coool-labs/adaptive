@@ -108,7 +108,6 @@ Minimum **2.2.1**; the packed-plugin test suite runs against 2.2.1, current, and
 ## Limitations
 
 - **GUI surface (2.2.5):** the Adaptive settings page mounts on OpenCode's experimental GUI (desktop shell). The browser UI served by `opencode serve` does not load plugin GUI bundles, so the page does not appear there yet.
-- **TUI surface (2.2.5):** the interactive TUI does not yet load plugin TUI bundles, so `/adaptive` may not appear until a newer OpenCode release. Settings still work over RPC from any client.
 - **No cross-tier borrowing:** if a tier is exhausted, work waits or parks. This is deliberate.
 - **No de-escalation:** after an episode escalates, the next episode routes fresh; Adaptive does not downgrade a running episode.
 - **WebSocket-native providers** bypass the HTTP hooks used for capacity sensing; their capacity view is best-effort.

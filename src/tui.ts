@@ -13,6 +13,7 @@ import { PLUGIN_ID } from "./plugin-id.js"
 import { adaptiveRpc } from "./rpc/definition.js"
 import { runAdaptive } from "./ui/tui/controller.js"
 import type { AdaptiveApi, AdaptiveView } from "./ui/tui/controller.js"
+import { errorText } from "./ui/tui/options.js"
 import type { ModelSummary } from "./ui/tui/tiers.js"
 
 export default define({
@@ -45,6 +46,10 @@ export default define({
       }))
     }
     context.keymap.layer(() => ({
+      // "global" opts out of input-mode scoping: the default ("base") binds
+      // the commands to one OpenCode input mode, which kept the palette from
+      // matching them (the sibling @coool plugins register the same way).
+      mode: "global",
       commands: [
         {
           id: "coool.adaptive.menu",
@@ -54,7 +59,7 @@ export default define({
           slash: { name: "adaptive" },
           run: () => {
             void runAdaptive({ api, view, models }).catch((error: unknown) => {
-              view.toast(error instanceof Error ? error.message : String(error), "error")
+              view.toast(errorText(error), "error")
             })
           },
         },

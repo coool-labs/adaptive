@@ -136,6 +136,7 @@ describe("tui entry", () => {
     })
     await tuiPlugin.setup(context)
     const layer = layers[0] as {
+      mode?: string
       commands: { id: string; slash: { name: string }; palette?: boolean }[]
     }
     expect(layer.commands[0]?.id).toBe("coool.adaptive.menu")
@@ -143,6 +144,10 @@ describe("tui entry", () => {
     // palette:true is what makes the command discoverable in the TUI command
     // palette (the /adaptive slash flow only lands in the editor).
     expect(layer.commands[0]?.palette).toBe(true)
+    // mode:"global" opts the layer out of input-mode scoping; the default
+    // ("base") bound the command to one OpenCode input mode and the palette
+    // never matched it (regression: found by the Termwright /adaptive E2E).
+    expect(layer.mode).toBe("global")
   })
 
   it("runs the invite flow through the host dialogs", async () => {

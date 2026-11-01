@@ -3,15 +3,16 @@
  * for settings, so a change made on one surface is observable on the other
  * without any surface-local state.
  *
- * Surface fidelity on opencode 2.2.5 (both limitations are proven by canary
- * tests, not assumed):
+ * Surface fidelity on opencode 2.2.5:
  * - The web surface is the real browser app; the plugin's settings page does
  *   not mount there (plugin GUIs mount only through the desktop shell's
  *   bridge — canary in web.spec.ts), so the web side speaks the plugin RPC
  *   from inside the page, the exact channel the GUI api binds.
- * - The TUI does not load plugin bundles (canary in test/e2e-tui/tui.spec.ts),
- *   so the TUI side is a typed client bound to the same RPC definition
- *   src/tui.ts binds (context.client.rpc(adaptiveRpc)).
+ * - The TUI surface does mount the plugin bundle (its RPC path is driven for
+ *   real by the Termwright journeys in test/e2e-tui/tui.spec.ts), but driving
+ *   two interactive TUIs in one automated test is not automated, so the TUI
+ *   side here is a typed client bound to the same RPC definition src/tui.ts
+ *   binds (context.client.rpc(adaptiveRpc)).
  */
 // covers: ["ADP-044"]
 import { expect, test } from "@playwright/test"
