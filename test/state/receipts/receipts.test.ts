@@ -766,6 +766,21 @@ describe("ReceiptStore.adoptUnit", () => {
     expect(storage.writes).toBe(3)
   })
 
+  test("adopts only the newest pending receipt when several are pending", async () => {
+    const storage = new FakeReceiptsStorage()
+    const store = new ReceiptStore(storage)
+    const orphan = await store.record(input({ unitID: undefined, decision: applyDecision() }))
+    const current = await store.record(input({ unitID: undefined, decision: applyDecision() }))
+    const updated = await store.adoptUnit("s", "s#1")
+    expect(updated).toBe(1)
+    const snapshot = store.snapshot()
+    expect(snapshot.find((r) => r.id === current.id)?.unitID).toBe("s#1")
+    // The older pending admission belongs to a prompt whose turn never opened
+    // a unit; stamping it would attach the opened unit's outcome to a foreign
+    // admission decision.
+    expect(snapshot.find((r) => r.id === orphan.id)?.unitID).toBeUndefined()
+  })
+
   test("leaves receipts that already carry a unit or an outcome alone", async () => {
     const storage = new FakeReceiptsStorage()
     const store = new ReceiptStore(storage)

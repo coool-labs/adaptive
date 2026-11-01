@@ -89,20 +89,28 @@ export class ReceiptStore {
   /**
    * Stamps the unit that just opened onto the session's pending unit-less
    * admission receipts (recorded in the awaited prompt hook, before the unit
-   * existed). After adoption the receipts carry the unitID, so outcomes
-   * attach to them like any unit-scoped receipt. Receipts that already carry
-   * an outcome are left alone.
+   * existed). After adoption the receipt carries the unitID, so outcomes
+   * attach to it like any unit-scoped receipt.
+   *
+   * One opened unit adopts ONE admission — the newest pending receipt. With
+   * several pending receipts (a prompt admitted but superseded before its
+   * unit ever opened), stamping all of them would attach this unit's outcome
+   * to foreign admission decisions; the older receipts stay pending instead.
    */
   async adoptUnit(sessionID: string, unitID: string): Promise<number> {
-    let updated = 0
-    this.#receipts = this.#receipts.map((receipt) => {
-      if (receipt.unitID !== undefined || receipt.outcome !== undefined) return receipt
-      if (receipt.sessionID !== sessionID) return receipt
-      updated++
-      return { ...receipt, unitID }
+    let target: number | undefined
+    this.#receipts.forEach((receipt, index) => {
+      if (receipt.unitID !== undefined || receipt.outcome !== undefined) return
+      if (receipt.sessionID !== sessionID) return
+      target = index
     })
-    if (updated > 0) await this.#persist()
-    return updated
+    if (target === undefined) return 0
+    const at = target
+    this.#receipts = this.#receipts.map((receipt, index) =>
+      index === at ? { ...receipt, unitID } : receipt,
+    )
+    await this.#persist()
+    return 1
   }
 
   async #persist(): Promise<void> {

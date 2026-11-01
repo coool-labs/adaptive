@@ -174,14 +174,23 @@ export class Supervisor {
           (this.#continuationsInFlight.get(sessionID) ?? 0) + 1,
         )
       },
-      afterPrompt: (sessionID) => {
+      afterPrompt: (sessionID, delivered) => {
         // sessionOps.prompt calls this only after its own beforePrompt, so
         // the entry is always present; the assertion avoids a default branch
         // no caller can reach.
         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
         const depth = this.#continuationsInFlight.get(sessionID)!
-        if (depth <= 1) this.#continuationsInFlight.delete(sessionID)
-        else this.#continuationsInFlight.set(sessionID, depth - 1)
+        if (depth <= 1) {
+          this.#continuationsInFlight.delete(sessionID)
+          if (!delivered) {
+            // The last in-flight owned prompt never reached the host's hook:
+            // its ownership mark would swallow the next user prompt's
+            // admission, so it is dropped here (the hook can no longer fire).
+            this.#continuationPending.delete(sessionID)
+          }
+        } else {
+          this.#continuationsInFlight.set(sessionID, depth - 1)
+        }
       },
     })
     // Durable state loads before the first report is handled: a later load
@@ -335,14 +344,25 @@ export class Supervisor {
   async #onPrompt(sessionID: string, settings: SettingsV1): Promise<void> {
     if (settings.mode !== "control") return
     if (this.#continuationPending.delete(sessionID)) return
+    // A pending probe ticket from an earlier prompt admission (or a failed
+    // recovery) can only be carried by the unit the ORIGINAL prompt opens;
+    // a fresh admission means that episode never ran, so the ticket re-arms
+    // here instead of being adopted by whichever unit opens next.
+    const stale = this.#sessionProbeTickets.get(sessionID)
+    if (stale !== undefined) {
+      this.#sessionProbeTickets.delete(sessionID)
+      this.#reportProbeOutcome(stale, { success: false, category: "user_cancelled" })
+    }
+    let probeTicket: ProbeTicket | undefined
     try {
-      const { routing, decision, probeTicket } = await this.#admit(settings, sessionID)
-      const wrapped = schedulerForMode(decision, settings.mode)
+      const admission = await this.#admit(settings, sessionID)
+      probeTicket = admission.probeTicket
+      const wrapped = schedulerForMode(admission.decision, settings.mode)
       if (wrapped.kind === "apply") {
         await this.#ops.switchModel(sessionID, wrapped.model)
       }
       // A pin is not a tier — receipts only carry a tier for tiered routing.
-      const tier = routing.kind === "pin" ? undefined : routing.tier
+      const tier = routingTier(admission.routing)
       await this.#recordReceipt({
         sessionID,
         ...(tier !== undefined ? { tier } : {}),
@@ -354,6 +374,11 @@ export class Supervisor {
         this.#sessionProbeTickets.set(sessionID, probeTicket)
       }
     } catch (error) {
+      // A probe admitted for this turn is lost when the admission fails (the
+      // switch threw): no unit will ever carry the ticket, so re-arm it.
+      if (probeTicket !== undefined) {
+        this.#reportProbeOutcome(probeTicket, { success: false, category: "user_cancelled" })
+      }
       // Fail-open: no marker → execution-started re-routes the unit itself.
       logFailOpen("admission", error)
       await this.#recordReceipt({
@@ -443,12 +468,16 @@ export class Supervisor {
     await this.#capacity.refresh()
     const health: Record<string, Assessment> = {}
     const capacity: Record<string, CapacitySignals> = {}
+    // Tickets issued by this assessment sweep (see the re-arm below).
+    const issued: ProbeTicket[] = []
     for (const candidate of inventory) {
       const ref = candidateRef(candidate)
       const mapKey = schedulerHealthKey(ref)
-      health[mapKey] = this.#health.assess(refKey(ref))
-      const assessment = this.#capacity.assessment(refKey(ref))
-      if (assessment.kind === "estimate") capacity[mapKey] = assessment.signals
+      const assessment = this.#health.assess(refKey(ref))
+      health[mapKey] = assessment
+      if (assessment.kind === "probe") issued.push(assessment.ticket)
+      const capacityAssessment = this.#capacity.assessment(refKey(ref))
+      if (capacityAssessment.kind === "estimate") capacity[mapKey] = capacityAssessment.signals
     }
     const input: SchedulerInput = {
       routing,
@@ -459,15 +488,20 @@ export class Supervisor {
       capacity,
     }
     const decision = admit(input)
-    // The half-open probe's ticket comes from the assessment that admitted
-    // it; the decision only carries the id.
+    // Assess admits a half-open probe for every due breaker it touches —
+    // including candidates this decision passed over (a ready sibling wins)
+    // or dispatched nothing for (defer/park). An issued-but-undispatched
+    // probe would wedge its resource in half_open: no unit ever carries the
+    // ticket, so nothing reports it and the resource never recovers. Re-arm
+    // each unselected ticket with the breaker's same backoff window — a
+    // probe that never ran is no health evidence.
+    const selectedId = decision.kind === "apply" ? decision.evidence.probeId : undefined
     let probeTicket: ProbeTicket | undefined
-    if (decision.kind === "apply" && decision.evidence.probeId !== undefined) {
-      for (const assessment of Object.values(health)) {
-        if (assessment.kind === "probe" && assessment.ticket.id === decision.evidence.probeId) {
-          probeTicket = assessment.ticket
-          break
-        }
+    for (const ticket of issued) {
+      if (selectedId !== undefined && ticket.id === selectedId) {
+        probeTicket = ticket
+      } else {
+        this.#health.reportProbe(ticket, { success: false, category: "user_cancelled" })
       }
     }
     return { routing, decision, ...(probeTicket !== undefined ? { probeTicket } : {}) }
@@ -483,13 +517,27 @@ export class Supervisor {
     }
     const wrapped = schedulerForMode(decision, settings.mode)
     if (wrapped.kind === "apply") {
+      try {
+        await this.#applyModel(unit, wrapped)
+      } catch (error) {
+        // The episode cannot carry the probe when the switch itself failed —
+        // re-arm the ticket instead of wedging the resource half-open.
+        if (probeTicket !== undefined) {
+          this.#reportProbeOutcome(probeTicket, { success: false, category: "user_cancelled" })
+        }
+        throw error
+      }
       if (probeTicket !== undefined) this.#probeTickets.set(unit.id, probeTicket)
-      await this.#applyModel(unit, wrapped)
       return
+    }
+    if (probeTicket !== undefined) {
+      // OBSERVE wraps an apply — including a probe admission — without
+      // running it: no episode will ever report the ticket, so re-arm it.
+      this.#reportProbeOutcome(probeTicket, { success: false, category: "user_cancelled" })
     }
     // Observe-only records the identical decision; defer and park leave the
     // episode on OpenCode's own model (admission cannot hold an episode).
-    const tier = routing.kind === "pin" ? undefined : routing.tier
+    const tier = routingTier(routing)
     await this.#recordReceipt({
       sessionID: unit.sessionID,
       unitID: unit.id,
@@ -799,7 +847,15 @@ export class Supervisor {
       vetoesUsed,
     })
     const wrapped = retryForMode(core, settings.mode)
-    if (wrapped.kind !== "veto") return
+    if (wrapped.kind !== "veto") {
+      // OBSERVE (and a declined veto) never runs the recovery episode, so an
+      // admitted probe has no continuation to report it — re-arm it here or
+      // the resource wedges half-open.
+      if (probeTicket !== undefined) {
+        this.#reportProbeOutcome(probeTicket, { success: false, category: "user_cancelled" })
+      }
+      return
+    }
     input.decision = { retry: false }
     if (unitID !== undefined) {
       this.#vetoes.set(unitID, vetoesUsed + 1)
@@ -807,12 +863,29 @@ export class Supervisor {
     // A probe admitted by this recovery belongs to the continuation episode
     // that ownRecovery is about to start; its termination reports the probe.
     if (probeTicket !== undefined) {
+      // The session holds one pending probe slot. A still-pending older
+      // ticket belongs to a recovery whose continuation has not started (its
+      // episode can no longer claim this slot) — re-arm it before replacing.
+      const stale = this.#sessionProbeTickets.get(input.sessionID)
+      if (stale !== undefined && stale !== probeTicket) {
+        this.#reportProbeOutcome(stale, { success: false, category: "user_cancelled" })
+      }
       this.#sessionProbeTickets.set(input.sessionID, probeTicket)
     }
     void this.#ownRecovery(input.sessionID, wrapped.model)
       .then(() => undefined)
       .catch(async (error: unknown) => {
         logFailOpen("recovery-ops", error)
+        // The recovery rejected before (or while) delivering its continuation
+        // prompt, so no unit will ever carry the probe it admitted — re-arm
+        // it instead of wedging the resource half-open.
+        if (
+          probeTicket !== undefined &&
+          this.#sessionProbeTickets.get(input.sessionID) === probeTicket
+        ) {
+          this.#sessionProbeTickets.delete(input.sessionID)
+          this.#reportProbeOutcome(probeTicket, { success: false, category: "user_cancelled" })
+        }
         if (unitID === undefined || routingTier === undefined) return
         try {
           await this.#parked.park({
@@ -956,6 +1029,11 @@ export class Supervisor {
   #observeHealth(event: HealthEvent): void {
     this.#health.observe(event)
   }
+}
+
+/** A pin is not a tier — receipts only carry a tier for tiered routing. */
+function routingTier(routing: RoutingDecision): TierName | undefined {
+  return routing.kind === "pin" ? undefined : routing.tier
 }
 
 /** ModelRef for a normalized candidate. */

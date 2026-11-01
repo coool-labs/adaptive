@@ -32,9 +32,10 @@ export interface SessionOpsHooks {
   /**
    * Called when the prompted call settles (success or failure), whether or
    * not the prompt hook fired — the counterpart that bounds the ownership
-   * mark's lifetime.
+   * mark's lifetime. `delivered` is false exactly when the host prompt
+   * rejected, so the hook can never fire for it.
    */
-  readonly afterPrompt?: (sessionID: string) => void
+  readonly afterPrompt?: (sessionID: string, delivered: boolean) => void
 }
 
 /** Build the supervisor's continuation ops on top of the host session domain. */
@@ -54,13 +55,15 @@ export function sessionOps(session: SessionOpsSource, hooks?: SessionOpsHooks): 
     },
     prompt: async (sessionID, text) => {
       hooks?.beforePrompt?.(sessionID)
+      let delivered = false
       try {
         await session.prompt({ sessionID, text })
+        delivered = true
       } finally {
         // The ownership mark is consumed by the prompt hook; if the prompt
         // never reaches the hook (session gone, host error), the mark must
         // not outlive the attempt and swallow a later user prompt.
-        hooks?.afterPrompt?.(sessionID)
+        hooks?.afterPrompt?.(sessionID, delivered)
       }
     },
   }

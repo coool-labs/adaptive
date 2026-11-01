@@ -162,13 +162,10 @@ export async function createFakeProvider(
   }
 
   const handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
-    const socket = response.socket
-    if (socket !== null) {
-      sockets.add(socket)
-      socket.once("close", () => {
-        sockets.delete(socket)
-      })
-    }
+    // The connection-level handler below already registers each socket in
+    // `sockets` and removes it once; adding another `once("close")` here per
+    // request piles listeners onto the same keep-alive socket and eventually
+    // trips MaxListenersExceededWarning in long test files.
 
     const chunks: Buffer[] = []
     for await (const chunk of request) {

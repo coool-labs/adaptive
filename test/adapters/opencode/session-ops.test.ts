@@ -68,17 +68,18 @@ describe("sessionOps prompt ownership marks", () => {
     const log: string[] = []
     const ops = sessionOps(fakeSessionOps(log), {
       beforePrompt: (sessionID) => log.push(`beforePrompt:${sessionID}`),
-      afterPrompt: (sessionID) => log.push(`afterPrompt:${sessionID}`),
+      afterPrompt: (sessionID, delivered) =>
+        log.push(`afterPrompt:${sessionID}:${String(delivered)}`),
     })
     await ops.prompt("s1", "continue from current state")
     expect(log).toEqual([
       "beforePrompt:s1",
       "prompt:s1:continue from current state",
-      "afterPrompt:s1",
+      "afterPrompt:s1:true",
     ])
   })
 
-  it("clears the mark even when the host prompt fails", async () => {
+  it("reports an undelivered prompt so the mark can be dropped", async () => {
     const log: string[] = []
     const source = fakeSessionOps(log)
     const failing = {
@@ -90,13 +91,14 @@ describe("sessionOps prompt ownership marks", () => {
     }
     const ops = sessionOps(failing, {
       beforePrompt: (sessionID) => log.push(`beforePrompt:${sessionID}`),
-      afterPrompt: (sessionID) => log.push(`afterPrompt:${sessionID}`),
+      afterPrompt: (sessionID, delivered) =>
+        log.push(`afterPrompt:${sessionID}:${String(delivered)}`),
     })
     await expect(ops.prompt("s1", "continue from current state")).rejects.toThrow("host gone")
     expect(log).toEqual([
       "beforePrompt:s1",
       "prompt:s1:continue from current state",
-      "afterPrompt:s1",
+      "afterPrompt:s1:false",
     ])
   })
 })
