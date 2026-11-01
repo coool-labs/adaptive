@@ -25,6 +25,21 @@ const openSettings = async (page: Page): Promise<void> => {
   }
 }
 
+/**
+ * Reach a settings tab on either viewport layout: click the tab when the
+ * tablist is rendered, else navigate to the tab's URL route (the narrow
+ * layout collapses the tablist but still renders each panel).
+ */
+const openSettingsTab = async (page: Page, tab: string): Promise<void> => {
+  await openSettings(page)
+  const tabButton = page.getByRole("tab", { name: tab })
+  if (await tabButton.isVisible().catch(() => false)) {
+    await tabButton.click()
+    return
+  }
+  await page.goto(`${hostUrl()}/settings?tab=${tab.toLowerCase()}`)
+}
+
 test.describe("connection journeys", () => {
   test("first install connects with the server password and shows the empty state", async ({
     page,
@@ -53,30 +68,26 @@ test.describe("connection journeys", () => {
 })
 
 test.describe("settings surfaces", () => {
-  // At narrow width the settings tablist is collapsed (the page lands on
-  // Preferences with a Back-to-app affordance), so tab-driven journeys run
-  // on desktop only; narrow asserts the page renders (see below).
-  const skipNarrow = (): void => {
-    test.skip(
-      test.info().project.name === "chromium-narrow",
-      "settings tablist is collapsed at narrow width",
-    )
-  }
-
   test("host settings open and expose the documented tabs", async ({ page }) => {
-    skipNarrow()
     await connect(page, HOST_PASSWORD)
     await openSettings(page)
+    if (test.info().project.name === "chromium-narrow") {
+      // The tablist is collapsed at narrow width; every tab still renders
+      // its panel through the URL route.
+      for (const tab of ["providers", "models", "extensions"]) {
+        await page.goto(`${hostUrl()}/settings?tab=${tab}`)
+        await expect(page.getByRole("tabpanel").first()).toBeVisible()
+      }
+      return
+    }
     await expect(page.getByRole("tab", { name: "Providers" })).toBeVisible()
     await expect(page.getByRole("tab", { name: "Models" })).toBeVisible()
     await expect(page.getByRole("tab", { name: "Extensions" })).toBeVisible()
   })
 
   test("the models catalog search finds the fake provider's model", async ({ page }) => {
-    skipNarrow()
     await connect(page, HOST_PASSWORD)
-    await openSettings(page)
-    await page.getByRole("tab", { name: "Models" }).click()
+    await openSettingsTab(page, "Models")
     const search = page.getByRole("searchbox", { name: "Search models" })
     await expect(search).toBeVisible()
     await search.fill("fake")
@@ -85,10 +96,8 @@ test.describe("settings surfaces", () => {
   })
 
   test("the models catalog search shows its empty state for unknown models", async ({ page }) => {
-    skipNarrow()
     await connect(page, HOST_PASSWORD)
-    await openSettings(page)
-    await page.getByRole("tab", { name: "Models" }).click()
+    await openSettingsTab(page, "Models")
     const search = page.getByRole("searchbox", { name: "Search models" })
     await expect(search).toBeVisible()
     await search.fill("no-such-model-xyz")
@@ -98,10 +107,8 @@ test.describe("settings surfaces", () => {
   })
 
   test("the packed Adaptive plugin is listed under Extensions > Plugins", async ({ page }) => {
-    skipNarrow()
     await connect(page, HOST_PASSWORD)
-    await openSettings(page)
-    await page.getByRole("tab", { name: "Extensions" }).click()
+    await openSettingsTab(page, "Extensions")
     await page.getByRole("tab", { name: "Plugins" }).click()
     await expect(page.getByText("coool.adaptive").first()).toBeVisible()
   })
@@ -150,12 +157,8 @@ test.describe("server disconnect", () => {
 
 test.describe("plugin GUI mount limitation (2.2.5)", () => {
   test("no Adaptive settings surface mounts in the browser-served app", async ({ page }) => {
-    test.skip(
-      test.info().project.name === "chromium-narrow",
-      "the tablist itself is collapsed at narrow width",
-    )
     await connect(page, HOST_PASSWORD)
-    await openSettings(page)
+    await openSettingsTab(page, "Adaptive")
     // Limitation canary: the plugin registers a settings page and a command,
     // but the web app mounts plugin GUIs only through the desktop shell's
     // bridge. If a host upgrade starts mounting them, this fails and the
