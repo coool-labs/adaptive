@@ -77,11 +77,51 @@ export function modeOptions(current: OperatingMode): SelectOption<OperatingMode>
   return OPERATING_MODES.map((mode) => ({
     title: mode === current ? `${mode} (current)` : mode,
     value: mode,
-    description:
-      mode === "off"
-        ? "Adaptive does nothing"
-        : mode === "observe"
-          ? "Record decisions without applying them"
-          : "Apply routing and recovery decisions",
+    description: modeDescription(mode),
   }))
+}
+
+/** What one mode does — shared by the global and the per-session menus. */
+function modeDescription(mode: OperatingMode): string {
+  switch (mode) {
+    case "off":
+      return "Adaptive does nothing"
+    case "observe":
+      return "Record decisions without applying them"
+    case "active":
+      return "Apply routing and recovery decisions"
+  }
+}
+
+/** One per-session mode-menu pick: follow the global mode, or set an override. */
+export type SessionModeChoice = { kind: "global" } | { kind: "mode"; mode: OperatingMode }
+
+/**
+ * The per-session mode menu (ADP-054): first "Follow global" (clearing the
+ * override), then every mode. An existing override is marked "(override)" —
+ * distinct from the effective mode's "(current)" — so the user can tell a
+ * set override apart from a session merely inheriting the global mode.
+ */
+export function sessionModeOptions(input: {
+  global: OperatingMode
+  override: OperatingMode | null
+  effective: OperatingMode
+}): SelectOption<SessionModeChoice>[] {
+  const options: SelectOption<SessionModeChoice>[] = [
+    {
+      title: `Follow global (${input.global})`,
+      description: "clear this session's override",
+      value: { kind: "global" },
+    },
+  ]
+  for (const mode of OPERATING_MODES) {
+    const marker =
+      mode === input.override ? "override" : mode === input.effective ? "current" : undefined
+    options.push({
+      title: marker === undefined ? mode : `${mode} (${marker})`,
+      value: { kind: "mode", mode },
+      description: modeDescription(mode),
+    })
+  }
+  return options
 }

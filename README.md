@@ -48,6 +48,10 @@ A resource names a concrete `providerID`/`modelID`, optionally with a variant.
 - **Observe** (default after install) — Adaptive routes, classifies, and records decision receipts, but applies nothing. Every decision it would have made is visible in the receipts.
 - **Control** — Adaptive applies its decisions: model switches happen only at safe boundaries (work-unit start/termination), never mid-episode.
 
+### Per-session mode
+
+The operating mode is global, but every session can override it. Open `/adaptive` inside a session: the mode menu shows **Follow global (observe)** first — picking a mode there sets an override for that session only, and picking **Follow global** clears it again. Everywhere else (home, other sessions) the global mode applies unchanged; the menu title always shows the session's effective mode. Overrides persist across restarts, are pruned when the session dies, and are managed over RPC (`session-mode.get` / `session-mode.set`, `session-mode-changed` event).
+
 ## Example configuration
 
 Settings live on the server; every surface (TUI, GUI, RPC) edits the same truth. The equivalent of the setup above as a settings patch:

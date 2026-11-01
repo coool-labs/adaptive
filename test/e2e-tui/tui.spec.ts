@@ -9,7 +9,9 @@
  * empty state and detail, Escape cancellation at every level), the tier
  * editor (search-and-add, move-to-top reorder, remove with confirm/cancel,
  * persistence within the session), the pin flow with its menu and status-page
- * rendering, a full session turn through the fake provider, the reconnect
+ * rendering, a full session turn through the fake provider, the per-session
+ * mode override (Follow global select, override markers, effective-mode menu
+ * title, global mode untouched), the reconnect
  * after the background service daemon dies, and dimension runs.
  *
  * Host facts (empirical, OpenCode 2.2.5):
@@ -32,7 +34,7 @@
  *   verified by re-reading the resulting state (menu descriptions, tier
  *   counts, editor rows) instead.
  */
-// covers: ["ADP-043"]
+// covers: ["ADP-043", "ADP-054"]
 import { expect, step, test } from "@termwright/test"
 import type { TermwrightFixtures } from "@termwright/test"
 import { spawnSync } from "node:child_process"
@@ -1086,6 +1088,58 @@ test(
     await step("escape back home", async () => {
       await app.press("Escape")
       await app.waitForText("Ask anything", { timeout: 15_000 })
+    })
+    await app.close()
+    await closeLaunched(launched)
+  },
+)
+
+test(
+  "a per-session mode override steers only that session's menu and leaves the global mode",
+  { timeout: 180_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal)
+    const app = launched.app
+    await bootTui(launched)
+    // A completed turn creates the session the command then runs inside —
+    // the override flows target THIS session. The one-time "Getting started"
+    // popup appears over the base screen afterwards; the palette still works
+    // over it, so it is left up.
+    await submitTurn(app, "say done")
+    await step("the session's mode menu offers Follow global first", async () => {
+      await openAdaptiveMenu(app)
+      await app.waitForText("Adaptive (observe)", { timeout: 30_000 })
+      await chooseMainMenuItem(app, 2)
+      // The session override select lists Follow global first, then the
+      // modes; the inherited global mode carries the current marker.
+      await app.waitForText("Follow global (observe)", { timeout: 30_000 })
+      await app.waitForText("observe (current)", { timeout: 15_000 })
+    })
+    await step("picking active overrides the session", async () => {
+      // Highlight starts on Follow global; active is three rows down.
+      await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown"])
+      await app.press("Enter")
+      // The override save is silent (the invitation dismissal was this
+      // dialog session's first save); the retitled menu is the evidence.
+      await app.waitForText("Adaptive (active)", { timeout: 30_000 })
+    })
+    await step("the override survives closing and reopening the flow", async () => {
+      await app.press("Escape")
+      await leaveMenuToBase(app)
+      await runAdaptiveCommand(app)
+      await app.waitForText("Adaptive (active)", { timeout: 30_000 })
+    })
+    await step("the global mode stayed observe", async () => {
+      await chooseMainMenuItem(app, 2)
+      // The Follow global row still names the untouched global mode; the
+      // override row is now marked instead of the inherited mode.
+      await app.waitForText("Follow global (observe)", { timeout: 30_000 })
+      await app.waitForText("active (override)", { timeout: 15_000 })
+    })
+    await step("escape back home", async () => {
+      // Escaping the mode menu reopens the main menu (cancel path), so a
+      // full dialog-stack depth of Escapes lands on the base screen.
+      await escapeToBase(app)
     })
     await app.close()
     await closeLaunched(launched)

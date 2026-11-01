@@ -58,6 +58,8 @@ export default define({
       setSettings: (patch) => client["settings.set"](patch),
       status: () => client["status.get"](),
       receipts: () => client["receipts.list"](),
+      sessionMode: (sessionID) => client["session-mode.get"]({ sessionID }).then((out) => out.mode),
+      setSessionMode: (sessionID, mode) => client["session-mode.set"]({ sessionID, mode }),
     }
     const view: AdaptiveView = {
       select: (options) => context.ui.dialog.select(options),
@@ -94,7 +96,16 @@ export default define({
           suggested: true,
           slash: { name: "adaptive" },
           run: () => {
-            void runAdaptive({ api, view, models }).catch((error: unknown) => {
+            // Inside a session the flows steer that session's mode override
+            // (ADP-054); on home they patch the global mode.
+            const current = context.ui.router.current()
+            const sessionID = current.type === "session" ? current.sessionID : undefined
+            void runAdaptive({
+              api,
+              view,
+              models,
+              ...(sessionID !== undefined ? { sessionID } : {}),
+            }).catch((error: unknown) => {
               view.toast(errorText(error), "error")
             })
           },
@@ -102,9 +113,13 @@ export default define({
       ],
     }))
 
-    // Footer chip: a reactive mirror of the server's operating mode, fetched
-    // once at boot and kept live via the settings-changed event.
-    const [chip, setChip] = createStore<{ mode: OperatingMode | null }>({ mode: null })
+    // Footer chip state: a reactive mirror of the server's operating mode,
+    // fetched once at boot and kept live via the settings-changed event, plus
+    // the per-session overrides seen so far (ADP-054).
+    const [chip, setChip] = createStore<{
+      mode: OperatingMode | null
+      sessions: Record<string, OperatingMode | null>
+    }>({ mode: null, sessions: {} })
 
     const fetchMode = async (): Promise<boolean> => {
       try {
@@ -116,6 +131,21 @@ export default define({
         return false
       }
     }
+
+    /**
+     * One session's override, cached so the chip never re-fetches per render.
+     * A fetch failure caches `null` (follow global): the chip stays correct
+     * for override-less sessions, and a later `session-mode-changed` event
+     * refreshes sessions that do carry an override.
+     */
+    const fetchSessionMode = async (sessionID: string): Promise<void> => {
+      try {
+        setChip("sessions", sessionID, await api.sessionMode(sessionID))
+      } catch {
+        setChip("sessions", sessionID, null)
+      }
+    }
+
     const bootFetch = async (retriesLeft: number): Promise<void> => {
       if (await fetchMode()) return
       // The server plugin may not be registered yet at TUI boot; retry
@@ -127,8 +157,7 @@ export default define({
       }
     }
 
-    const chipNode = () => {
-      const mode = chip.mode
+    const renderChip = (mode: OperatingMode | null) => {
       if (mode === null) return <text></text>
       const entry = chipFor(mode)
       // The accent-colored span cannot execute in-repo: the terminal renderer
@@ -144,15 +173,44 @@ export default define({
       )
       /* v8 ignore stop */
     }
+    const chipNode = (sessionID: string | undefined) => {
+      // On home (no session id) the chip shows the global mode; in a session
+      // it shows the session's EFFECTIVE mode (override ?? global).
+      if (sessionID === undefined) return renderChip(chip.mode)
+      const override = chip.sessions[sessionID]
+      if (override === undefined) {
+        // First render for this session: fetch the override; the store write
+        // re-renders this node with the fetched value. Until then the global
+        // mode is shown.
+        void fetchSessionMode(sessionID)
+        return renderChip(chip.mode)
+      }
+      return renderChip(override ?? chip.mode)
+    }
     // The home footer slot only exists on the home screen; sessions render
-    // the prompt footer, so the chip would otherwise vanish mid-session.
+    // the prompt footer — its slot input carries the open session's id, so
+    // the chip there shows that session's effective mode (ADP-054).
     const disposeSlots = [
-      context.ui.slot({ append: "home.footer.status", render: chipNode }),
-      context.ui.slot({ append: "prompt.footer.status", render: chipNode }),
+      context.ui.slot({ append: "home.footer.status", render: () => chipNode(undefined) }),
+      context.ui.slot({
+        append: "prompt.footer.status",
+        render: (input) => chipNode(input.sessionID),
+      }),
     ]
 
     const disposeWatch = client.events.on("settings-changed", () => {
       void fetchMode()
+      // A global mode change re-renders override-less sessions reactively;
+      // cached overrides are re-fetched so a stale mirror cannot stick.
+      for (const sessionID of Object.keys(chip.sessions)) {
+        void fetchSessionMode(sessionID)
+      }
+    })
+    const disposeSessionWatch = client.events.on("session-mode-changed", (event) => {
+      // The event data crosses the wire as an untyped record: a malformed
+      // payload is ignored (fail-open) instead of steering a bogus session.
+      const sessionID = event.data.sessionID
+      if (typeof sessionID === "string") void fetchSessionMode(sessionID)
     })
 
     void bootFetch(BOOT_FETCH_RETRIES)
@@ -160,6 +218,7 @@ export default define({
     return () => {
       for (const dispose of disposeSlots) dispose()
       disposeWatch()
+      disposeSessionWatch()
     }
   },
 })

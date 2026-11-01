@@ -336,7 +336,7 @@ describe("plugin entry: rpc surface", () => {
     handlers: Record<string, (input: unknown) => Promise<unknown>>
   }
 
-  it("registers the adaptive rpc definition with four handlers", async () => {
+  it("registers the adaptive rpc definition with all handlers", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
     seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
@@ -353,6 +353,8 @@ describe("plugin entry: rpc surface", () => {
     expect(record?.definition.id).toBe("coool.adaptive")
     expect(Object.keys(record?.definition.methods ?? {}).sort()).toEqual([
       "receipts.list",
+      "session-mode.get",
+      "session-mode.set",
       "settings.get",
       "settings.set",
       "status.get",
@@ -363,6 +365,14 @@ describe("plugin entry: rpc surface", () => {
     const result = (await handlers["settings.set"]?.({ mode: "observe" })) as { ok: boolean }
     expect(result.ok).toBe(true)
     expect(storedSettings(storage).mode).toBe("observe")
+    const mode = (await handlers["session-mode.get"]?.({ sessionID: "s1" })) as {
+      mode: string | null
+    }
+    expect(mode).toEqual({ mode: null })
+    const set = (await handlers["session-mode.set"]?.({ sessionID: "s1", mode: "observe" })) as {
+      ok: boolean
+    }
+    expect(set.ok).toBe(true)
   })
 })
 

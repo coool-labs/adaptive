@@ -1,4 +1,4 @@
-// covers: ["ADP-036", "ADP-051"]
+// covers: ["ADP-036", "ADP-051", "ADP-054"]
 import { describe, expect, it } from "vitest"
 import { adaptiveRpc, ADAPTIVE_RPC_ID } from "../../src/rpc/definition.js"
 
@@ -16,11 +16,13 @@ describe("adaptiveRpc definition", () => {
     expect(ADAPTIVE_RPC_ID).toBe("coool.adaptive")
     expect(Object.keys(adaptiveRpc.methods).sort()).toEqual([
       "receipts.list",
+      "session-mode.get",
+      "session-mode.set",
       "settings.get",
       "settings.set",
       "status.get",
     ])
-    expect(Object.keys(adaptiveRpc.events)).toEqual(["settings-changed"])
+    expect(Object.keys(adaptiveRpc.events)).toEqual(["settings-changed", "session-mode-changed"])
   })
 
   it("void schemas accept undefined and reject any other input", () => {
@@ -66,5 +68,33 @@ describe("adaptiveRpc definition", () => {
     expect(firstIssue(validate(listOutput, {}))).toBe("output must be an array")
     const event = adaptiveRpc.events["settings-changed"].schema
     expect(firstIssue(validate(event, 3))).toBe("event data must be an object")
+  })
+
+  it("the session-mode.get gate requires a sessionID string", () => {
+    const input = adaptiveRpc.methods["session-mode.get"].input
+    expect(validate(input, { sessionID: "ses_1" })).toEqual({ value: { sessionID: "ses_1" } })
+    expect("issues" in validate(input, {})).toBe(true)
+    expect("issues" in validate(input, { sessionID: 7 })).toBe(true)
+    expect("issues" in validate(input, null)).toBe(true)
+  })
+
+  it("the session-mode.set gate requires a sessionID string and a mode string or null", () => {
+    const input = adaptiveRpc.methods["session-mode.set"].input
+    expect(validate(input, { sessionID: "ses_1", mode: null })).toEqual({
+      value: { sessionID: "ses_1", mode: null },
+    })
+    expect(validate(input, { sessionID: "ses_1", mode: "active" })).toEqual({
+      value: { sessionID: "ses_1", mode: "active" },
+    })
+    expect("issues" in validate(input, { sessionID: "ses_1", mode: 7 })).toBe(true)
+    expect("issues" in validate(input, { sessionID: "ses_1" })).toBe(true)
+    expect("issues" in validate(input, "x")).toBe(true)
+  })
+
+  it("the session-mode-changed event schema validates its data object", () => {
+    const schema = adaptiveRpc.events["session-mode-changed"].schema
+    expect(validate(schema, { sessionID: "ses_1" })).toEqual({ value: { sessionID: "ses_1" } })
+    expect("issues" in validate(schema, { version: 1 })).toBe(true)
+    expect("issues" in validate(schema, 3)).toBe(true)
   })
 })

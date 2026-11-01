@@ -1,4 +1,4 @@
-// covers: ["ADP-032", "ADP-033"]
+// covers: ["ADP-032", "ADP-033", "ADP-054"]
 import { describe, expect, it } from "vitest"
 
 import { INVITE_MESSAGE, INVITE_TITLE, runAdaptive } from "../../../src/ui/tui/controller.js"
@@ -104,6 +104,8 @@ function fakeApi(overrides: Partial<AdaptiveApi> = {}, patches: SettingsPatch[] 
     },
     status: () => Promise.resolve(statusSnapshot()),
     receipts: () => Promise.resolve([] as Receipt[]),
+    sessionMode: () => Promise.resolve(null),
+    setSessionMode: () => Promise.resolve({ ok: true }),
   }
   return Object.assign(api, overrides)
 }
@@ -138,12 +140,14 @@ function env(
     api?: AdaptiveApi
     view?: FakeView
     models?: ModelSummary[]
+    sessionID?: string
   } = {},
 ) {
   return {
     api: overrides.api ?? fakeApi(),
     view: overrides.view ?? fakeView(),
     models: () => overrides.models ?? models(),
+    ...(overrides.sessionID !== undefined ? { sessionID: overrides.sessionID } : {}),
   }
 }
 
@@ -290,6 +294,203 @@ describe("controller: mode branch", () => {
     e.view.selectQueue.push("mode", undefined, ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([])
+  })
+})
+
+describe("controller: session-mode branch (ADP-054)", () => {
+  function sessionApi(overrides: Partial<AdaptiveApi> = {}, sets: unknown[] = []): AdaptiveApi {
+    return fakeApi({
+      setSessionMode: (sessionID, mode) => {
+        sets.push({ sessionID, mode })
+        return Promise.resolve({ ok: true })
+      },
+      ...overrides,
+    })
+  }
+
+  it("titles the menu after the session's effective mode", async () => {
+    const e = env({
+      sessionID: "ses_1",
+      api: fakeApi({ sessionMode: () => Promise.resolve("active") }),
+    })
+    e.view.selectQueue.push(undefined)
+    await runAdaptive(e)
+    expect(e.view.selects[0]).toBe("Adaptive (active)")
+  })
+
+  it("falls back to the global mode when the override fetch fails", async () => {
+    const e = env({
+      sessionID: "ses_1",
+      // The failure boundary must tolerate non-Error rejections (fail-open).
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      api: fakeApi({ sessionMode: () => Promise.reject("raw") }),
+    })
+    e.view.selectQueue.push(undefined)
+    await runAdaptive(e)
+    expect(e.view.selects[0]).toBe("Adaptive (observe)")
+    expect(e.view.toasts.map((t) => t.message)).toEqual(["raw"])
+  })
+
+  it("offers Follow global first, then the modes with override/current markers", async () => {
+    const e = env({
+      sessionID: "ses_1",
+      api: fakeApi({ sessionMode: () => Promise.resolve("active") }),
+    })
+    e.view.selectQueue.push("mode", undefined, undefined)
+    await runAdaptive(e)
+    const options = e.view.selectOptions[1]
+    if (options === undefined) throw new Error("mode menu was not shown")
+    expect(options.map((option) => option.title)).toEqual([
+      "Follow global (observe)",
+      "off",
+      "observe",
+      "active (override)",
+    ])
+    expect(options[0]?.value).toEqual({ kind: "global" })
+  })
+
+  it("marks the inherited global mode as current when no override is set", async () => {
+    const e = env({ sessionID: "ses_1" })
+    e.view.selectQueue.push("mode", undefined, undefined)
+    await runAdaptive(e)
+    expect(e.view.selectOptions[1]?.map((option) => option.title)).toEqual([
+      "Follow global (observe)",
+      "off",
+      "observe (current)",
+      "active",
+    ])
+  })
+
+  it("picking a mode patches the session override, not the global settings", async () => {
+    const sets: unknown[] = []
+    const patches: SettingsPatch[] = []
+    const e = env({
+      sessionID: "ses_1",
+      api: sessionApi(
+        {
+          setSettings: (patch) => {
+            patches.push(patch)
+            return Promise.resolve({ ok: true, settings: settings() } satisfies PatchResult)
+          },
+        },
+        sets,
+      ),
+    })
+    e.view.selectQueue.push("mode", { kind: "mode", mode: "active" }, undefined)
+    await runAdaptive(e)
+    expect(sets).toEqual([{ sessionID: "ses_1", mode: "active" }])
+    expect(patches).toEqual([])
+    // The menu retitles to the new effective mode.
+    expect(e.view.selects).toContain("Adaptive (active)")
+  })
+
+  it("picking Follow global clears the override", async () => {
+    const sets: unknown[] = []
+    const e = env({
+      sessionID: "ses_1",
+      api: sessionApi({ sessionMode: () => Promise.resolve("off") }, sets),
+    })
+    e.view.selectQueue.push("mode", { kind: "global" }, undefined)
+    await runAdaptive(e)
+    expect(sets).toEqual([{ sessionID: "ses_1", mode: null }])
+    expect(e.view.selects[0]).toBe("Adaptive (off)")
+    // Back to following global: the menu retitles to the global mode.
+    expect(e.view.selects[2]).toBe("Adaptive (observe)")
+  })
+
+  it("does not re-patch when the pick changes nothing", async () => {
+    const sets: unknown[] = []
+    const e = env({ sessionID: "ses_1", api: sessionApi({}, sets) })
+    // No override yet: Follow global is a no-op. Then picking the effective
+    // mode again is also a no-op.
+    e.view.selectQueue.push(
+      "mode",
+      { kind: "global" },
+      "mode",
+      { kind: "mode", mode: "observe" },
+      undefined,
+    )
+    await runAdaptive(e)
+    expect(sets).toEqual([])
+  })
+
+  it("alerts on an invalid override result", async () => {
+    const e = env({
+      sessionID: "ses_1",
+      api: sessionApi({
+        setSessionMode: () =>
+          Promise.resolve({
+            ok: false,
+            errors: ["mode must be one of off, observe, active or null"],
+          }),
+      }),
+    })
+    e.view.selectQueue.push("mode", { kind: "mode", mode: "active" }, undefined)
+    await runAdaptive(e)
+    expect(e.view.alerts).toContainEqual({
+      title: "Invalid settings",
+      message: "mode must be one of off, observe, active or null",
+    })
+  })
+
+  it("toasts when the override write fails", async () => {
+    const e = env({
+      sessionID: "ses_1",
+      api: sessionApi({ setSessionMode: () => Promise.reject(new Error("storage down")) }),
+    })
+    e.view.selectQueue.push("mode", { kind: "mode", mode: "active" }, undefined)
+    await runAdaptive(e)
+    expect(e.view.toasts.map((t) => t.message)).toEqual(["storage down"])
+  })
+
+  it("keeps the global mode menu when no session is open", async () => {
+    const { e, patches } = envWith()
+    e.view.selectQueue.push("mode", "active", ...EXIT)
+    await runAdaptive(e)
+    expect(patches).toEqual([{ mode: "active" }])
+    // The global menu has no Follow global entry.
+    expect(e.view.selectOptions[1]?.map((option) => option.title)).toEqual([
+      "off",
+      "observe (current)",
+      "active",
+    ])
+  })
+
+  it("toasts the saved feedback only on the first save of a dialog session", async () => {
+    // The invitation dismissal is the dialog session's first save; the
+    // later override save stays silent.
+    const sets: unknown[] = []
+    const e = env({
+      sessionID: "ses_1",
+      api: fakeApi({
+        settings: () => Promise.resolve({ ...settings(), inviteDismissed: false }),
+        sessionMode: () => Promise.resolve("off"),
+        setSessionMode: (sessionID, mode) => {
+          sets.push({ sessionID, mode })
+          return Promise.resolve({ ok: true })
+        },
+      }),
+    })
+    e.view.confirmQueue.push(true)
+    e.view.selectQueue.push(true, "mode", { kind: "global" }, undefined)
+    await runAdaptive(e)
+    expect(sets).toEqual([{ sessionID: "ses_1", mode: null }])
+    expect(e.view.toasts).toEqual([{ message: "Settings saved", variant: "success" }])
+  })
+
+  it("leaves the override untouched when clearing it fails", async () => {
+    const e = env({
+      sessionID: "ses_1",
+      api: sessionApi({
+        sessionMode: () => Promise.resolve("off"),
+        setSessionMode: () => Promise.reject(new Error("storage down")),
+      }),
+    })
+    e.view.selectQueue.push("mode", { kind: "global" }, undefined)
+    await runAdaptive(e)
+    // The menu stays titled after the (still set) override.
+    expect(e.view.selects[0]).toBe("Adaptive (off)")
+    expect(e.view.toasts.map((t) => t.message)).toEqual(["storage down"])
   })
 })
 

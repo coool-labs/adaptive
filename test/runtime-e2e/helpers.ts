@@ -54,6 +54,10 @@ export interface HostRpc {
   receipts: {
     list(): Promise<unknown>
   }
+  sessionMode: {
+    get(sessionID: string): Promise<unknown>
+    set(sessionID: string, mode: string | null): Promise<unknown>
+  }
 }
 
 export interface StartedHost {
@@ -307,6 +311,10 @@ export const rpc = (host: StartedHost): HostRpc => {
     settings: { get: () => call("settings.get"), set: (patch) => call("settings.set", patch) },
     status: { get: () => call("status.get") },
     receipts: { list: () => call("receipts.list") },
+    sessionMode: {
+      get: (sessionID) => call("session-mode.get", { sessionID }),
+      set: (sessionID, mode) => call("session-mode.set", { sessionID, mode }),
+    },
   }
 }
 

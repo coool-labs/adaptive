@@ -2,7 +2,9 @@
  * Typed RPC definition (ADP-034/036): the only channel between the server
  * plugin and the TUI/GUI surfaces. Surfaces hold no local settings state —
  * they fetch snapshots, patch settings, and re-fetch on the `settings-changed`
- * event (the server is the single source of truth).
+ * event (the server is the single source of truth). Session-mode overrides
+ * follow the same contract via `session-mode.get/set` and the
+ * `session-mode-changed` event (ADP-054).
  *
  * Schema note: input schemas gate the wire shape (non-object patches are
  * rejected as rpc.invalid_input); deeper validation happens in the handlers
@@ -11,8 +13,10 @@
  */
 import { Rpc } from "@opencode/schema/rpc"
 import type { StandardSchemaV1 } from "@standard-schema/spec"
+import type { OperatingMode } from "../core/scheduler/types.js"
 import type { SettingsPatch, SettingsV1 } from "../state/settings/index.js"
 import type { PatchResult } from "../state/settings/types.js"
+import type { SessionModeSetResult } from "../state/session-modes/index.js"
 import type { Receipt } from "../state/receipts/types.js"
 import type { StatusSnapshot } from "./status.js"
 
@@ -49,8 +53,19 @@ function voidSchema(): StandardSchemaV1<undefined, undefined> {
   }
 }
 
-const isRecord = (value: unknown): boolean =>
+const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
+
+const isString = (value: unknown): boolean => typeof value === "string"
+
+/** `{ sessionID: string }` — deeper validation (bounds, vocabulary) is the handler's. */
+const hasSessionID = (value: unknown): boolean => isRecord(value) && isString(value["sessionID"])
+
+/** `{ sessionID: string, mode: OperatingMode | null }` wire shape. */
+const isSessionModeSet = (value: unknown): boolean =>
+  isRecord(value) &&
+  isString(value["sessionID"]) &&
+  (value["mode"] === null || isString(value["mode"]))
 
 export const adaptiveRpc = Rpc.define({
   id: ADAPTIVE_RPC_ID,
@@ -71,10 +86,30 @@ export const adaptiveRpc = Rpc.define({
       input: voidSchema(),
       output: schema<Receipt[]>(Array.isArray, "output must be an array"),
     },
+    "session-mode.get": {
+      input: schema<{ sessionID: string }>(
+        hasSessionID,
+        "input must be an object with a sessionID string",
+      ),
+      output: schema<{ mode: OperatingMode | null }>(isRecord, "output must be an object"),
+    },
+    "session-mode.set": {
+      input: schema<{ sessionID: string; mode: OperatingMode | null }>(
+        isSessionModeSet,
+        "input must be an object with a sessionID string and a mode string or null",
+      ),
+      output: schema<SessionModeSetResult>(isRecord, "output must be an object"),
+    },
   },
   events: {
     "settings-changed": {
       schema: schema<{ version: number }>(isRecord, "event data must be an object"),
+    },
+    "session-mode-changed": {
+      schema: schema<{ sessionID: string }>(
+        hasSessionID,
+        "event data must be an object with a sessionID string",
+      ),
     },
   },
 })

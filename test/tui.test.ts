@@ -1,9 +1,10 @@
-// covers: ["ADP-032", "ADP-033"]
+// covers: ["ADP-032", "ADP-033", "ADP-054"]
 import { describe, expect, it } from "vitest"
 
 import tuiPlugin, { chipFor } from "../src/tui.js"
 import { settingsJSON } from "./supervisor/helpers.js"
 import { fakeTuiContext, modelInfo } from "./tui/fake-context.js"
+import type { OperatingMode } from "../src/core/scheduler/types.js"
 
 function observedSettings(
   mode: Parameters<typeof settingsJSON>[0],
@@ -227,7 +228,7 @@ describe("tui entry: footer chip", () => {
     expect(slots.length).toBe(2)
     await dispose()
     expect(counts.slotDisposals).toBe(2)
-    expect(counts.eventDisposals).toBe(1)
+    expect(counts.eventDisposals).toBe(2)
   })
 
   it("fetches settings at boot and refetches on settings-changed", async () => {
@@ -239,11 +240,99 @@ describe("tui entry: footer chip", () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     // The chip mirrors the server mode: one boot fetch, then the event.
     expect(counts.settingsGets).toBe(1)
-    expect(events.map((event) => event.name)).toEqual(["settings-changed"])
+    expect(events.map((event) => event.name)).toEqual(["settings-changed", "session-mode-changed"])
     const handler = events[0]?.handler
-    if (handler !== undefined) handler()
+    if (handler !== undefined) handler({ data: { version: 1 } })
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(counts.settingsGets).toBe(2)
+  })
+
+  it("refetches a session's override on the session-mode-changed event", async () => {
+    const { context, events, counts } = fakeTuiContext({
+      settings: settingsJSON("observe"),
+      clientPatches: [],
+      route: { type: "session", sessionID: "ses_1" },
+      sessionMode: "active",
+    })
+    await tuiPlugin.setup(context)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(counts.sessionModeGets).toBe(0)
+    const handler = events.find((event) => event.name === "session-mode-changed")?.handler
+    if (handler === undefined) throw new Error("session-mode-changed watch was not registered")
+    handler({ data: { sessionID: "ses_1" } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(counts.sessionModeGets).toBe(1)
+    // A malformed payload is ignored (fail-open) instead of steering a bogus
+    // session.
+    handler({ data: { sessionID: 7 } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(counts.sessionModeGets).toBe(1)
+  })
+
+  it("refetches cached overrides when the global settings change", async () => {
+    const { context, events, slots, counts } = fakeTuiContext({
+      settings: settingsJSON("observe"),
+      clientPatches: [],
+      sessionMode: "active",
+    })
+    await tuiPlugin.setup(context)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // A chip render for the session warms the override cache.
+    const slot = slots[1]
+    if (slot === undefined) throw new Error("no prompt slot was claimed")
+    const node = slot.render({ sessionID: "ses_1", mode: "normal", showDetails: false })
+    if (!(node instanceof Element)) throw new Error("the slot did not render a node")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(counts.sessionModeGets).toBe(1)
+    const handler = events.find((event) => event.name === "settings-changed")?.handler
+    if (handler === undefined) throw new Error("settings-changed watch was not registered")
+    handler({ data: { version: 1 } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // The cached override is refreshed so a stale mirror cannot stick.
+    expect(counts.sessionModeGets).toBe(2)
+  })
+})
+
+describe("tui entry: session-scoped flows (ADP-054)", () => {
+  it("passes the open session into the flows and steers its override", async () => {
+    const patches: Record<string, unknown>[] = []
+    const sessionPatches: { sessionID: string; mode: OperatingMode | null }[] = []
+    const { context, dialogs, layers } = fakeTuiContext({
+      settings: observedSettings("observe"),
+      clientPatches: patches,
+      route: { type: "session", sessionID: "ses_1" },
+      sessionMode: "active",
+      sessionModePatches: sessionPatches,
+    })
+    await tuiPlugin.setup(context)
+    const run = (layers[0] as { commands: { run: () => void }[] }).commands[0]?.run
+    if (run === undefined) throw new Error("slash command was not registered")
+    // The menu is titled after the session's EFFECTIVE mode (override active),
+    // and the mode menu steers the session, not the global settings.
+    dialogs.selectQueue.push("mode", { kind: "mode", mode: "observe" }, undefined)
+    run()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(dialogs.selects[0]?.title).toBe("Adaptive (active)")
+    expect(sessionPatches).toEqual([{ sessionID: "ses_1", mode: "observe" }])
+    expect(patches).toEqual([])
+  })
+
+  it("runs the global mode menu when the command is opened on home", async () => {
+    const patches: Record<string, unknown>[] = []
+    const sessionPatches: { sessionID: string; mode: OperatingMode | null }[] = []
+    const { context, dialogs, layers } = fakeTuiContext({
+      settings: observedSettings("observe"),
+      clientPatches: patches,
+      sessionModePatches: sessionPatches,
+    })
+    await tuiPlugin.setup(context)
+    const run = (layers[0] as { commands: { run: () => void }[] }).commands[0]?.run
+    if (run === undefined) throw new Error("slash command was not registered")
+    dialogs.selectQueue.push("mode", "active", undefined)
+    run()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(patches.map((patch) => patch["mode"])).toEqual(["active"])
+    expect(sessionPatches).toEqual([])
   })
 })
 

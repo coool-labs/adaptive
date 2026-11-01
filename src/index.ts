@@ -9,6 +9,7 @@ import { PLUGIN_ID } from "./plugin-id.js"
 import { adaptiveRpc } from "./rpc/definition.js"
 import { adaptiveRpcHandlers } from "./rpc/handlers.js"
 import type { RpcRegistration } from "@opencode/plugin/promise/rpc"
+import type { AdaptiveRpcEmit } from "./rpc/handlers.js"
 import { Supervisor, logFailOpen } from "./supervisor/index.js"
 
 export { PLUGIN_ID } from "./plugin-id.js"
@@ -78,11 +79,19 @@ export default Plugin.define({
     // The settings-changed emitter resolves the registration lazily: handlers
     // only run after `register` resolves, so the holder is always populated.
     const rpcHolder: { registration?: RpcRegistration<typeof adaptiveRpc> } = {}
+    const emit: AdaptiveRpcEmit = (_name, data) => {
+      // The handlers only ever pair an event name with its own payload shape,
+      // so the payload discriminates the event to emit.
+      if ("version" in data) {
+        return rpcHolder.registration?.events.emit("settings-changed", { version: data.version })
+      }
+      return rpcHolder.registration?.events.emit("session-mode-changed", {
+        sessionID: data.sessionID,
+      })
+    }
     const rpcRegistration = await context.rpc.register(
       adaptiveRpc,
-      adaptiveRpcHandlers(supervisor, (name, data) =>
-        rpcHolder.registration?.events.emit(name, data),
-      ),
+      adaptiveRpcHandlers(supervisor, emit),
     )
     rpcHolder.registration = rpcRegistration
     return () => {

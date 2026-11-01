@@ -5,7 +5,7 @@
  * payloads (receipts/parked are parsed back from storage — the stores are
  * private by design).
  */
-// covers: ["ADP-002", "ADP-010", "ADP-013", "ADP-015", "ADP-016", "ADP-024", "ADP-030", "ADP-031"]
+// covers: ["ADP-002", "ADP-010", "ADP-013", "ADP-015", "ADP-016", "ADP-024", "ADP-029", "ADP-030", "ADP-031", "ADP-054"]
 import { describe, expect, it, vi } from "vitest"
 
 import type { ModelSource } from "../../src/adapters/opencode/inventory.js"
@@ -23,6 +23,7 @@ import { CODEX_PROVIDER_ID } from "../../src/supervisor/types.js"
 import { CONTINUATION_PROMPT } from "../../src/execution/index.js"
 import { SETTINGS_KEY } from "../../src/state/settings/types.js"
 import { HEALTH_KEY } from "../../src/state/health/types.js"
+import { SESSION_MODES_KEY } from "../../src/state/session-modes/types.js"
 import {
   activeStorage,
   FailAfterStorage,
@@ -2946,5 +2947,248 @@ describe("review regressions (continuation admission, idle sweep, escalation tar
     await supervisor.handleReport(PROMPT_S1)
     // Without the eviction the hint would still route s1 to quick (prov/b).
     expect(session.log).toEqual(["switch:s1:prov/a"])
+  })
+})
+
+describe("per-session mode overrides (ADP-054)", () => {
+  const PROMPT_S1 = { kind: "prompt", sessionID: "s1" } as const
+
+  function observeStorage(tiers: Record<string, unknown[]> = {}): KeyFailStorage {
+    const storage = new KeyFailStorage("unused")
+    seed(storage, SETTINGS_KEY, settingsJSON("observe", tiers))
+    return storage
+  }
+
+  function seedParked(storage: KeyFailStorage, parkedAt = 5): void {
+    seed(storage, PARKED_KEY, {
+      version: 1,
+      parked: [{ id: "s1#1", sessionID: "s1", tier: "standard", reason: "all-blocked", parkedAt }],
+    })
+  }
+
+  /** Seed one persisted override directly (restart/hydration scenarios). */
+  function seedOverride(storage: KeyFailStorage, sessionID: string, mode: string): void {
+    seed(storage, SESSION_MODES_KEY, {
+      version: 1,
+      records: [{ sessionID, mode, updatedAt: 1 }],
+    })
+  }
+
+  /** A supervisor whose session source treats one session as dead. */
+  function supervisorWithDeadSession(
+    storage: KeyFailStorage,
+    deadSessionID: string,
+  ): { supervisor: Supervisor; session: FakeSupervisorSession } {
+    const session = new FakeSupervisorSession()
+    const source = {
+      ...session.source,
+      get: (input: { sessionID: string }) =>
+        input.sessionID === deadSessionID
+          ? Promise.reject(new Error("session gone"))
+          : session.source.get(input),
+    }
+    const infos = [makeInfo("prov", "a"), makeInfo("prov", "b")]
+    const model = {
+      transform: (cb: (editor: unknown) => unknown) => {
+        const editor = {
+          list: () => infos,
+          get: (providerID: string, modelID: string) =>
+            infos.find((info) => info.providerID === providerID && info.id === modelID),
+        }
+        cb(editor)
+        return Promise.resolve({ dispose: () => Promise.resolve() })
+      },
+    } as unknown as ModelSource
+    const supervisor = new Supervisor({
+      session: source as unknown as SupervisorSessionSource,
+      model,
+      storage: storage.source,
+      clock: () => 1000,
+    })
+    return { supervisor, session }
+  }
+
+  it("global observe with an active override admits the override session at prompt time", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = observeStorage({ standard: [wireRef("prov", "a")] })
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.setSessionMode("s1", "active")
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual(["switch:s1:prov/a"])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts[0]?.decision).toMatchObject({
+      kind: "apply",
+      model: ref("prov", "a"),
+      tier: "standard",
+    })
+  })
+
+  it("an observe override keeps its session observed while unoverridden sessions stay controlled", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.setSessionMode("s1", "observe")
+    // s1's prompt report is a no-op (observe never admits at prompt time) and
+    // its execution-started routes as observe-only.
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual([])
+    await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 10 })
+    // s2 carries no override: the global active mode controls it.
+    await supervisor.handleReport({ kind: "execution-started", sessionID: "s2", at: 11 })
+    expect(session.log).toEqual(["switch:s2:prov/a"])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts).toHaveLength(2)
+    expect(receipts[0]?.sessionID).toBe("s1")
+    expect(receipts[0]?.decision).toEqual({
+      kind: "observe-only",
+      would: {
+        kind: "apply",
+        model: ref("prov", "a"),
+        tier: "standard",
+        reason: "preferred",
+        evidence: { skipped: [] },
+      },
+    })
+    expect(receipts[1]?.sessionID).toBe("s2")
+    expect(receipts[1]?.decision).toMatchObject({ kind: "apply", model: ref("prov", "a") })
+  })
+
+  it("an off override makes the session fully inert (no switch, no receipts, retry untouched)", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.setSessionMode("s1", "off")
+    await supervisor.handleReport(STARTED_S1)
+    const input = {
+      sessionID: "s1",
+      model: ref("prov", "a"),
+      error: { type: "UnknownError", message: "", status: 429 },
+      attempt: 1,
+      decision: { retry: true, delay: 100 },
+    }
+    await supervisor.handleRetry(input)
+    expect(session.log).toEqual([])
+    expect(storedReceipts(storage)).toBeUndefined()
+    expect(input.decision).toEqual({ retry: true, delay: 100 })
+  })
+
+  it("persists overrides and reads them back across instances", async () => {
+    const storage = activeStorage()
+    const session = new FakeSupervisorSession()
+    const supervisor = makeSupervisor({ storage, session })
+    expect(await supervisor.getSessionMode("s1")).toBeNull()
+    await supervisor.setSessionMode("s1", "active")
+    expect(await supervisor.getSessionMode("s1")).toBe("active")
+    await supervisor.setSessionMode("s1", null)
+    expect(await supervisor.getSessionMode("s1")).toBeNull()
+    // Another instance over the same storage hydrates the persisted override.
+    await supervisor.setSessionMode("s1", "observe")
+    const restarted = makeSupervisor({ storage, session: new FakeSupervisorSession() })
+    expect(await restarted.getSessionMode("s1")).toBe("observe")
+    const payload = storage.data.get(SESSION_MODES_KEY) as {
+      records: { sessionID: string; mode: string }[]
+    }
+    expect(payload.records).toEqual([{ sessionID: "s1", mode: "observe", updatedAt: 1000 }])
+  })
+
+  it("rejects an invalid override without persisting", async () => {
+    const errors = spyErrors()
+    try {
+      const storage = activeStorage()
+      const session = new FakeSupervisorSession()
+      const supervisor = makeSupervisor({ storage, session })
+      await expect(supervisor.setSessionMode("", "active")).rejects.toThrow("sessionID")
+      await expect(supervisor.setSessionMode("x".repeat(129), "active")).rejects.toThrow(
+        "sessionID",
+      )
+      await expect(supervisor.setSessionMode("s1", "sideways" as "active")).rejects.toThrow(
+        "mode must be one of",
+      )
+      expect(await supervisor.getSessionMode("s1")).toBeNull()
+    } finally {
+      errors.restore()
+    }
+  })
+
+  it("a parked session resumes under its own effective mode at idle", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = observeStorage({ standard: [wireRef("prov", "a")] })
+    seedParked(storage)
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.setSessionMode("s1", "active")
+    // The idle report comes from a DIFFERENT session: the parked session's
+    // own override governs the resume, not the reporting session's mode.
+    await supervisor.handleReport({ kind: "idle", sessionID: "s2" })
+    expect(session.log).toEqual([`wait:s1`, `switch:s1:prov/a`, `prompt:s1:${CONTINUATION_PROMPT}`])
+    expect(parseParkedPayload(storedParked(storage))).toHaveLength(0)
+  })
+
+  it("an off override leaves its parked record untouched at idle", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = observeStorage({ standard: [wireRef("prov", "a")] })
+    seedParked(storage)
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.setSessionMode("s1", "off")
+    await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+    expect(session.log).toEqual([])
+    expect(parseParkedPayload(storedParked(storage))).toHaveLength(1)
+    expect(storedReceipts(storage)).toBeUndefined()
+    // The override itself is not pruned while the session is alive.
+    expect(await supervisor.getSessionMode("s1")).toBe("off")
+  })
+
+  it("does not drop an OFF session's dead parked record either (no supervision)", async () => {
+    const storage = observeStorage({ standard: [wireRef("prov", "a")] })
+    seedParked(storage)
+    seedOverride(storage, "s1", "off")
+    const { supervisor, session } = supervisorWithDeadSession(storage, "s1")
+    await supervisor.handleReport({ kind: "idle", sessionID: "s2" })
+    expect(session.log).toEqual([])
+    expect(parseParkedPayload(storedParked(storage))).toHaveLength(1)
+    expect(storedReceipts(storage)).toBeUndefined()
+    // The dead session's override is still pruned (bookkeeping, not
+    // supervision), even though its parked record is left alone.
+    expect(await supervisor.getSessionMode("s1")).toBeNull()
+  })
+
+  it("logs a failed override pruning without breaking the sweep", async () => {
+    const errors = spyErrors()
+    try {
+      const storage = new KeyFailStorage(SESSION_MODES_KEY)
+      seed(storage, SETTINGS_KEY, settingsJSON("observe", { standard: [wireRef("prov", "a")] }))
+      seedOverride(storage, "s2", "active")
+      const { supervisor } = supervisorWithDeadSession(storage, "s2")
+      await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+      // The prune write failed: logged fail-open, the sweep continued.
+      expect(errors.lines.some((line) => line.includes("[coool.adaptive] session-modes:"))).toBe(
+        true,
+      )
+      expect(await supervisor.getSessionMode("s2")).toBe("active")
+    } finally {
+      errors.restore()
+    }
+  })
+
+  it("prunes a dead session's override at the idle sweep", async () => {
+    const storage = observeStorage({ standard: [wireRef("prov", "a")] })
+    seedParked(storage)
+    seedOverride(storage, "s2", "active")
+    const { supervisor } = supervisorWithDeadSession(storage, "s2")
+    expect(await supervisor.getSessionMode("s2")).toBe("active")
+    await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+    expect(await supervisor.getSessionMode("s2")).toBeNull()
+    // The alive parked session's override would be kept (none here); the
+    // persisted mirror no longer carries the dead session.
+    const payload = storage.data.get(SESSION_MODES_KEY) as { records: unknown[] }
+    expect(payload.records).toEqual([])
+  })
+
+  it("an overridden session keeps its override when it is alive at idle", async () => {
+    const storage = observeStorage({ standard: [wireRef("prov", "a")] })
+    seedParked(storage)
+    seedOverride(storage, "s1", "active")
+    const { supervisor } = supervisorWithDeadSession(storage, "s2")
+    await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+    expect(await supervisor.getSessionMode("s1")).toBe("active")
   })
 })

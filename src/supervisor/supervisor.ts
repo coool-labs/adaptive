@@ -39,7 +39,12 @@ import {
   planEscalation,
   schedulerHealthKey,
 } from "../core/scheduler/index.js"
-import type { ApplyDecision, EscalationEvidence, SchedulerInput } from "../core/scheduler/types.js"
+import type {
+  ApplyDecision,
+  EscalationEvidence,
+  OperatingMode,
+  SchedulerInput,
+} from "../core/scheduler/types.js"
 import { MAX_ESCALATION_EVIDENCE } from "../core/scheduler/types.js"
 import type { CandidateModel, Demand } from "../core/compatibility/types.js"
 import { checkCompatibility } from "../core/compatibility/gate.js"
@@ -60,6 +65,7 @@ import type {
 import { SettingsStore, SETTINGS_KEY } from "../state/settings/index.js"
 import type { SettingsV1 } from "../state/settings/index.js"
 import type { PatchResult, SettingsPatch } from "../state/settings/types.js"
+import { SessionModeStore, SESSION_MODES_KEY } from "../state/session-modes/index.js"
 import { ReceiptStore, RECEIPTS_KEY } from "../state/receipts/index.js"
 import type { Receipt, ReceiptInput, ReceiptOutcome } from "../state/receipts/types.js"
 import { buildStatus } from "../rpc/status.js"
@@ -116,6 +122,7 @@ export class Supervisor {
   readonly #tracker = new WorkUnitTracker()
   readonly #health: ResourceHealthRegistry
   readonly #healthRecords: HealthRecordStore
+  readonly #sessionModes: SessionModeStore
   readonly #capacity: CapacityRegistry
   readonly #codex: CodexCapacitySensor
   readonly #vetoes = new Map<string, number>()
@@ -186,6 +193,10 @@ export class Supervisor {
     this.#receipts = new ReceiptStore(storageSeam(RECEIPTS_KEY, options.storage))
     this.#parked = new ParkedWorkStore(storageSeam(PARKED_KEY, options.storage))
     this.#healthRecords = new HealthRecordStore(storageSeam(HEALTH_KEY, options.storage))
+    this.#sessionModes = new SessionModeStore(
+      storageSeam(SESSION_MODES_KEY, options.storage),
+      options.clock,
+    )
     this.#ops = sessionOps(options.session, {
       beforeSwitch: (sessionID, model) => {
         this.#tracker.noteOwnSwitch(sessionID, model)
@@ -250,6 +261,10 @@ export class Supervisor {
       // persisted failures before routing instead of starting from empty.
       await this.#healthRecords.load()
       this.#health.hydrate(this.#healthRecords.snapshot())
+      // Session-mode overrides hydrate the same way: a restart (or the
+      // host's double-instance reconciliation) must keep steering sessions
+      // under the modes the user set for them.
+      await this.#sessionModes.load()
       return this.#settings.load()
     }
     this.#ready = loadState()
@@ -261,13 +276,27 @@ export class Supervisor {
     return this.#settings.get()
   }
 
+  /**
+   * The session's effective operating mode (ADP-054): its per-session
+   * override when one is set, else the global mode. Every session-scoped
+   * supervision decision consults this instead of `settings.mode` directly.
+   */
+  #modeFor(sessionID: string, settings: SettingsV1): OperatingMode {
+    return this.#sessionModes.get(sessionID) ?? settings.mode
+  }
+
   // ---------- public entry points (never throw — fail-open, ADP-031) ----------
 
   /** Handle one host report (event pump or session hook). */
   async handleReport(report: EventReport): Promise<void> {
     try {
       const settings = await this.#ensureSettings()
-      if (settings.mode === "off") return
+      // An OFF session is fully inert — no supervision, no receipts, no
+      // health evidence. Idle is the exception: it is the bookkeeping
+      // boundary (parked-work sweep, dead-session override pruning) and runs
+      // for every report so other sessions' overrides are maintained; the
+      // sweep itself gates per parked session below.
+      if (report.kind !== "idle" && this.#modeFor(report.sessionID, settings) === "off") return
       await this.#dispatch(report, settings)
     } catch (error) {
       logFailOpen("report", error)
@@ -282,7 +311,7 @@ export class Supervisor {
   async handleRetry(input: RetryHookInput): Promise<void> {
     try {
       const settings = await this.#ensureSettings()
-      if (settings.mode === "off") return
+      if (this.#modeFor(input.sessionID, settings) === "off") return
       await this.#handleRetry(input, settings)
     } catch (error) {
       logFailOpen("retry", error)
@@ -317,6 +346,22 @@ export class Supervisor {
   async updateSettings(patch: SettingsPatch): Promise<PatchResult> {
     await this.#ready
     return this.#settings.update(patch)
+  }
+
+  /** The session's mode override, or `null` when it follows the global mode. */
+  async getSessionMode(sessionID: string): Promise<OperatingMode | null> {
+    await this.#ready
+    return this.#sessionModes.get(sessionID)
+  }
+
+  /**
+   * Persist one session's mode override (`null` clears it). Throws on write
+   * failure — the RPC handler degrades that to an error patch result
+   * (fail-open, ADP-031), while the routing path never calls this.
+   */
+  async setSessionMode(sessionID: string, mode: OperatingMode | null): Promise<void> {
+    await this.#ready
+    await this.#sessionModes.set(sessionID, mode)
   }
 
   /**
@@ -414,7 +459,8 @@ export class Supervisor {
    * stays on the pump entirely.
    */
   async #onPrompt(sessionID: string, settings: SettingsV1): Promise<void> {
-    if (settings.mode !== "active") return
+    const mode = this.#modeFor(sessionID, settings)
+    if (mode !== "active") return
     if (this.#continuationPending.delete(sessionID)) {
       // An owned continuation (retry recovery, escalation, parked resume)
       // already owns this unit's routing: re-arm the admission marker from
@@ -441,7 +487,7 @@ export class Supervisor {
     try {
       const admission = await this.#admit(settings, sessionID)
       probeTicket = admission.probeTicket
-      const wrapped = schedulerForMode(admission.decision, settings.mode)
+      const wrapped = schedulerForMode(admission.decision, mode)
       if (wrapped.kind === "apply") {
         await this.#ops.switchModel(sessionID, wrapped.model)
       }
@@ -518,7 +564,7 @@ export class Supervisor {
       this.#probeTickets.set(unit.id, carriedTicket)
     }
     try {
-      await this.#routeAdmission(unit, settings)
+      await this.#routeAdmission(unit, settings, this.#modeFor(unit.sessionID, settings))
     } catch (error) {
       logFailOpen("admission", error)
       await this.#recordReceipt({
@@ -596,7 +642,11 @@ export class Supervisor {
     return { routing, decision, ...(probeTicket !== undefined ? { probeTicket } : {}) }
   }
 
-  async #routeAdmission(unit: ActiveUnit, settings: SettingsV1): Promise<void> {
+  async #routeAdmission(
+    unit: ActiveUnit,
+    settings: SettingsV1,
+    mode: OperatingMode,
+  ): Promise<void> {
     const { routing, decision, probeTicket } = await this.#admit(settings, unit.sessionID)
     // The tier the unit was admitted under is escalation context (ADP-015);
     // recorded for every tiered routing outcome (including a defer, which
@@ -604,7 +654,7 @@ export class Supervisor {
     if (routing.kind !== "pin") {
       this.#admissionTiers.set(unit.id, routing.tier)
     }
-    const wrapped = schedulerForMode(decision, settings.mode)
+    const wrapped = schedulerForMode(decision, mode)
     if (wrapped.kind === "apply") {
       try {
         await this.#applyModel(unit, wrapped)
@@ -799,7 +849,7 @@ export class Supervisor {
       evidence,
       budget: { used: escalationUsed, max: MAX_ESCALATIONS_PER_UNIT },
     })
-    const wrapped = schedulerForMode(plan, settings.mode)
+    const wrapped = schedulerForMode(plan, this.#modeFor(report.sessionID, settings))
     if (wrapped.kind === "escalate") {
       this.#escalations.set(unitID, escalationUsed + 1)
       // Recorded unit-less on purpose: the receipt describes the CONTINUATION
@@ -978,7 +1028,7 @@ export class Supervisor {
       recovery,
       vetoesUsed,
     })
-    const wrapped = retryForMode(core, settings.mode)
+    const wrapped = retryForMode(core, this.#modeFor(input.sessionID, settings))
     if (wrapped.kind !== "veto") {
       // OBSERVE (and a declined veto) never runs the recovery episode, so an
       // admitted probe has no continuation to report it — re-arm it here or
@@ -1076,9 +1126,20 @@ export class Supervisor {
 
   async #onIdle(settings: SettingsV1): Promise<void> {
     const records = this.#parked.list()
-    if (records.length === 0) return
+    // Override holders join the alive sweep: a dead session's override is
+    // pruned here (its per-session steering is worthless once the session is
+    // gone), in the same sweep that clears the other per-session maps.
+    const overrideIDs = this.#sessionModes.snapshot().map((record) => record.sessionID)
+    if (records.length === 0 && overrideIDs.length === 0) return
+    // OFF sessions are not supervised: their parked records are neither
+    // dropped nor resumed, and no alive probe runs for them.
+    const supervised = new Set(
+      records
+        .map((record) => record.sessionID)
+        .filter((sessionID) => this.#modeFor(sessionID, settings) !== "off"),
+    )
     const alive = new Map<string, boolean>()
-    for (const sessionID of new Set(records.map((record) => record.sessionID))) {
+    for (const sessionID of new Set([...supervised, ...overrideIDs])) {
       alive.set(sessionID, await this.#isSessionAlive(sessionID))
     }
     const plan = selectResumable(records, {
@@ -1086,6 +1147,7 @@ export class Supervisor {
       sessionAlive: (sessionID) => alive.get(sessionID) === true,
     })
     for (const dropped of plan.drop) {
+      if (this.#modeFor(dropped.sessionID, settings) === "off") continue
       await this.#dropParked(dropped)
     }
     // At most ONE continuation per session per sweep: prompting a session
@@ -1094,6 +1156,7 @@ export class Supervisor {
     // redo work an earlier one already completed (ADP-023).
     const attempted = new Set<string>()
     for (const record of plan.attempt) {
+      if (this.#modeFor(record.sessionID, settings) === "off") continue
       if (this.#tracker.active(record.sessionID) !== undefined) continue
       if (attempted.has(record.sessionID)) continue
       attempted.add(record.sessionID)
@@ -1104,6 +1167,13 @@ export class Supervisor {
         this.#continuationTiers.delete(sessionID)
         this.#promptAdmission.delete(sessionID)
         this.#continuationPending.delete(sessionID)
+        if (this.#sessionModes.get(sessionID) !== null) {
+          try {
+            await this.#sessionModes.set(sessionID, null)
+          } catch (error) {
+            logFailOpen("session-modes", error)
+          }
+        }
       }
     }
   }
@@ -1118,6 +1188,9 @@ export class Supervisor {
 
   /** One parked record's fresh routing attempt at the idle boundary. */
   async #resumeAttempt(record: ParkedRecord, settings: SettingsV1): Promise<void> {
+    // The parked session resumes under ITS effective mode, not the idle
+    // report's session's mode.
+    const mode = this.#modeFor(record.sessionID, settings)
     let decision: ReturnType<typeof admit>
     try {
       decision = (await this.#admit(settings, record.sessionID)).decision
@@ -1125,7 +1198,7 @@ export class Supervisor {
       logFailOpen("resume", error)
       return
     }
-    if (settings.mode === "observe") {
+    if (mode === "observe") {
       await this.#recordReceipt({
         sessionID: record.sessionID,
         unitID: record.id,

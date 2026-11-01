@@ -1,4 +1,4 @@
-// covers: ["ADP-028", "ADP-036", "ADP-051"]
+// covers: ["ADP-028", "ADP-036", "ADP-051", "ADP-054"]
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { adaptiveRpcHandlers, type AdaptiveRpcSource } from "../../src/rpc/handlers.js"
 import type { PatchResult, SettingsPatch } from "../../src/state/settings/types.js"
@@ -27,6 +27,8 @@ function source(overrides: Partial<AdaptiveRpcSource> = {}): AdaptiveRpcSource {
         receipts: 0,
       }),
     receipts: () => Promise.resolve([]),
+    getSessionMode: () => Promise.resolve(null),
+    setSessionMode: () => Promise.resolve(),
     ...overrides,
   }
 }
@@ -119,13 +121,124 @@ describe("adaptiveRpcHandlers", () => {
     expect(spy.mock.calls[0]?.[0]).toContain("[coool.adaptive] rpc-emit")
   })
 
+  it("succeeds without an emitter (emit is optional)", async () => {
+    const set = vi.fn(() => Promise.resolve())
+    const handlers = adaptiveRpcHandlers(source({ setSessionMode: set }))
+    await expect(
+      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "off" }),
+    ).resolves.toEqual({
+      ok: true,
+    })
+    expect(set).toHaveBeenCalledOnce()
+  })
+
   it("matches the rpc definition method names (handler-binding contract)", () => {
     const handlers = adaptiveRpcHandlers(source())
     expect(Object.keys(handlers).sort()).toEqual([
       "receipts.list",
+      "session-mode.get",
+      "session-mode.set",
       "settings.get",
       "settings.set",
       "status.get",
     ])
+  })
+})
+
+describe("adaptiveRpcHandlers: session-mode (ADP-054)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("session-mode.get delegates to the source", async () => {
+    const spy = vi.fn((sessionID: string) =>
+      Promise.resolve(sessionID === "ses_1" ? ("active" as const) : null),
+    )
+    const handlers = adaptiveRpcHandlers(source({ getSessionMode: spy }))
+    await expect(handlers["session-mode.get"]({ sessionID: "ses_1" })).resolves.toEqual({
+      mode: "active",
+    })
+    expect(spy).toHaveBeenCalledOnce()
+    expect(spy.mock.calls[0]?.[0]).toBe("ses_1")
+  })
+
+  it("session-mode.set persists and emits session-mode-changed on success", async () => {
+    const set = vi.fn(() => Promise.resolve())
+    const emit = vi.fn(() => Promise.resolve())
+    const handlers = adaptiveRpcHandlers(source({ setSessionMode: set }), emit)
+    await expect(
+      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "active" }),
+    ).resolves.toEqual({
+      ok: true,
+    })
+    expect(set).toHaveBeenCalledWith("ses_1", "active")
+    expect(emit).toHaveBeenCalledWith("session-mode-changed", { sessionID: "ses_1" })
+  })
+
+  it("clearing the override emits the change event too", async () => {
+    const set = vi.fn(() => Promise.resolve())
+    const emit = vi.fn(() => Promise.resolve())
+    const handlers = adaptiveRpcHandlers(source({ setSessionMode: set }), emit)
+    await expect(handlers["session-mode.set"]({ sessionID: "ses_1", mode: null })).resolves.toEqual(
+      {
+        ok: true,
+      },
+    )
+    expect(set).toHaveBeenCalledWith("ses_1", null)
+    expect(emit).toHaveBeenCalledWith("session-mode-changed", { sessionID: "ses_1" })
+  })
+
+  it("rejects an out-of-bounds sessionID without calling the source", async () => {
+    const set = vi.fn(() => Promise.resolve())
+    const handlers = adaptiveRpcHandlers(source({ setSessionMode: set }))
+    for (const sessionID of ["", "x".repeat(129)]) {
+      await expect(handlers["session-mode.set"]({ sessionID, mode: "off" })).resolves.toEqual({
+        ok: false,
+        errors: ["sessionID must be a non-empty string of at most 128 characters"],
+      })
+    }
+    expect(set).not.toHaveBeenCalled()
+  })
+
+  it("rejects an unknown mode without calling the source", async () => {
+    const set = vi.fn(() => Promise.resolve())
+    const handlers = adaptiveRpcHandlers(source({ setSessionMode: set }))
+    await expect(
+      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "bogus" as "off" }),
+    ).resolves.toEqual({
+      ok: false,
+      errors: ["mode must be one of off, observe, active or null"],
+    })
+    expect(set).not.toHaveBeenCalled()
+  })
+
+  it("does not emit when the write fails internally", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const emit = vi.fn(() => Promise.resolve())
+    const handlers = adaptiveRpcHandlers(
+      source({ setSessionMode: () => Promise.reject(new Error("storage down")) }),
+      emit,
+    )
+    await expect(
+      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "off" }),
+    ).resolves.toEqual({
+      ok: false,
+      errors: ["internal error"],
+    })
+    expect(emit).not.toHaveBeenCalled()
+    expect(spy.mock.calls[0]?.[0]).toContain("[coool.adaptive] rpc-set")
+  })
+
+  it("logs emit failures without losing the set result", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const handlers = adaptiveRpcHandlers(source({ setSessionMode: () => Promise.resolve() }), () =>
+      Promise.reject(new Error("emit boom")),
+    )
+    await expect(
+      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "off" }),
+    ).resolves.toEqual({
+      ok: true,
+    })
+    expect(spy.mock.calls[0]?.[0]).toContain("[coool.adaptive] rpc-emit")
   })
 })

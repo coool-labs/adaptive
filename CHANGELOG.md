@@ -18,6 +18,7 @@ Initial release.
 - Error classification (rate limit, quota exhaustion, outage, timeout, auth, invalid model, context overflow, content policy, user cancellation) with definitive vs. inferred evidence levels.
 - Decision receipts: a bounded ring (newest 200) recording admissions, escalations, parks, and recoveries with reasons, visible via TUI/GUI/RPC.
 - Typed RPC surface (`settings.get`, `settings.set`, `status.get`, `receipts.list`) with a `settings-changed` event; the server plugin is the single source of truth for TUI and GUI surfaces.
+- Per-session operating-mode override (ADP-054): every session can run under a different mode than the global default, managed through the `/adaptive` menu inside a session and the typed RPC surface (`session-mode.get`/`session-mode.set`, `session-mode-changed` event); overrides persist and are pruned when the session dies.
 - `/adaptive` TUI command (mode switch, tier editor with model search / reorder / remove / validation, status and receipt inspection) and an experimental GUI settings page.
 - Hierarchical resource health (provider → account → model → variant) with narrowest-scope quarantine.
 - Capacity awareness from provider response headers (best-effort, never load-bearing).

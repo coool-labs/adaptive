@@ -14,10 +14,11 @@ import { TIERS } from "../../core/tier-policy/types.js"
 import type { ModelRef } from "../../core/work-unit/types.js"
 import type { SettingsPatch, SettingsV1 } from "../../state/settings/index.js"
 import type { PatchResult } from "../../state/settings/types.js"
+import type { SessionModeSetResult } from "../../state/session-modes/index.js"
 import type { Receipt } from "../../state/receipts/types.js"
 import type { StatusSnapshot } from "../../rpc/status.js"
 import { STATUS_EMPTY_MESSAGE, statusPage } from "./status.js"
-import { mainMenuOptions, modeOptions, type MainMenuChoice } from "./menu.js"
+import { mainMenuOptions, modeOptions, sessionModeOptions, type MainMenuChoice } from "./menu.js"
 import {
   modelPickerOptions,
   moveResource,
@@ -57,6 +58,9 @@ export interface AdaptiveApi {
   setSettings: (patch: SettingsPatch) => Promise<PatchResult>
   status: () => Promise<StatusSnapshot>
   receipts: () => Promise<Receipt[]>
+  /** The session's mode override (`null` = follows the global mode). */
+  sessionMode: (sessionID: string) => Promise<OperatingMode | null>
+  setSessionMode: (sessionID: string, mode: OperatingMode | null) => Promise<SessionModeSetResult>
 }
 
 export type ModelLister = () => readonly ModelSummary[]
@@ -65,6 +69,12 @@ export interface AdaptiveEnv {
   api: AdaptiveApi
   view: AdaptiveView
   models: ModelLister
+  /**
+   * The session the command was opened from (ADP-054). Present only when the
+   * palette command ran inside a session screen — the mode menu then steers
+   * that session's override instead of the global mode.
+   */
+  sessionID?: string | undefined
 }
 
 export const INVITE_TITLE = "OpenCode Adaptive"
@@ -111,11 +121,42 @@ async function applySettings(
   return result.settings
 }
 
+/**
+ * Persist one session-mode override; alert on errors, toast on success. Same
+ * once-toast semantics as `applySettings` — the success toast is shown only
+ * on the first successful save of a dialog session.
+ */
+async function applySessionMode(
+  env: AdaptiveEnv,
+  sessionID: string,
+  mode: OperatingMode | null,
+  feedback: SaveFeedback,
+): Promise<SessionModeSetResult | undefined> {
+  const result = await tryApi(env, () => env.api.setSessionMode(sessionID, mode))
+  if (result === undefined) return undefined
+  if (!result.ok) {
+    await env.view.alert({ title: "Invalid settings", message: result.errors.join("; ") })
+    return undefined
+  }
+  if (!feedback.once) {
+    env.view.toast("Settings saved", "success")
+    feedback.once = true
+  }
+  return result
+}
+
 export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
   const loaded = await tryApi(env, () => env.api.settings())
   if (loaded === undefined) return
   let settings = loaded
   const feedback: SaveFeedback = { once: false }
+  const sessionID = env.sessionID
+  // The session's current override: fetched once when the flow starts inside
+  // a session; a failure degrades to "follow global" (the menu still works).
+  let override: OperatingMode | null =
+    sessionID === undefined
+      ? null
+      : ((await tryApi(env, () => env.api.sessionMode(sessionID))) ?? null)
   if (!settings.inviteDismissed) {
     await env.view.confirm({ title: INVITE_TITLE, message: INVITE_MESSAGE })
     const pick = await env.view.select({
@@ -135,7 +176,7 @@ export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
     // through tryApi themselves).
     const status = await env.api.status().catch(() => undefined)
     const choice = await env.view.select({
-      title: `Adaptive (${settings.mode})`,
+      title: `Adaptive (${override ?? settings.mode})`,
       options: mainMenuOptions(settings, status),
     })
     if (choice === undefined) return
@@ -148,7 +189,11 @@ export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
       continue
     }
     if (choice === "mode") {
-      settings = (await runModeMenu(env, settings, feedback)) ?? settings
+      const next = await runModeMenu(env, settings, feedback, sessionID, override)
+      if (next !== undefined) {
+        settings = next.settings
+        override = next.override
+      }
       continue
     }
     if (choice === "pin") {
@@ -159,17 +204,47 @@ export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
   }
 }
 
+/** What one mode-menu pass changed (settings and/or the session override). */
+interface ModeMenuOutcome {
+  settings: SettingsV1
+  override: OperatingMode | null
+}
+
 async function runModeMenu(
   env: AdaptiveEnv,
   settings: SettingsV1,
   feedback: SaveFeedback,
-): Promise<SettingsV1 | undefined> {
+  sessionID: string | undefined,
+  override: OperatingMode | null,
+): Promise<ModeMenuOutcome | undefined> {
+  // On home the menu patches the global mode, unchanged behavior.
+  if (sessionID === undefined) {
+    const pick = await env.view.select({
+      title: "Operating mode",
+      options: modeOptions(settings.mode),
+    })
+    if (pick === undefined || pick === settings.mode) return undefined
+    const applied = await applySettings(env, { mode: pick }, feedback)
+    return applied === undefined ? undefined : { settings: applied, override: null }
+  }
+  // Inside a session the menu steers the session's override (ADP-054).
   const pick = await env.view.select({
     title: "Operating mode",
-    options: modeOptions(settings.mode),
+    options: sessionModeOptions({
+      global: settings.mode,
+      override,
+      effective: override ?? settings.mode,
+    }),
   })
-  if (pick === undefined || pick === settings.mode) return undefined
-  return applySettings(env, { mode: pick }, feedback)
+  if (pick === undefined) return undefined
+  if (pick.kind === "global") {
+    if (override === null) return undefined
+    const saved = await applySessionMode(env, sessionID, null, feedback)
+    return saved === undefined ? undefined : { settings, override: null }
+  }
+  if (pick.mode === (override ?? settings.mode)) return undefined
+  const saved = await applySessionMode(env, sessionID, pick.mode, feedback)
+  return saved === undefined ? undefined : { settings, override: pick.mode }
 }
 
 /**
@@ -301,7 +376,7 @@ function pinOptions(settings: SettingsV1): SelectOption<PinChoice>[] {
     for (const ref of settings.tiers[tier]) {
       options.push({
         title: `${resourceLabel(ref)} (${tier})`,
-        description: "always route to this resource when it's available",
+        description: "route every turn to this resource, even in active mode",
         value: { kind: "pin", ref },
       })
     }

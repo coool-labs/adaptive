@@ -2,6 +2,8 @@
 // rpc events so the TUI entrypoint can be driven without a host.
 import type { ModelInfo } from "@opencode/client"
 import type { Context } from "@opencode/plugin/tui/plugin"
+import type { Route } from "@opencode/plugin/tui/context"
+import type { OperatingMode } from "../../src/core/scheduler/types.js"
 
 export interface DialogRecord {
   selects: { title: string; values: unknown[] }[]
@@ -13,7 +15,7 @@ export interface DialogRecord {
 
 export interface SlotRecord {
   append: string
-  render: () => unknown
+  render: (input?: unknown) => unknown
 }
 
 export function fakeTuiContext(options: {
@@ -22,13 +24,25 @@ export function fakeTuiContext(options: {
   modelList?: ModelInfo[] | undefined
   failSettingsGet?: boolean
   failSelect?: unknown
+  /** The screen the palette command runs from (home when absent). */
+  route?: Route | undefined
+  /** The session-mode override the fake rpc serves (null = no override). */
+  sessionMode?: OperatingMode | null
+  failSessionModeGet?: boolean
+  /** Records every session-mode.set call for assertions. */
+  sessionModePatches?: { sessionID: string; mode: OperatingMode | null }[]
 }): {
   context: Context
   dialogs: DialogRecord
   layers: ReturnType<() => unknown>[]
   slots: SlotRecord[]
-  events: { name: string; handler: () => void }[]
-  counts: { slotDisposals: number; eventDisposals: number; settingsGets: number }
+  events: { name: string; handler: (event: unknown) => void }[]
+  counts: {
+    slotDisposals: number
+    eventDisposals: number
+    settingsGets: number
+    sessionModeGets: number
+  }
 } {
   const dialogs: DialogRecord = {
     selects: [],
@@ -39,9 +53,14 @@ export function fakeTuiContext(options: {
   }
   const layers: unknown[] = []
   const slots: SlotRecord[] = []
-  const events: { name: string; handler: () => void }[] = []
+  const events: { name: string; handler: (event: unknown) => void }[] = []
   // Mutable holder: the counters keep changing after the fake is returned.
-  const counts = { slotDisposals: 0, eventDisposals: 0, settingsGets: 0 }
+  const counts = {
+    slotDisposals: 0,
+    eventDisposals: 0,
+    settingsGets: 0,
+    sessionModeGets: 0,
+  }
   const select = (spec: {
     title: string
     options: { value: unknown }[]
@@ -57,6 +76,7 @@ export function fakeTuiContext(options: {
     const next = dialogs.selectQueue.shift()
     return Promise.resolve(next as never)
   }
+  const sessionModePatches = options.sessionModePatches ?? []
   const context = {
     client: {
       rpc: () => ({
@@ -79,8 +99,18 @@ export function fakeTuiContext(options: {
             receipts: 0,
           }),
         "receipts.list": () => Promise.resolve([]),
+        "session-mode.get": (input: { sessionID: string }) => {
+          counts.sessionModeGets += 1
+          return options.failSessionModeGet
+            ? Promise.reject(new Error("boom"))
+            : Promise.resolve({ mode: options.sessionMode ?? null, sessionID: input.sessionID })
+        },
+        "session-mode.set": (input: { sessionID: string; mode: OperatingMode | null }) => {
+          sessionModePatches.push(input)
+          return Promise.resolve({ ok: true })
+        },
         events: {
-          on: (name: string, handler: () => void) => {
+          on: (name: string, handler: (event: unknown) => void) => {
             events.push({ name, handler })
             return () => {
               counts.eventDisposals += 1
@@ -111,6 +141,11 @@ export function fakeTuiContext(options: {
         show: (spec: { message: string; variant?: string }) => {
           dialogs.toasts.push(spec)
         },
+      },
+      // The palette command reads the open screen through the router: inside
+      // a session its sessionID steers the per-session flows.
+      router: {
+        current: () => options.route ?? ({ type: "home" } satisfies Route),
       },
     },
     data: {

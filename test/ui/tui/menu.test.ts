@@ -1,10 +1,11 @@
-// covers: ["ADP-033"]
+// covers: ["ADP-033", "ADP-054"]
 import { describe, expect, it } from "vitest"
 import fc from "fast-check"
 import {
   statusSummary,
   mainMenuOptions,
   modeOptions,
+  sessionModeOptions,
   MAIN_MENU_ITEMS,
   modelsSummary,
 } from "../../../src/ui/tui/menu.js"
@@ -115,5 +116,49 @@ describe("main menu", () => {
       }),
       { numRuns: 20 },
     )
+  })
+})
+
+describe("session mode menu (ADP-054)", () => {
+  it("offers Follow global first, then every mode in order", () => {
+    const options = sessionModeOptions({ global: "observe", override: null, effective: "observe" })
+    expect(options.map((o) => o.value)).toEqual([
+      { kind: "global" },
+      { kind: "mode", mode: "off" },
+      { kind: "mode", mode: "observe" },
+      { kind: "mode", mode: "active" },
+    ])
+    expect(options[0]?.title).toBe("Follow global (observe)")
+    expect(options[0]?.description).toBe("clear this session's override")
+  })
+
+  it("marks the override distinctly from the current effective mode", () => {
+    const find = (options: ReturnType<typeof sessionModeOptions>, mode: OperatingMode) =>
+      options.find((o) => o.value.kind === "mode" && o.value.mode === mode)
+    const overridden = sessionModeOptions({
+      global: "observe",
+      override: "active",
+      effective: "active",
+    })
+    expect(find(overridden, "active")?.title).toBe("active (override)")
+    expect(find(overridden, "observe")?.title).toBe("observe")
+    // With no override, the inherited global mode carries the current marker.
+    const inherited = sessionModeOptions({
+      global: "observe",
+      override: null,
+      effective: "observe",
+    })
+    expect(find(inherited, "observe")?.title).toBe("observe (current)")
+    expect(find(inherited, "active")?.title).toBe("active")
+  })
+
+  it("describes each mode like the global menu does", () => {
+    const options = sessionModeOptions({ global: "off", override: null, effective: "off" })
+    const global = modeOptions("off")
+    for (const option of options) {
+      if (option.value.kind !== "mode") continue
+      const modeIndex = OPERATING_MODES.indexOf(option.value.mode)
+      expect(option.description).toBe(global[modeIndex]?.description)
+    }
   })
 })
