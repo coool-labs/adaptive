@@ -37,7 +37,7 @@ describe("runtime e2e: routing ladder", () => {
     hosts.push(host)
     await rpc(host).settings.set({
       version: 1,
-      mode: "control",
+      mode: "active",
       tiers: { quick: [{ providerID: "fake", id: "fake-model-2" }], standard: [], advanced: [] },
       agentTiers: { build: "quick" },
     })
@@ -77,7 +77,7 @@ describe("runtime e2e: routing ladder", () => {
       hosts.push(host)
       await rpc(host).settings.set({
         version: 1,
-        mode: "control",
+        mode: "active",
         tiers: { quick: [], standard: [], advanced: [{ providerID: "fake", id: "fake-model-2" }] },
         agentTiers: { build: "advanced" },
       })
@@ -111,7 +111,7 @@ describe("runtime e2e: routing ladder", () => {
       hosts.push(host)
       await rpc(host).settings.set({
         version: 1,
-        mode: "control",
+        mode: "active",
         tiers: { quick: [{ providerID: "fake", id: "fake-model" }], standard: [], advanced: [] },
         agentTiers: { build: "quick" },
         pin: { providerID: "fake", id: "fake-model-2" },
@@ -140,7 +140,7 @@ describe("runtime e2e: routing ladder", () => {
       hosts.push(host)
       await rpc(host).settings.set({
         version: 1,
-        mode: "control",
+        mode: "active",
         tiers: {
           quick: [],
           standard: [
@@ -174,7 +174,7 @@ describe("runtime e2e: routing ladder", () => {
       for (const dir of ["config", "data", "cache"]) mkdirSync(join(home, dir))
       try {
         const first = await startHost({ paths: { home, project } })
-        await rpc(first).settings.set({ version: 1, mode: "control" })
+        await rpc(first).settings.set({ version: 1, mode: "active" })
         await first.close()
 
         // Corrupt the persisted settings row in the host's kv storage.

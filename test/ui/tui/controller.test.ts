@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest"
 
 import { INVITE_MESSAGE, INVITE_TITLE, runAdaptive } from "../../../src/ui/tui/controller.js"
 import { errorText } from "../../../src/ui/tui/options.js"
-import { formatStatus } from "../../../src/ui/tui/status.js"
+import { HEALTH_EMPTY_MESSAGE, healthDetail } from "../../../src/ui/tui/status.js"
 import type { Receipt } from "../../../src/state/receipts/index.js"
 import type { SettingsPatch, SettingsV1 } from "../../../src/state/settings/index.js"
 import type { PatchResult } from "../../../src/state/settings/index.js"
 import type { AdaptiveApi, AdaptiveView } from "../../../src/ui/tui/controller.js"
 import type { ModelSummary } from "../../../src/ui/tui/tiers.js"
-import type { StatusSnapshot } from "../../../src/rpc/status.js"
+import type { StatusSnapshot, TierResourceStatus } from "../../../src/rpc/status.js"
 
 interface FakeView extends AdaptiveView {
   selectQueue: unknown[]
@@ -70,6 +70,17 @@ function statusSnapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot
     tiers: { quick: [], standard: [], advanced: [] },
     parked: 0,
     receipts: 0,
+    ...overrides,
+  }
+}
+
+function resource(overrides: Partial<TierResourceStatus> = {}): TierResourceStatus {
+  return {
+    ref: { providerID: "prov", id: "m1" },
+    health: "rate_limited",
+    breaker: "closed",
+    windowed: true,
+    windowUntil: null,
     ...overrides,
   }
 }
@@ -170,15 +181,17 @@ describe("controller: admission failures (errors)", () => {
 })
 
 describe("controller: invite flow", () => {
-  it("shows the invite once and records dismissal", async () => {
+  it("shows the invite once, offers the menu, and records dismissal", async () => {
     const { e, patches } = envWith({
       settings: () => Promise.resolve(settings({ inviteDismissed: false })),
     })
     e.view.confirmQueue.push(true)
-    e.view.selectQueue.push(...EXIT)
+    e.view.selectQueue.push(true, ...EXIT)
     await runAdaptive(e)
     expect(patches[0]).toEqual({ inviteDismissed: true })
     expect(e.view.toasts.some((t) => t.message === "Settings saved")).toBe(true)
+    // The invitation follow-up is a select, not a dead-end confirm.
+    expect(e.view.selectOptions[0]?.map((o) => o.title)).toEqual(["Open the menu now", "Later"])
   })
 
   it("records dismissal regardless of the confirm answer", async () => {
@@ -203,7 +216,7 @@ describe("controller: invite flow", () => {
     e.view.selectQueue.push(...EXIT)
     await runAdaptive(e)
     expect(e.view.alerts[0]?.message).toContain("invalid inviteDismissed")
-    expect(e.view.selects).toEqual(["Adaptive"])
+    expect(e.view.selects).toEqual([INVITE_TITLE])
   })
 
   it("skips the invite when already dismissed", async () => {
@@ -228,19 +241,161 @@ describe("controller: main menu", () => {
   })
 })
 
-describe("controller: status branch", () => {
-  it("alerts the formatted status", async () => {
-    const e = env()
-    e.view.selectQueue.push("status", ...EXIT)
+describe("controller: health branch", () => {
+  it("lists configured resources and opens the browsable detail", async () => {
+    const snapshot = statusSnapshot({ tiers: { quick: [], standard: [resource()], advanced: [] } })
+    const e = env({ api: fakeApi({ status: () => Promise.resolve(snapshot) }) })
+    const picked = { tier: "standard" as const, status: resource() }
+    e.view.selectQueue.push("health", picked, "back", ...EXIT)
     await runAdaptive(e)
-    expect(e.view.alerts.length).toBe(1)
-    expect(e.view.alerts[0]?.message).toBe(formatStatus(statusSnapshot()))
+    expect(e.view.alerts[0]?.title).toBe("Health: prov/m1")
+    expect(e.view.alerts[0]?.message).toBe(healthDetail(picked, snapshot))
+    // The detail is followed by actions, not a dead end.
+    expect(e.view.selectOptions[2]?.map((o) => o.title)).toEqual([
+      "Pin this resource",
+      "Show receipts for this resource",
+      "Back",
+    ])
   })
 
-  it("toasts when the status fetch fails", async () => {
-    const e = env({ api: failingApi("status", new Error("down")) })
-    e.view.selectQueue.push("status", ...EXIT)
+  it("alerts the empty state when nothing is configured", async () => {
+    const e = env()
+    e.view.selectQueue.push("health", ...EXIT)
     await runAdaptive(e)
+    expect(e.view.alerts[0]?.message).toBe(HEALTH_EMPTY_MESSAGE)
+  })
+
+  it("pins the resource from the health view", async () => {
+    const { e, patches } = envWith({
+      status: () =>
+        Promise.resolve(
+          statusSnapshot({ tiers: { quick: [], standard: [resource()], advanced: [] } }),
+        ),
+    })
+    e.view.selectQueue.push("health", { tier: "standard", status: resource() }, "pin", ...EXIT)
+    await runAdaptive(e)
+    expect(patches).toEqual([{ pin: { providerID: "prov", id: "m1" } }])
+    expect(e.view.toasts.some((t) => t.message === "Settings saved")).toBe(true)
+  })
+
+  it("alerts and stays in the health view when the pin patch is rejected", async () => {
+    const e = env({
+      api: {
+        ...fakeApi({
+          status: () =>
+            Promise.resolve(
+              statusSnapshot({ tiers: { quick: [], standard: [resource()], advanced: [] } }),
+            ),
+        }),
+        setSettings: () => Promise.resolve({ ok: false, errors: ["pin refused"] }),
+      },
+    })
+    e.view.selectQueue.push("health", { tier: "standard", status: resource() }, "pin", ...EXIT)
+    await runAdaptive(e)
+    expect(e.view.alerts.some((a) => a.title === "Invalid settings")).toBe(true)
+  })
+
+  it("shows the filtered empty state when the resource has no receipts", async () => {
+    const e = env({
+      api: fakeApi({
+        status: () =>
+          Promise.resolve(
+            statusSnapshot({ tiers: { quick: [], standard: [resource()], advanced: [] } }),
+          ),
+        receipts: () => Promise.resolve([]),
+      }),
+    })
+    e.view.selectQueue.push(
+      "health",
+      { tier: "standard", status: resource() },
+      "receipts",
+      undefined,
+    )
+    await runAdaptive(e)
+    expect(e.view.alerts.some((a) => a.message === "No decisions recorded for prov/m1.")).toBe(true)
+  })
+
+  it("filters receipts for the picked resource", async () => {
+    const apply = receipt({
+      id: 2,
+      decision: {
+        kind: "apply",
+        model: { providerID: "prov", id: "m1" },
+        tier: "standard",
+        reason: "preferred",
+        evidence: { skipped: [] },
+      },
+    })
+    const other = receipt({
+      id: 3,
+      decision: {
+        kind: "apply",
+        model: { providerID: "prov", id: "zz" },
+        tier: "standard",
+        reason: "preferred",
+        evidence: { skipped: [] },
+      },
+    })
+    const escalated = receipt({
+      id: 4,
+      decision: {
+        kind: "escalate",
+        target: { providerID: "prov", id: "m1" },
+        step: "tier",
+        tier: "advanced",
+        evidence: [],
+        budgetRemaining: 1,
+      },
+    })
+    const observed = receipt({
+      id: 5,
+      decision: {
+        kind: "observe-only",
+        would: {
+          kind: "apply",
+          model: { providerID: "prov", id: "m1" },
+          tier: "standard",
+          reason: "preferred",
+          evidence: { skipped: [] },
+        },
+      },
+    })
+    const parked = receipt({
+      id: 6,
+      decision: { kind: "park", reason: "all-blocked", detail: "every candidate blocked" },
+    })
+    const e = env({
+      api: fakeApi({
+        status: () =>
+          Promise.resolve(
+            statusSnapshot({ tiers: { quick: [], standard: [resource()], advanced: [] } }),
+          ),
+        receipts: () => Promise.resolve([apply, other, escalated, observed, parked]),
+      }),
+    })
+    e.view.selectQueue.push(
+      "health",
+      { tier: "standard", status: resource() },
+      "receipts",
+      undefined,
+      ...EXIT,
+    )
+    await runAdaptive(e)
+    // The receipts browser shows every decision about the picked resource
+    // (its apply, the escalation to it, and an observe-only decision about
+    // it) and hides the rest.
+    expect(e.view.selectOptions[3]?.map((o) => o.title)).toEqual([
+      expect.stringContaining("#2"),
+      expect.stringContaining("#4"),
+      expect.stringContaining("#5"),
+    ])
+  })
+
+  it("toasts when the health view cannot load status, while the menu stays silent", async () => {
+    const e = env({ api: failingApi("status", new Error("down")) })
+    e.view.selectQueue.push("health", ...EXIT)
+    await runAdaptive(e)
+    // The menu descriptions degrade silently; the health view's own fetch toasts.
     expect(e.view.toasts.map((t) => t.message)).toEqual(["down"])
   })
 })
@@ -255,9 +410,9 @@ describe("controller: mode branch", () => {
 
   it("applies a mode change", async () => {
     const { e, patches } = envWith()
-    e.view.selectQueue.push("mode", "control", ...EXIT)
+    e.view.selectQueue.push("mode", "active", ...EXIT)
     await runAdaptive(e)
-    expect(patches).toEqual([{ mode: "control" }])
+    expect(patches).toEqual([{ mode: "active" }])
   })
 
   it("aborts when the mode dialog is cancelled", async () => {
@@ -271,29 +426,31 @@ describe("controller: mode branch", () => {
 describe("controller: tiers branch", () => {
   it("exits when the tier status fetch fails", async () => {
     const e = env({ api: failingApi("status", new Error("down")) })
-    e.view.selectQueue.push("tiers", ...EXIT)
+    e.view.selectQueue.push("models", ...EXIT)
     await runAdaptive(e)
+    // Only the tier editor's own status fetch toasts: the menu refresh
+    // degrades its descriptions silently.
     expect(e.view.toasts.map((t) => t.message)).toEqual(["down"])
     expect(e.view.selectQueue.length).toBe(0)
   })
 
   it("returns to the menu when tier selection is cancelled", async () => {
     const e = env()
-    e.view.selectQueue.push("tiers", undefined, ...EXIT)
+    e.view.selectQueue.push("models", undefined, ...EXIT)
     await runAdaptive(e)
     expect(e.view.selectQueue.length).toBe(0)
   })
 
   it("returns to the tier editor when the editor choice is cancelled", async () => {
     const e = env()
-    e.view.selectQueue.push("tiers", "standard", undefined, ...EXIT)
+    e.view.selectQueue.push("models", "standard", undefined, ...EXIT)
     await runAdaptive(e)
     expect(e.view.selectQueue.length).toBe(0)
   })
 
   it("returns to the tier menu on back", async () => {
     const e = env()
-    e.view.selectQueue.push("tiers", "standard", { kind: "back" }, ...EXIT)
+    e.view.selectQueue.push("models", "standard", { kind: "back" }, ...EXIT)
     await runAdaptive(e)
     expect(e.view.selectQueue.length).toBe(0)
   })
@@ -301,7 +458,7 @@ describe("controller: tiers branch", () => {
   it("adds a model with a chosen variant", async () => {
     const { e, patches } = envWith()
     e.view.selectQueue.push(
-      "tiers",
+      "models",
       "standard",
       { kind: "add" },
       { providerID: "prov", modelID: "a" },
@@ -323,7 +480,7 @@ describe("controller: tiers branch", () => {
   it("aborts when the variant choice is cancelled", async () => {
     const { e, patches } = envWith()
     e.view.selectQueue.push(
-      "tiers",
+      "models",
       "standard",
       { kind: "add" },
       { providerID: "prov", modelID: "a" },
@@ -337,7 +494,7 @@ describe("controller: tiers branch", () => {
   it("adds a model without variants directly", async () => {
     const { e, patches } = envWith()
     e.view.selectQueue.push(
-      "tiers",
+      "models",
       "standard",
       { kind: "add" },
       { providerID: "prov", modelID: "b" },
@@ -357,7 +514,7 @@ describe("controller: tiers branch", () => {
 
   it("aborts when the model picker is cancelled", async () => {
     const { e, patches } = envWith()
-    e.view.selectQueue.push("tiers", "standard", { kind: "add" }, undefined, ...EXIT)
+    e.view.selectQueue.push("models", "standard", { kind: "add" }, undefined, ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([])
   })
@@ -365,7 +522,7 @@ describe("controller: tiers branch", () => {
   it("alerts and keeps settings when a patch is rejected", async () => {
     const e = env({ api: rejectingPatchApi(["invalid tiers"]) })
     e.view.selectQueue.push(
-      "tiers",
+      "models",
       "standard",
       { kind: "add" },
       { providerID: "prov", modelID: "b" },
@@ -378,7 +535,7 @@ describe("controller: tiers branch", () => {
 
   function tierSettings(refs: { providerID: string; id: string }[]): SettingsV1 {
     return settings({
-      mode: "control",
+      mode: "active",
       tiers: { quick: [], standard: refs, advanced: [] },
     })
   }
@@ -393,7 +550,7 @@ describe("controller: tiers branch", () => {
           ]),
         ),
     })
-    e.view.selectQueue.push("tiers", "standard", { kind: "resource", index: 1 }, "up", ...EXIT)
+    e.view.selectQueue.push("models", "standard", { kind: "resource", index: 1 }, "up", ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([
       {
@@ -402,6 +559,34 @@ describe("controller: tiers branch", () => {
           standard: [
             { providerID: "prov", id: "b" },
             { providerID: "prov", id: "a" },
+          ],
+          advanced: [],
+        },
+      },
+    ])
+  })
+
+  it("moves a resource to the top", async () => {
+    const { e, patches } = envWith({
+      settings: () =>
+        Promise.resolve(
+          tierSettings([
+            { providerID: "prov", id: "a" },
+            { providerID: "prov", id: "b" },
+            { providerID: "prov", id: "c" },
+          ]),
+        ),
+    })
+    e.view.selectQueue.push("models", "standard", { kind: "resource", index: 2 }, "top", ...EXIT)
+    await runAdaptive(e)
+    expect(patches).toEqual([
+      {
+        tiers: {
+          quick: [],
+          standard: [
+            { providerID: "prov", id: "c" },
+            { providerID: "prov", id: "a" },
+            { providerID: "prov", id: "b" },
           ],
           advanced: [],
         },
@@ -419,7 +604,7 @@ describe("controller: tiers branch", () => {
           ]),
         ),
     })
-    e.view.selectQueue.push("tiers", "standard", { kind: "resource", index: 0 }, "down", ...EXIT)
+    e.view.selectQueue.push("models", "standard", { kind: "resource", index: 0 }, "down", ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([
       {
@@ -440,7 +625,7 @@ describe("controller: tiers branch", () => {
       settings: () => Promise.resolve(tierSettings([{ providerID: "prov", id: "a" }])),
     })
     e.view.confirmQueue.push(true)
-    e.view.selectQueue.push("tiers", "standard", { kind: "resource", index: 0 }, "remove", ...EXIT)
+    e.view.selectQueue.push("models", "standard", { kind: "resource", index: 0 }, "remove", ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([{ tiers: { quick: [], standard: [], advanced: [] } }])
   })
@@ -450,7 +635,7 @@ describe("controller: tiers branch", () => {
       settings: () => Promise.resolve(tierSettings([{ providerID: "prov", id: "a" }])),
     })
     e.view.confirmQueue.push(false)
-    e.view.selectQueue.push("tiers", "standard", { kind: "resource", index: 0 }, "remove", ...EXIT)
+    e.view.selectQueue.push("models", "standard", { kind: "resource", index: 0 }, "remove", ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([])
   })
@@ -459,16 +644,30 @@ describe("controller: tiers branch", () => {
     const { e, patches } = envWith({
       settings: () => Promise.resolve(tierSettings([{ providerID: "prov", id: "a" }])),
     })
-    e.view.selectQueue.push("tiers", "standard", { kind: "resource", index: 3 }, ...EXIT)
+    e.view.selectQueue.push("models", "standard", { kind: "resource", index: 3 }, ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([])
   })
 })
 
 describe("controller: pin branch", () => {
+  it("alerts when there is nothing to pin", async () => {
+    const e = env()
+    e.view.selectQueue.push("pin", ...EXIT)
+    await runAdaptive(e)
+    expect(e.view.alerts[0]?.message).toBe("(no configured resources to pin)")
+    expect(e.view.selects.filter((title) => title === "Pin")).toHaveLength(0)
+  })
+
   it("clears the pin", async () => {
     const { e, patches } = envWith({
-      settings: () => Promise.resolve(settings({ pin: { providerID: "prov", id: "a" } })),
+      settings: () =>
+        Promise.resolve(
+          settings({
+            pin: { providerID: "prov", id: "a" },
+            tiers: { quick: [], standard: [{ providerID: "prov", id: "a" }], advanced: [] },
+          }),
+        ),
     })
     e.view.selectQueue.push("pin", { kind: "clear" }, ...EXIT)
     await runAdaptive(e)
@@ -496,6 +695,51 @@ describe("controller: pin branch", () => {
     await runAdaptive(e)
     expect(patches).toEqual([{ pin: { providerID: "prov", id: "a", variant: "high" } }])
   })
+
+  it("returns to the menu when the pin selection is cancelled on a configured tier", async () => {
+    const { e, patches } = envWith({
+      settings: () =>
+        Promise.resolve(
+          settings({
+            tiers: { quick: [], standard: [{ providerID: "prov", id: "a" }], advanced: [] },
+          }),
+        ),
+    })
+    e.view.selectQueue.push("pin", undefined, ...EXIT)
+    await runAdaptive(e)
+    expect(patches).toEqual([])
+    expect(e.view.toasts).toEqual([])
+  })
+})
+
+describe("controller: save feedback", () => {
+  it("toasts the first save of a session but stays quiet on later saves", async () => {
+    // The fake echoes each applied patch so the second flow sees the state
+    // the first save produced.
+    let current = settings({
+      tiers: { quick: [], standard: [{ providerID: "prov", id: "m1" }], advanced: [] },
+    })
+    const patches: SettingsPatch[] = []
+    const e = env({
+      api: fakeApi({
+        setSettings: (patch) => {
+          patches.push(patch)
+          current = { ...current, ...patch, version: 1 } as SettingsV1
+          return Promise.resolve({ ok: true, settings: current } satisfies PatchResult)
+        },
+      }),
+    })
+    e.view.selectQueue.push(
+      "mode",
+      "active",
+      "pin",
+      { kind: "pin", ref: { providerID: "prov", id: "m1" } },
+      ...EXIT,
+    )
+    await runAdaptive(e)
+    expect(patches).toEqual([{ mode: "active" }, { pin: { providerID: "prov", id: "m1" } }])
+    expect(e.view.toasts.filter((t) => t.message === "Settings saved")).toHaveLength(1)
+  })
 })
 
 describe("controller: receipts branch", () => {
@@ -522,6 +766,7 @@ describe("controller: receipts branch", () => {
     expect(e.view.alerts.length).toBe(1)
     expect(e.view.alerts[0]?.title).toContain("#1")
     expect(e.view.alerts[0]?.message).toContain("session")
+    expect(e.view.alerts[0]?.message).toContain("What happened:")
   })
 
   it("leaves the list without alerting when the receipt pick is cancelled", async () => {
@@ -556,7 +801,7 @@ describe("controller: receipts branch", () => {
 describe("controller: cancel and stale paths", () => {
   function tierSettings(refs: { providerID: string; id: string }[]): SettingsV1 {
     return settings({
-      mode: "control",
+      mode: "active",
       tiers: { quick: [], standard: refs, advanced: [] },
     })
   }
@@ -565,7 +810,7 @@ describe("controller: cancel and stale paths", () => {
     const { e, patches } = envWith({
       setSettings: () => Promise.reject(new Error("down")),
     })
-    e.view.selectQueue.push("mode", "control", ...EXIT)
+    e.view.selectQueue.push("mode", "active", ...EXIT)
     await runAdaptive(e)
     expect(e.view.toasts.map((t) => t.message)).toEqual(["down"])
     expect(patches).toEqual([])
@@ -574,7 +819,7 @@ describe("controller: cancel and stale paths", () => {
   it("adds a stale picker pick without consulting variants", async () => {
     const { e, patches } = envWith()
     e.view.selectQueue.push(
-      "tiers",
+      "models",
       "standard",
       { kind: "add" },
       { providerID: "ghost", modelID: "x" },
@@ -596,7 +841,13 @@ describe("controller: cancel and stale paths", () => {
     const { e, patches } = envWith({
       settings: () => Promise.resolve(tierSettings([{ providerID: "prov", id: "a" }])),
     })
-    e.view.selectQueue.push("tiers", "standard", { kind: "resource", index: 0 }, undefined, ...EXIT)
+    e.view.selectQueue.push(
+      "models",
+      "standard",
+      { kind: "resource", index: 0 },
+      undefined,
+      ...EXIT,
+    )
     await runAdaptive(e)
     expect(patches).toEqual([])
   })

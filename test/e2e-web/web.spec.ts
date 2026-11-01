@@ -174,10 +174,10 @@ test.describe("plugin RPC integration", () => {
     const before = await rpc(page, "settings.get")
     expect(before["mode"]).toBe("observe")
 
-    await rpc(page, "settings.set", { mode: "control" })
+    await rpc(page, "settings.set", { mode: "active" })
     await page.reload()
     const after = await rpc(page, "settings.get")
-    expect(after["mode"]).toBe("control")
+    expect(after["mode"]).toBe("active")
 
     await rpc(page, "settings.set", { mode: "observe" })
     expect((await rpc(page, "settings.get"))["mode"]).toBe("observe")

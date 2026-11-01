@@ -27,6 +27,7 @@ function tierResource(
     health: "healthy",
     breaker: "closed",
     windowed: false,
+    windowUntil: null,
     ...overrides,
   }
 }
@@ -67,7 +68,7 @@ describe("statusRows", () => {
   it("renders mode, pin, tiers, parked and receipts", () => {
     const rows = statusRows(
       snapshot({
-        mode: "control",
+        mode: "active",
         pin: ref("prov", "p"),
         tiers: { ...snapshot().tiers, standard: [tierResource("prov", "a")] },
         parked: 2,
@@ -83,7 +84,7 @@ describe("statusRows", () => {
       "parked",
       "receipts",
     ])
-    expect(rows.find((row) => row.id === "mode")?.value).toBe("control")
+    expect(rows.find((row) => row.id === "mode")?.value).toBe("active")
     expect(rows.find((row) => row.id === "pin")?.value).toBe("prov/p")
     expect(rows.find((row) => row.id === "tier-quick")?.value).toBe("empty")
     expect(rows.find((row) => row.id === "tier-standard")?.value).toBe("prov/a")
@@ -116,14 +117,14 @@ describe("modeChoices", () => {
     expect(modeChoices("observe")).toEqual([
       { value: "off", title: "off" },
       { value: "observe", title: "observe (current)" },
-      { value: "control", title: "control" },
+      { value: "active", title: "active" },
     ])
   })
 })
 
 describe("parseModeValue", () => {
   it("accepts known modes and rejects unknown values", () => {
-    expect(parseModeValue("control")).toBe("control")
+    expect(parseModeValue("active")).toBe("active")
     expect(parseModeValue("bogus")).toBeUndefined()
   })
 })
@@ -143,7 +144,7 @@ describe("receiptLines", () => {
 
 describe("properties", () => {
   it("statusRows is total and deterministic over arbitrary snapshots", () => {
-    const modeArb = fc.constantFrom(...(["off", "observe", "control"] as const))
+    const modeArb = fc.constantFrom(...(["off", "observe", "active"] as const))
     const refArb = fc.record({
       providerID: fc.string({ minLength: 1 }),
       id: fc.string({ minLength: 1 }),
@@ -153,6 +154,7 @@ describe("properties", () => {
       health: fc.constantFrom("healthy", "degraded", "unavailable"),
       breaker: fc.constantFrom("closed", "open", "half_open"),
       windowed: fc.boolean(),
+      windowUntil: fc.option(fc.nat(1_000_000), { nil: null }),
     })
     const snapArb = fc.record({
       mode: modeArb,
@@ -183,7 +185,7 @@ describe("properties", () => {
 
   it("modeChoices always marks exactly one current entry", () => {
     fc.assert(
-      fc.property(fc.constantFrom(...(["off", "observe", "control"] as const)), (current) => {
+      fc.property(fc.constantFrom(...(["off", "observe", "active"] as const)), (current) => {
         const marked = modeChoices(current).filter((choice) => choice.title.includes("(current)"))
         expect(marked).toHaveLength(1)
         expect(marked[0]?.value).toBe(current)

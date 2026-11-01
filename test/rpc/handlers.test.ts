@@ -55,7 +55,7 @@ describe("adaptiveRpcHandlers", () => {
   it("status.get and receipts.list delegate to the source", async () => {
     const receipts = [receipt()]
     const status: StatusSnapshot = {
-      mode: "control",
+      mode: "active",
       pin: null,
       tiers: { quick: [], standard: [], advanced: [] },
       parked: 1,

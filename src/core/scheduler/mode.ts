@@ -10,7 +10,7 @@ export function forMode(decision: Decision, mode: OperatingMode): Decision {
   if (mode === "observe") {
     return { kind: "observe-only", would: decision }
   }
-  if (mode === "control") {
+  if (mode === "active") {
     return decision
   }
   return { kind: "defer", reason: "adaptive-off" }

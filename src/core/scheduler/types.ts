@@ -17,7 +17,7 @@ import { BLOCKED_REASONS } from "../../health/resource-health/types.js"
 import { resourceKeyID } from "../../health/resource-health/key.js"
 
 /** Operating modes (GOAL manual control). The plugin defaults to `observe`. */
-export const OPERATING_MODES = ["off", "observe", "control"] as const satisfies readonly string[]
+export const OPERATING_MODES = ["off", "observe", "active"] as const satisfies readonly string[]
 
 export type OperatingMode = (typeof OPERATING_MODES)[number]
 

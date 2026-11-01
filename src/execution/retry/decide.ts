@@ -79,7 +79,7 @@ export function decideRetry(input: RetryInput): RetryCoreDecision {
  */
 export function forMode(decision: RetryCoreDecision, mode: OperatingMode): RetryDecision {
   switch (mode) {
-    case "control":
+    case "active":
       return decision
     case "observe":
       return { kind: "observe-only", would: decision }

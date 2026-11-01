@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest"
 import {
   outcomeLine,
   receiptDetail,
+  relativeTime,
   receiptLine,
   receiptPage,
   RECEIPTS_PAGE_SIZE,
   summarizeDecision,
+  whatHappened,
 } from "../../../src/ui/tui/receipts.js"
 import type { Decision } from "../../../src/core/scheduler/types.js"
 import type { Receipt, ReceiptOutcome } from "../../../src/state/receipts/types.js"
@@ -98,16 +100,22 @@ describe("receiptLine", () => {
 
 describe("receiptDetail", () => {
   it("renders every field with dashes for missing optionals", () => {
-    const text = receiptDetail(receipt({ outcome: { status: "failed", category: "outage" } }))
+    const at = Date.parse("2026-10-31T00:00:00.000Z")
+    const text = receiptDetail(
+      receipt({ outcome: { status: "failed", category: "outage" } }),
+      at + 90_000,
+    )
     const lines = text.split("\n")
     expect(lines).toEqual([
       "id: 3",
-      "at: 2026-10-31T00:00:00.000Z",
+      "when: 1m ago (2026-10-31T00:00:00.000Z)",
       "session: s1",
       "unit: -",
       "tier: -",
       "decision: apply prov/m1@high [standard] (preferred)",
       "outcome: failed (outage)",
+      "",
+      expect.stringContaining("What happened: Adaptive chose this resource"),
     ])
   })
 
@@ -115,6 +123,89 @@ describe("receiptDetail", () => {
     const text = receiptDetail(receipt({ unitID: "s1#1", tier: TIERS[1] }))
     expect(text).toContain("unit: s1#1")
     expect(text).toContain("tier: standard")
+  })
+})
+
+describe("whatHappened", () => {
+  // A receipt parsed from a newer host may carry a reason this build does not
+  // know; the drifted casts simulate that vocabulary extension at the type
+  // level so the runtime fallback branches stay pinned.
+  it("explains every decision kind in plain language", () => {
+    expect(
+      whatHappened(
+        receipt({
+          decision: {
+            kind: "apply",
+            model: { providerID: "p", id: "m" },
+            reason: "fallback",
+            evidence: { skipped: [] },
+          },
+        }),
+      ),
+    ).toMatch(/moved the turn/)
+    expect(whatHappened(receipt({ decision: { kind: "park", reason: "all-blocked" } }))).toMatch(
+      /Every resource in the tier/,
+    )
+    expect(
+      whatHappened(
+        receipt({
+          decision: {
+            kind: "escalate",
+            target: { providerID: "prov", id: "m2" },
+            step: "tier",
+            tier: "advanced",
+            evidence: [],
+            budgetRemaining: 1,
+          },
+        }),
+      ),
+    ).toMatch(/stronger capability/)
+    expect(
+      whatHappened(receipt({ decision: { kind: "observe-only", would: applyDecision() } })),
+    ).toMatch(/observing/)
+  })
+
+  it("falls back to a neutral sentence for reasons outside the vocabulary", () => {
+    expect(
+      whatHappened(
+        receipt({
+          decision: {
+            kind: "apply",
+            model: { providerID: "p", id: "m" },
+            reason: "brand-new-reason" as unknown as "preferred",
+            evidence: { skipped: [] },
+          },
+        }),
+      ),
+    ).toBe("Adaptive routed this turn to p/m.")
+    expect(
+      whatHappened(
+        receipt({
+          decision: { kind: "defer", reason: "brand-new-reason" as unknown as "routing-defer" },
+        }),
+      ),
+    ).toBe("Adaptive left the model choice to OpenCode.")
+    expect(
+      whatHappened(
+        receipt({
+          decision: { kind: "park", reason: "brand-new-reason" as unknown as "all-blocked" },
+        }),
+      ),
+    ).toBe("Adaptive could not route this turn and left it to OpenCode.")
+  })
+})
+
+describe("relativeTime", () => {
+  const now = Date.parse("2026-11-01T12:00:00.000Z")
+  it("renders each bucket", () => {
+    expect(relativeTime(now - 5_000, now)).toBe("just now")
+    expect(relativeTime(now - 90_000, now)).toBe("1m ago")
+    expect(relativeTime(now - 90 * 60_000, now)).toBe("1h ago")
+    expect(relativeTime(now - 26 * 3_600_000, now)).toBe("1d ago")
+  })
+
+  it("clamps clock skew into the just-now bucket", () => {
+    expect(relativeTime(now + 10_000, now)).toBe("just now")
   })
 })
 

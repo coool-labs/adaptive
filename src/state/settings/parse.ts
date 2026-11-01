@@ -45,6 +45,15 @@ export function parseMode(raw: unknown): OperatingMode | undefined {
   return OPERATING_MODES.find((mode) => mode === raw)
 }
 
+/**
+ * Legacy persisted value: v1 settings written before the `control → active`
+ * rename store `mode: "control"`. Migration-on-read maps it; patches stay
+ * strict (wire input must use the current vocabulary).
+ */
+function parseLegacyMode(raw: unknown): OperatingMode | undefined {
+  return raw === "control" ? "active" : parseMode(raw)
+}
+
 export function parseTierLists(
   raw: unknown,
 ): Readonly<Record<TierName, readonly ModelRef[]>> | undefined {
@@ -193,7 +202,7 @@ export function migrateSettings(raw: unknown): SettingsV1 {
 }
 
 function fieldsFrom(raw: Record<string, unknown>): SettingsV1 {
-  const mode = parseMode(raw["mode"]) ?? "observe"
+  const mode = parseLegacyMode(raw["mode"]) ?? "observe"
   const tiers = parseTierLists(raw["tiers"]) ?? defaultSettings().tiers
   const pin = parsePin(raw["pin"]) ?? null
   const agentTiers = parseAgentTiers(raw["agentTiers"]) ?? {}

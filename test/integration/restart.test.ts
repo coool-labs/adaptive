@@ -10,7 +10,7 @@ import { CONTINUATION_PROMPT } from "../../src/execution/index.js"
 import { SETTINGS_KEY } from "../../src/state/settings/types.js"
 import {
   INTERRUPTED_USER,
-  controlStorage,
+  activeStorage,
   FakeSupervisorSession,
   flush,
   intervalAttempt,
@@ -30,7 +30,7 @@ import { storedParked, storedReceipts } from "../supervisor/helpers.js"
 
 describe("restart round-trips", () => {
   it("carries settings across a restart", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const first = makeSupervisor({ storage, session: new FakeSupervisorSession() })
     const result = await first.updateSettings({ mode: "observe" })
     expect(result).toMatchObject({ ok: true })
@@ -40,7 +40,7 @@ describe("restart round-trips", () => {
   })
 
   it("continues receipt ids across a restart (newest first)", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const first = makeSupervisor({ storage, session })
     for (let i = 0; i < 3; i += 1) {
@@ -60,7 +60,7 @@ describe("restart round-trips", () => {
   })
 
   it("parks durable work and resumes it after a restart", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession({ failWait: true })
     const first = makeSupervisor({ storage, session })
     await startTracking(first, ref("prov", "a"))
@@ -72,7 +72,7 @@ describe("restart round-trips", () => {
   })
 
   it("resumes a restarted parked record through the idle boundary", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const failing = new FakeSupervisorSession({ failWait: true })
     const first = makeSupervisor({ storage, session: failing })
     await startTracking(first, ref("prov", "a"))
@@ -92,7 +92,7 @@ describe("restart round-trips", () => {
   })
 
   it("keeps runtime health across a restart (breaker + rate windows are durable)", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const first = makeSupervisor({ storage, session })
     await startTracking(first, ref("prov", "a"))
@@ -131,7 +131,7 @@ describe("restart round-trips", () => {
   })
 
   it("gives a fresh unit a fresh veto budget across a restart", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const first = makeSupervisor({ storage, session })
     await startTracking(first, ref("prov", "a"))
@@ -164,11 +164,11 @@ describe("restart round-trips", () => {
   })
 
   it("gives a fresh unit a fresh escalation budget across a restart", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     seed(
       storage,
       SETTINGS_KEY,
-      settingsJSON("control", {
+      settingsJSON("active", {
         standard: [wireRef("prov", "a")],
         advanced: [wireRef("prov", "b")],
       }),
@@ -207,7 +207,7 @@ describe("restart round-trips", () => {
   })
 
   it("resets capacity sensor readings on restart (telemetry is not durable)", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const first = makeSupervisor({ storage, session: new FakeSupervisorSession() })
     await first.handleReport({
       kind: "http-response",
@@ -216,7 +216,7 @@ describe("restart round-trips", () => {
       capturedHeaders: { "x-codex-primary-used-percent": "100" },
     })
     await first.handleReport({ kind: "execution-started", sessionID: "s1", at: 10 })
-    expect(readState(storage).mode).toBe("control")
+    expect(readState(storage).mode).toBe("active")
 
     const second = makeSupervisor({ storage, session: new FakeSupervisorSession() })
     await second.handleReport({ kind: "execution-started", sessionID: "s1", at: 20 })
@@ -226,7 +226,7 @@ describe("restart round-trips", () => {
   })
 
   it("keeps user cancellations out of the durable narrative", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
     await startTracking(supervisor, ref("prov", "a"))

@@ -55,10 +55,16 @@ export function tierEditorOptions(
 }
 
 export function tierMenuOptions(status: StatusSnapshot): SelectOption<TierName>[] {
-  return TIERS.map((tier) => ({
-    title: `${tier} (${String(status.tiers[tier].length)})`,
-    value: tier,
-  }))
+  return TIERS.map((tier) => {
+    const resources = status.tiers[tier]
+    // The lists are short: showing them inline answers "what is configured
+    // where" without opening the editor.
+    const description =
+      resources.length === 0
+        ? "(empty — add models to enable routing)"
+        : resources.map((entry) => resourceLabel(entry.ref)).join(" · ")
+    return { title: `${tier} (${String(resources.length)})`, value: tier, description }
+  })
 }
 
 /** Structural summary of one real OpenCode model (built by the entry). */
@@ -109,6 +115,13 @@ export function variantOptions(variants: readonly string[]): SelectOption<Varian
     options.push({ title: `@${variant}`, value: { variant } })
   }
   return options
+}
+
+/** Move the resource at `index` to the front (make it primary); out-of-bounds is a no-op. */
+export function moveResourceToTop(resources: readonly ModelRef[], index: number): ModelRef[] {
+  const item = resources[index]
+  if (item === undefined) return [...resources]
+  return [item, ...resources.filter((_, i) => i !== index)]
 }
 
 /** Swap the resource at `index` with its `delta` neighbour; bounds are no-ops. */

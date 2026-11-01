@@ -35,7 +35,7 @@ function ref(providerID: string, id: string, variant?: string) {
 
 const STORED: SettingsV1 = {
   version: 1,
-  mode: "control",
+  mode: "active",
   tiers: { quick: [ref("p", "m")], standard: [], advanced: [] },
   pin: ref("p", "m", "high"),
   agentTiers: { build: "advanced" },
@@ -251,7 +251,7 @@ describe("migrateSettings", () => {
 
   test("v0 (versionless draft with recognized fields) migrates and stamps v1", () => {
     const migrated = migrateSettings({
-      mode: "control",
+      mode: "active",
       tiers: { standard: [ref("p", "m")] },
       pin: { providerID: "p", id: "m" },
       agentTiers: { build: "quick" },
@@ -259,7 +259,7 @@ describe("migrateSettings", () => {
     })
     expect(migrated).toEqual({
       version: 1,
-      mode: "control",
+      mode: "active",
       tiers: { quick: [], standard: [ref("p", "m")], advanced: [] },
       pin: ref("p", "m"),
       agentTiers: { build: "quick" },
@@ -275,6 +275,11 @@ describe("migrateSettings", () => {
     expect(migrateSettings(STORED)).toEqual(STORED)
   })
 
+  test("the legacy mode name `control` migrates to `active` on read (rename regression)", () => {
+    expect(migrateSettings({ version: 1, mode: "control" }).mode).toBe("active")
+    expect(migrateSettings({ mode: "control" }).mode).toBe("active")
+  })
+
   test("v1 record with unusable fields falls back per field", () => {
     const migrated = migrateSettings({
       version: 1,
@@ -288,8 +293,8 @@ describe("migrateSettings", () => {
   })
 
   test("a record from a newer version is not guessed at: defaults", () => {
-    expect(migrateSettings({ version: 2, mode: "control" })).toEqual(defaultSettings())
-    expect(migrateSettings({ version: "1", mode: "control" })).toEqual(defaultSettings())
+    expect(migrateSettings({ version: 2, mode: "active" })).toEqual(defaultSettings())
+    expect(migrateSettings({ version: "1", mode: "active" })).toEqual(defaultSettings())
   })
 })
 
@@ -310,9 +315,14 @@ describe("applyPatch", () => {
     expect(result).toEqual({ ok: true, settings: STORED })
   })
 
-  test.each(["off", "observe", "control"] as const)("updates mode to %s", (mode) => {
+  test.each(["off", "observe", "active"] as const)("updates mode to %s", (mode) => {
     const result = applyPatch(defaultSettings(), { mode })
     expect(result).toEqual({ ok: true, settings: { ...defaultSettings(), mode } })
+  })
+
+  test("patches reject the legacy mode name; only persisted records migrate", () => {
+    const result = applyPatch(defaultSettings(), { mode: "control" })
+    expect(result).toEqual({ ok: false, errors: ["invalid mode"] })
   })
 
   test("updates tier lists, normalized and capped", () => {
@@ -398,7 +408,7 @@ describe("applyPatch", () => {
 
   test("valid fields alongside invalid ones yield per-field errors, bounded by field count", () => {
     const patch = {
-      mode: "control",
+      mode: "active",
       tiers: 3,
       pin: "nope",
       agentTiers: [],
@@ -471,10 +481,12 @@ describe("applyPatch", () => {
 describe("SettingsStore", () => {
   test("loads and migrates the persisted record", async () => {
     const storage = new FakeStorage()
+    // The legacy name proves the on-read rename; the tier list proves the
+    // field-wise validation.
     storage.seed({ version: 1, mode: "control", tiers: { standard: [ref("p", "m")] } })
     const store = new SettingsStore(storage)
     const loaded = await store.load()
-    expect(loaded.mode).toBe("control")
+    expect(loaded.mode).toBe("active")
     expect(loaded.tiers.standard).toEqual([ref("p", "m")])
     expect(store.get()).toBe(loaded)
   })
@@ -500,9 +512,9 @@ describe("SettingsStore", () => {
     const storage = new FakeStorage()
     const store = new SettingsStore(storage)
     await store.load()
-    const result = await store.update({ mode: "control" })
+    const result = await store.update({ mode: "active" })
     expect(result.ok).toBe(true)
-    expect(store.get().mode).toBe("control")
+    expect(store.get().mode).toBe("active")
     expect(storage.writes).toBe(1)
     const stored = await storage.read()
     expect(stored).toEqual(store.get())
@@ -523,7 +535,7 @@ describe("SettingsStore", () => {
     const store = new SettingsStore(storage)
     await store.load()
     storage.failWrite()
-    await expect(store.update({ mode: "control" })).rejects.toThrow("storage write failed")
+    await expect(store.update({ mode: "active" })).rejects.toThrow("storage write failed")
     expect(store.get().mode).toBe("observe")
   })
 
@@ -544,7 +556,7 @@ describe("SettingsStore", () => {
     const storage = new GatedStorage()
     const store = new SettingsStore(storage)
     await store.load()
-    const first = store.update({ mode: "control" })
+    const first = store.update({ mode: "active" })
     const second = store.update({ inviteDismissed: true })
     let secondSettled = false
     const trackedSecond = second.then((result) => {
@@ -559,7 +571,7 @@ describe("SettingsStore", () => {
     expect(firstResult.ok).toBe(true)
     expect(secondResult.ok).toBe(true)
     const stored = (await storage.read()) as SettingsV1
-    expect(stored.mode).toBe("control")
+    expect(stored.mode).toBe("active")
     expect(stored.inviteDismissed).toBe(true)
     expect(store.get()).toEqual(stored)
   })

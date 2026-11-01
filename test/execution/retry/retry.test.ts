@@ -160,8 +160,8 @@ describe("forMode", () => {
   const leave: RetryCoreDecision = { kind: "leave" }
 
   it("applies the decision unchanged in control mode", () => {
-    expect(forMode(veto, "control")).toBe(veto)
-    expect(forMode(leave, "control")).toBe(leave)
+    expect(forMode(veto, "active")).toBe(veto)
+    expect(forMode(leave, "active")).toBe(leave)
   })
 
   it("wraps the decision in observe mode without changing it", () => {
@@ -319,7 +319,7 @@ describe("properties", () => {
     fc.assert(
       fc.property(fc.constantFrom(...OPERATING_MODES), (mode) => {
         const decision: RetryCoreDecision = { kind: "veto", model: REF }
-        expect(forMode(decision, "control")).toBe(decision)
+        expect(forMode(decision, "active")).toBe(decision)
         if (mode === "observe") {
           const wrapped = forMode(decision, "observe")
           expect(wrapped.kind === "observe-only" && wrapped.would).toBe(decision)

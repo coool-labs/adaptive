@@ -54,7 +54,7 @@ Settings live on the server; every surface (TUI, GUI, RPC) edits the same truth.
 
 ```json
 {
-  "mode": "control",
+  "mode": "active",
   "tiers": {
     "quick": [{ "providerID": "fake", "id": "small-model" }],
     "standard": [{ "providerID": "fake", "id": "main-model" }],
@@ -114,7 +114,7 @@ Minimum **2.2.1**; the packed-plugin test suite runs against 2.2.1, current, and
 
 ## Troubleshooting
 
-- **Nothing changes** — you are probably in observe mode (the default). Check the mode in `/adaptive` or `status.get`; switch to control.
+- **Nothing changes** — you are probably in observe mode (the default). Check the mode in `/adaptive` or `status.get`; switch to active.
 - **A model is never picked** — it must exist in the provider's configured inventory (`opencode.json` models). Unknown resources are skipped, not guessed.
 - **`Plugin failed: <target>` toast in the TUI** — the plugin bundle failed to load; reinstall the package or check that the entrypoint builds (`npm run build` in a source checkout).
 - **All resources parked / work waits** — every resource in the required tier is blocked (rate limits or an open breaker). Wait for the cooldown probe or add another resource to the tier.

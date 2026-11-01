@@ -414,7 +414,7 @@ export class Supervisor {
    * stays on the pump entirely.
    */
   async #onPrompt(sessionID: string, settings: SettingsV1): Promise<void> {
-    if (settings.mode !== "control") return
+    if (settings.mode !== "active") return
     if (this.#continuationPending.delete(sessionID)) {
       // An owned continuation (retry recovery, escalation, parked resume)
       // already owns this unit's routing: re-arm the admission marker from

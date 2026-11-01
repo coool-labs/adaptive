@@ -33,7 +33,7 @@ src/
     tui/             /adaptive command + dialogs (view layer only)
     gui/             SettingsPage (view layer only)
   index.ts           server plugin wiring
-  tui.ts             TUI entrypoint (dialog-driven, zero JSX)
+  tui.tsx            TUI entrypoint (dialog-driven; one JSX exception: the footer status chip, rendered through host UI slots with @opentui/solid — the host's own slot pattern)
   gui.tsx            GUI entrypoint
   rpc.ts             RPC entrypoint
 ```

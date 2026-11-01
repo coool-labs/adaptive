@@ -17,7 +17,7 @@ const apply: Decision = {
 
 describe("forMode", () => {
   it("returns the identical decision object under control", () => {
-    expect(forMode(apply, "control")).toBe(apply)
+    expect(forMode(apply, "active")).toBe(apply)
   })
 
   it("wraps the identical decision object under observe", () => {

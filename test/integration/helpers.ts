@@ -10,7 +10,7 @@ import { migrateSettings } from "../../src/state/settings/parse.js"
 import { parseReceiptsPayload } from "../../src/state/receipts/index.js"
 import { parseParkedPayload } from "../../src/state/parked-work/index.js"
 import {
-  controlStorage,
+  activeStorage,
   FakeSupervisorSession,
   flush,
   makeSupervisor,
@@ -19,7 +19,7 @@ import {
   settingsJSON,
 } from "../supervisor/helpers.js"
 
-export { FakeSupervisorSession, controlStorage, flush, makeSupervisor, ref, seed, settingsJSON }
+export { FakeSupervisorSession, activeStorage, flush, makeSupervisor, ref, seed, settingsJSON }
 
 export type { ModelRef }
 

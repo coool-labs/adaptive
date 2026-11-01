@@ -79,16 +79,16 @@ describe("adaptiveGuiApi", () => {
   it("update returns the ok flag of the patch result", async () => {
     const { client } = fakeClient()
     const api = adaptiveGuiApi(client as Parameters<typeof adaptiveGuiApi>[0])
-    await expect(api.update({ mode: "control" })).resolves.toBe(true)
+    await expect(api.update({ mode: "active" })).resolves.toBe(true)
     const failing = fakeClient({ updateResult: { ok: false, errors: ["invalid mode"] } })
     const failingApi = adaptiveGuiApi(failing.client as Parameters<typeof adaptiveGuiApi>[0])
-    await expect(failingApi.update({ mode: "control" })).resolves.toBe(false)
+    await expect(failingApi.update({ mode: "active" })).resolves.toBe(false)
   })
 
   it("update returns false when the call rejects (disconnect-safe)", async () => {
     const { client } = fakeClient({ failUpdate: true })
     const api = adaptiveGuiApi(client as Parameters<typeof adaptiveGuiApi>[0])
-    await expect(api.update({ mode: "control" })).resolves.toBe(false)
+    await expect(api.update({ mode: "active" })).resolves.toBe(false)
   })
 
   it("subscribes to the settings-changed event and forwards it", () => {

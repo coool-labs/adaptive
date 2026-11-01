@@ -3,13 +3,14 @@
  * loaded against a sidecar fake provider (ADP-043).
  *
  * Reachable journeys: boot/first-run state, keyboard-only palette
- * navigation, the full /adaptive dialog flow (first-run invitation, status
- * alert, observe→control mode switch with persistence, receipts empty state,
- * Escape cancellation at every level), the tier editor (search-and-add,
- * reorder, remove with confirm/cancel, persistence within the session), the
- * pin flow with its status rendering, a full session turn through the fake
- * provider, the reconnect after the background service daemon dies, and
- * dimension runs.
+ * navigation, the full /adaptive dialog flow (first-run invitation with its
+ * follow-up select, the browsable health view with its empty state and
+ * per-resource detail, observe→active mode switch with persistence, receipts
+ * empty state and detail, Escape cancellation at every level), the tier
+ * editor (search-and-add, move-to-top reorder, remove with confirm/cancel,
+ * persistence within the session), the pin flow with its menu and health
+ * rendering, a full session turn through the fake provider, the reconnect
+ * after the background service daemon dies, and dimension runs.
  *
  * Host facts (empirical, OpenCode 2.2.5):
  * - Plugin TUI bundles mount only from the HOME-based global config
@@ -25,9 +26,11 @@
  *   keyboard path is slash-then-Enter.)
  * - Select dialogs highlight the first option on open; Arrow keys move the
  *   highlight and Enter activates it, Escape cancels. The host persists the
- *   "Settings saved" toast until manually dismissed, so toast text is only
- *   asserted on its first appearance — later saves are verified by
- *   re-reading the status alert instead.
+ *   "Settings saved" toast until manually dismissed, and the flow shows it
+ *   only on the FIRST successful save of a dialog session — the toast is
+ *   asserted only right after the invitation dismissal; every later save is
+ *   verified by re-reading the resulting state (menu descriptions, tier
+ *   counts, editor rows) instead.
  */
 // covers: ["ADP-043"]
 import { expect, step, test } from "@termwright/test"
@@ -62,6 +65,12 @@ type TermwrightFixture = TermwrightFixtures["termwright"]
 type TerminalFixture = TermwrightFixtures["terminal"]
 type TerminalApp = Awaited<ReturnType<TerminalFixture["launch"]>>
 type Sidecar = Awaited<ReturnType<TermwrightFixture["sidecars"]["launch"]>>
+
+/**
+ * The /adaptive main-menu select titles itself after the operating mode, so
+ * the title is both the menu anchor and the mode evidence.
+ */
+const MENU_TITLE = /Adaptive \((?:observe|active|off)\)/
 
 interface Launched {
   app: TerminalApp
@@ -279,7 +288,7 @@ async function runAdaptiveCommand(app: TerminalApp): Promise<void> {
     break
   }
   await app.press("Enter")
-  await app.waitForText(/OpenCode Adaptive|Health of every configured resource/, {
+  await app.waitForText(/OpenCode Adaptive|Adaptive \((?:observe|active|off)\)/, {
     timeout: 30_000,
   })
 }
@@ -296,17 +305,26 @@ async function runAdaptiveSlash(app: TerminalApp): Promise<void> {
   await app.type("/")
   await app.waitForQuiet({ quietMs: 500 })
   await app.press("Enter")
-  await app.waitForText(/OpenCode Adaptive|Health of every configured resource/, {
+  await app.waitForText(/OpenCode Adaptive|Adaptive \((?:observe|active|off)\)/, {
     timeout: 30_000,
   })
 }
 
-/** Confirm the first-run invitation if it is up; lands on the main menu. */
+/**
+ * Confirm the first-run invitation if it is up; lands on the main menu.
+ * The invitation is two dialogs: a confirm (its message names Observe mode),
+ * then a select titled "OpenCode Adaptive" whose highlighted first option
+ * "Open the menu now" proceeds into the menu ("Later" or Escape ends the
+ * run). Confirming also saves the dismissal — the first save of the session,
+ * so the "Settings saved" toast appears here and nowhere else in the session.
+ */
 async function confirmInvite(app: TerminalApp): Promise<void> {
   await app.waitForQuiet({ quietMs: 200 })
-  if (app.screen().text().includes("OpenCode Adaptive")) {
+  if (app.screen().text().includes("Adaptive starts in Observe mode")) {
     await app.press("Enter")
-    await app.waitForText("Health of every configured resource", { timeout: 30_000 })
+    await app.waitForText("Open the menu now", { timeout: 30_000 })
+    await app.press("Enter")
+    await app.waitForText(MENU_TITLE, { timeout: 30_000 })
   }
 }
 
@@ -348,7 +366,7 @@ async function leaveMenuToBase(app: TerminalApp): Promise<void> {
 async function backToAdaptiveMenu(app: TerminalApp): Promise<void> {
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      await app.waitForText("Health of every configured resource", { timeout: 5_000 })
+      await app.waitForText(MENU_TITLE, { timeout: 5_000 })
       return
     } catch (error) {
       if (attempt === 3) throw error
@@ -415,11 +433,17 @@ test(
       await runAdaptiveCommand(app)
       // The first-run invitation names the plugin and the Observe default.
       await app.waitForText("Adaptive starts in Observe mode", { timeout: 15_000 })
-      // Enter activates the Confirm button (the dialog default).
+      // Enter activates the Confirm button (the dialog default); a follow-up
+      // select then offers "Open the menu now" (highlighted first) or "Later".
       await app.press("Enter")
-      // The save toasts once and the main menu opens.
+      await app.waitForText("Open the menu now", { timeout: 30_000 })
+      await app.waitForText("Later", { timeout: 15_000 })
+      // Enter picks the highlighted "Open the menu now": the dismissal is
+      // saved — the first save of the session, so the toast shows — and the
+      // main menu opens, titled after the observe mode it starts in.
+      await app.press("Enter")
       await app.waitForText("Settings saved", { timeout: 30_000 })
-      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
+      await app.waitForText("Adaptive (observe)", { timeout: 30_000 })
     })
     await step("escape closes the menu", async () => {
       await app.press("Escape")
@@ -444,8 +468,8 @@ test(
       await app.waitForText("Adaptive starts in Observe mode", { timeout: 15_000 })
     })
     await step("confirm lands in the main menu", async () => {
-      await app.press("Enter")
-      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
+      await confirmInvite(app)
+      await app.waitForText("Adaptive (observe)", { timeout: 30_000 })
     })
     await step("escape closes the menu", async () => {
       await app.press("Escape")
@@ -457,31 +481,47 @@ test(
 )
 
 test(
-  "the status flow shows the observe snapshot and escape backs out of every level",
+  "the health view shows its empty state on a fresh install and escape backs out of every level",
   { timeout: 120_000 },
   async ({ termwright: tw, terminal }) => {
     const launched = await launchTui(tw, terminal)
     const app = launched.app
     await bootTui(launched)
-    await step("status alert on a fresh install", async () => {
+    await step("health empty state on a fresh install", async () => {
       await openAdaptiveMenu(app)
-      // The main menu highlights its first option (status) on open.
+      // The main menu highlights its first option (Health) on open, and its
+      // description degrades to the nothing-configured line.
+      await app.waitForText("no models configured yet", { timeout: 15_000 })
       await app.press("Enter")
-      await app.waitForText("Adaptive status", { timeout: 30_000 })
-      await app.waitForText("mode: observe", { timeout: 15_000 })
-      await app.waitForText("pin: none", { timeout: 15_000 })
+      await app.waitForText("No models configured yet — open Models to add some.", {
+        timeout: 30_000,
+      })
     })
     await step("escape dismisses the alert back into the menu", async () => {
       await app.press("Escape")
-      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await app.waitForText("Adaptive (observe)", { timeout: 15_000 })
     })
     await step("escape from the mode menu returns to the menu, not home", async () => {
-      await pressAll(app, ["ArrowDown"])
+      // Mode is the third menu option (Health, Models, Mode, Pin, Receipts).
+      await pressAll(app, ["ArrowDown", "ArrowDown"])
       await app.press("Enter")
       await app.waitForText("Adaptive does nothing", { timeout: 30_000 })
       // Cancelling the mode menu reopens the main menu (cancel path).
       await app.press("Escape")
-      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await app.waitForText("Adaptive (observe)", { timeout: 15_000 })
+    })
+    await step("the pin menu degrades to an alert with nothing configured", async () => {
+      // A fresh open starts the highlight on Health, so Pin is three rows
+      // down; the empty pin menu is an alert, not a select.
+      await leaveMenuToBase(app)
+      await runAdaptiveCommand(app)
+      await app.waitForText("Adaptive (observe)", { timeout: 30_000 })
+      await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText("(no configured resources to pin)", { timeout: 30_000 })
+      // Escaping the alert reopens the main menu (cancel path).
+      await app.press("Escape")
+      await app.waitForText("Adaptive (observe)", { timeout: 15_000 })
     })
     await step("escape closes the menu", async () => {
       await app.press("Escape")
@@ -493,40 +533,37 @@ test(
 )
 
 test(
-  "switching to control persists and the status alert reflects it",
+  "switching to active persists and the menu reflects it",
   { timeout: 120_000 },
   async ({ termwright: tw, terminal }) => {
     const launched = await launchTui(tw, terminal)
     const app = launched.app
     await bootTui(launched)
-    await step("switch the operating mode to control", async () => {
+    await step("switch the operating mode to active", async () => {
       await openAdaptiveMenu(app)
-      await pressAll(app, ["ArrowDown"])
-      await app.press("Enter")
-      await app.waitForText("Adaptive does nothing", { timeout: 30_000 })
-      // The mode menu highlights "off" on open; control is two rows down.
-      // The save toast is already on screen from the invitation dismissal
-      // (the host never auto-dismisses it), so the switch is verified by
-      // re-reading the status below instead of the toast.
+      // Mode is the third menu option.
       await pressAll(app, ["ArrowDown", "ArrowDown"])
       await app.press("Enter")
-      // Applying the patch reopens the main menu.
-      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
+      await app.waitForText("Adaptive does nothing", { timeout: 30_000 })
+      // The mode menu highlights "off" on open; active is two rows down.
+      // The invitation dismissal was this session's first (and only) save,
+      // so the switch itself stays silent — it is verified by the reopened
+      // menu's mode line below instead of a toast.
+      await pressAll(app, ["ArrowDown", "ArrowDown"])
+      await app.press("Enter")
+      // Applying the patch reopens the main menu, now titled and described
+      // after the active mode.
+      await app.waitForText("currently active", { timeout: 30_000 })
     })
     await step("the switch survives closing and reopening the flow", async () => {
       await app.press("Escape")
       await app.waitForText("Ask anything", { timeout: 15_000 })
       // Re-open: the invitation must not reappear (dismissal persisted) and
-      // the menu comes back directly.
+      // the menu comes back directly, titled after the persisted mode.
       await runAdaptiveCommand(app)
-      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
-      await app.press("Enter")
-      await app.waitForText("Adaptive status", { timeout: 30_000 })
-      await app.waitForText("mode: control", { timeout: 15_000 })
+      await app.waitForText("Adaptive (active)", { timeout: 30_000 })
     })
     await step("escape back home", async () => {
-      await app.press("Escape")
-      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
       await app.press("Escape")
       await app.waitForText("Ask anything", { timeout: 15_000 })
     })
@@ -544,14 +581,14 @@ test(
     await bootTui(launched)
     await step("empty receipts alert", async () => {
       await openAdaptiveMenu(app)
-      // Receipts is the fifth menu option; the highlight starts on status.
+      // Receipts is the fifth menu option; the highlight starts on Health.
       await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"])
       await app.press("Enter")
       await app.waitForText("No decisions recorded yet.", { timeout: 30_000 })
     })
     await step("escape dismisses the alert and closes the menu", async () => {
       await app.press("Escape")
-      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await app.waitForText("Adaptive (observe)", { timeout: 15_000 })
       await app.press("Escape")
       await app.waitForText("Ask anything", { timeout: 15_000 })
     })
@@ -579,9 +616,23 @@ test(
       // that recorded decision, not the empty state.
       await app.waitForText(/defer: routing-defer/, { timeout: 30_000 })
     })
+    await step("the receipt detail explains what happened in plain language", async () => {
+      // The first receipt is highlighted; Enter opens its detail alert.
+      await app.press("Enter")
+      await app.waitForText(/Receipt #\d+/, { timeout: 30_000 })
+      // The timestamp line is relative with the ISO stamp in parentheses,
+      // and the detail ends with the plain-language explanation (observe
+      // mode records the decision as observe-only, so the explanation names
+      // the observation rather than the would-be routing). The full sentence
+      // wraps at 80 columns, so the assertion anchors on its short head.
+      await app.waitForText(/when: just now \(\d{4}-\d{2}-\d{2}T/, { timeout: 15_000 })
+      await app.waitForText("What happened: Adaptive is observing", { timeout: 15_000 })
+      await app.press("Escape")
+      await app.waitForText(/defer: routing-defer/, { timeout: 15_000 })
+    })
     await step("escape dismisses the alert and closes the menu", async () => {
       await app.press("Escape")
-      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await app.waitForText("Adaptive (observe)", { timeout: 15_000 })
       await leaveMenuToBase(app)
     })
     await app.close()
@@ -590,7 +641,7 @@ test(
 )
 
 test(
-  "switching to off disables routing and the status alert reflects it",
+  "switching to off disables routing and the menu reflects it",
   { timeout: 120_000 },
   async ({ termwright: tw, terminal }) => {
     const launched = await launchTui(tw, terminal)
@@ -598,22 +649,16 @@ test(
     await bootTui(launched)
     await step("switch the operating mode to off", async () => {
       await openAdaptiveMenu(app)
-      await pressAll(app, ["ArrowDown"])
+      // Mode is the third menu option.
+      await pressAll(app, ["ArrowDown", "ArrowDown"])
       await app.press("Enter")
       await app.waitForText("Adaptive does nothing", { timeout: 30_000 })
       // "off" is highlighted first in the mode menu; applying the patch
       // reopens the main menu.
       await app.press("Enter")
-      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
+      await app.waitForText("currently off", { timeout: 30_000 })
     })
-    await step("the status alert reports mode: off", async () => {
-      await app.press("Enter")
-      await app.waitForText("Adaptive status", { timeout: 30_000 })
-      await app.waitForText("mode: off", { timeout: 15_000 })
-    })
-    await step("escape dismisses the alert and closes the menu", async () => {
-      await app.press("Escape")
-      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+    await step("escape closes the menu", async () => {
       await leaveMenuToBase(app)
     })
     await app.close()
@@ -622,25 +667,25 @@ test(
 )
 
 test(
-  "the status dialog shows a resource's health after a failed turn",
+  "the health view shows a windowed resource and its recovery deadline after a failed turn",
   { timeout: 300_000 },
   async ({ termwright: tw, terminal }) => {
     const launched = await launchTui(tw, terminal, { failAfterTitle: true })
     const app = launched.app
     await bootTui(launched)
-    await step("switch to control and seed the quick tier", async () => {
+    await step("switch to active and seed the standard tier", async () => {
       await openAdaptiveMenu(app)
-      // Mode is the second menu option; "off" is highlighted in the mode
-      // menu and control is two rows down.
-      await pressAll(app, ["ArrowDown"])
+      // Mode is the third menu option; "off" is highlighted in the mode
+      // menu and active is two rows down.
+      await pressAll(app, ["ArrowDown", "ArrowDown"])
       await app.press("Enter")
       await app.waitForText("Adaptive does nothing", { timeout: 30_000 })
       await pressAll(app, ["ArrowDown", "ArrowDown"])
       await app.press("Enter")
-      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
+      await app.waitForText("currently active", { timeout: 30_000 })
       // The patch-reopened menu can keep the highlight on the mode row, so
       // close it and re-open fresh: a fresh menu always starts the highlight
-      // on status, which the tier navigation below relies on.
+      // on Health, which the tier navigation below relies on.
       await app.press("Escape")
       await app.waitForText("Ask anything", { timeout: 15_000 })
       await openAdaptiveMenu(app)
@@ -658,7 +703,7 @@ test(
       await backToAdaptiveMenu(app)
       await leaveMenuToBase(app)
     })
-    await step("the failed turn marks the resource unhealthy in status", async () => {
+    await step("the health list marks the resource windowed", async () => {
       await app.type("say done")
       await app.waitForQuiet({ quietMs: 2_000 })
       // The provider answers a quota-shaped 429, so the turn fails instead
@@ -668,17 +713,23 @@ test(
       // has not shown yet, and a duplicate failing turn changes nothing.
       for (let attempt = 0; attempt < 5; attempt++) {
         await app.press("Enter")
-        await openAdaptiveMenu(app)
-        // Status is the highlighted first menu option.
-        await app.press("Enter")
         try {
-          await app.waitForText("Adaptive status", { timeout: 30_000 })
-          await app.waitForText("mode: control", { timeout: 15_000 })
-          // The health tag renders the record's health state first
+          // openAdaptiveMenu can throw when the host drops the palette
+          // keystroke right after the failed turn re-renders the footer;
+          // retrying it inside the loop covers that drop.
+          await openAdaptiveMenu(app)
+          // Health is the highlighted first menu option; it opens the
+          // browsable health list (the standard tier holds one resource).
+          await app.press("Enter")
+          // Anchor on the tag itself: the option row renders title and
+          // description on one line, so at 100 columns the row truncates
+          // "tier standard" to "tier " exactly while the tag is visible —
+          // "tier standard" only shows fully once the 60s window expired.
+          // The tag renders the record's health state first
           // (`[rate_limited, windowed]` for a throttled resource), so the
-          // assertion anchors on the tag's comma shape rather than a bare
+          // assertion anchors on the comma shape rather than a bare
           // "[windowed]" that never occurs while the state is unhealthy.
-          await app.waitForText(/\[[a-z_]+, windowed\]/, { timeout: 20_000 })
+          await app.waitForText(/\[[a-z_]+, windowed\]/, { timeout: 30_000 })
           return
         } catch (error) {
           if (attempt === 4) throw error
@@ -688,9 +739,35 @@ test(
         }
       }
     })
-    await step("escape dismisses the alert and closes the menu", async () => {
+    await step("the resource detail shows the window deadline", async () => {
+      // Enter opens the detail alert for the highlighted resource.
+      await app.press("Enter")
+      await app.waitForText("Health: fake/fake-model", { timeout: 30_000 })
+      await app.waitForText("tier: standard", { timeout: 15_000 })
+      // The window deadline renders as the local wall clock (HH:MM) of the
+      // recovery deadline.
+      await app.waitForText(/window: until \d{2}:\d{2}/, { timeout: 15_000 })
+      await app.waitForText("breaker: ", { timeout: 15_000 })
+      // Dismissing the alert reveals the per-resource action select.
       await app.press("Escape")
-      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await app.waitForText("Pin this resource", { timeout: 15_000 })
+      await app.waitForText("Show receipts for this resource", { timeout: 15_000 })
+    })
+    await step("the resource's receipts open filtered to that resource", async () => {
+      await pressAll(app, ["ArrowDown"])
+      await app.press("Enter")
+      // The failed turn recorded an apply decision for the resource, so the
+      // filtered browser lists it instead of the empty state.
+      await app.waitForText(/Receipts \(\d+, newest first\)/, { timeout: 30_000 })
+      await app.press("Escape")
+      // Escaping the browser returns to the health list — anchored on its
+      // always-present "Back" option, because the resource row truncates
+      // its "tier standard" description while the health tag is visible.
+      await app.waitForText("Back", { timeout: 15_000 })
+    })
+    await step("escape back out to home", async () => {
+      await app.press("Escape")
+      await app.waitForText(MENU_TITLE, { timeout: 15_000 })
       await leaveMenuToBase(app)
     })
     await app.close()
@@ -735,29 +812,33 @@ test(
 
 // Tier-editor and pin journeys (ADP-033). Facts verified live (OpenCode
 // 2.2.5): the tier list menu titles its options `quick (N)` / `standard (N)` /
-// `advanced (N)`; the editor select is titled `Tier: <tier>` and lists "Add
-// model…" first, one row per resource (`provider/model`, empty health tag
-// while healthy), then "Back". The model picker shows EVERY catalog entry on
-// an empty query — not just the configured fake provider: the opencode/*
-// builtin free models come first, the fake models (`fake/fake-model`, then
-// `fake/fake-model-2`) are the last two entries, and EVERY picker model has
-// host-reported variants (`@low`/`@medium`/…): picking one opens the
-// `Variant: <model>` select, where "(model default)" is highlighted first and
-// Enter keeps the resource label variant-free. Filtering with
-// "fake" therefore narrows the picker to exactly the two fake models. Option
-// rows render title and description on one line, and screen rows are padded
-// to the full width, so label-boundary regexes anchor on `\s` after the
-// label: `fake/fake-model\s` matches the bare label's row (or the
-// `Resource: fake/fake-model` title) but not the `fake/fake-model-2` row,
-// whose label continues with `-2`. The "Settings saved" toast is
-// never asserted after the invitation dismissal (the host keeps it on screen,
-// so the assertion would be vacuous) — saves are verified by re-reading the
-// resulting state (tier counts, editor rows, status lines) instead.
+// `advanced (N)`, described by the resources they hold (`p/a · p/b`) or
+// "(empty — add models to enable routing)"; the editor select is titled
+// `Tier: <tier>` and lists "Add model…" first, one row per resource
+// (`provider/model`, empty health tag while healthy), then "Back". The model
+// picker shows EVERY catalog entry on an empty query — not just the
+// configured fake provider: the opencode/* builtin free models come first,
+// the fake models (`fake/fake-model`, then `fake/fake-model-2`) are the last
+// two entries, and EVERY picker model has host-reported variants
+// (`@low`/`@medium`/…): picking one opens the `Variant: <model>` select,
+// where "(model default)" is highlighted first and Enter keeps the resource
+// label variant-free. Filtering with "fake" therefore narrows the picker to
+// exactly the two fake models. Option rows render title and description on
+// one line, and screen rows are padded to the full width, so label-boundary
+// regexes anchor on `\s` after the label: `fake/fake-model\s` matches the
+// bare label's row (or the `Resource: fake/fake-model` title) but not the
+// `fake/fake-model-2` row, whose label continues with `-2`. The resource
+// menu offers "Move to top", "Move up", "Move down" and "Remove" (the
+// remove goes through the "Remove resource" confirm). The "Settings saved"
+// toast appears only on the FIRST save of a dialog session (the invitation
+// dismissal already used it), so later saves are never asserted via the
+// toast — they are verified by re-reading the resulting state (tier counts,
+// editor rows, menu descriptions) instead.
 // Each test boots its own sandbox, so leftover tier entries never leak
 // between tests; the cleanup journeys themselves are covered by the remove
 // and clear-pin steps below.
 
-/** Activate the main-menu option at `index` (status 0, mode 1, tiers 2, pin 3). */
+/** Activate the main-menu option at `index` (health 0, models 1, mode 2, pin 3, receipts 4). */
 async function chooseMainMenuItem(app: TerminalApp, index: number): Promise<void> {
   await pressAll(
     app,
@@ -766,9 +847,9 @@ async function chooseMainMenuItem(app: TerminalApp, index: number): Promise<void
   await app.press("Enter")
 }
 
-/** From the main menu, open the tiers flow and land on the tier list menu. */
+/** From the main menu, open the models flow and land on the tier list menu. */
 async function openTierMenu(app: TerminalApp, quickCount: number): Promise<void> {
-  await chooseMainMenuItem(app, 2)
+  await chooseMainMenuItem(app, 1)
   await app.waitForText(`quick (${String(quickCount)})`, { timeout: 30_000 })
 }
 
@@ -842,7 +923,7 @@ test(
       await app.press("Escape")
       await app.waitForText("quick (1)", { timeout: 15_000 })
       await app.press("Escape")
-      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await app.waitForText(MENU_TITLE, { timeout: 15_000 })
       await app.press("Escape")
       await app.waitForText("Ask anything", { timeout: 15_000 })
     })
@@ -869,11 +950,15 @@ test(
       await openQuickEditor(app)
       await addHighlightedModel(app, ["f", "a", "k", "e", "ArrowDown"], 2)
     })
-    await step("move the second resource up", async () => {
+    await step("move the second resource to the top", async () => {
       await openQuickEditor(app)
       await pressAll(app, ["ArrowDown", "ArrowDown"])
       await app.press("Enter")
       await app.waitForText(/Resource: fake\/fake-model-2\s/, { timeout: 30_000 })
+      // The resource menu offers "Move to top" (make this the primary
+      // resource), "Move up", "Move down" and "Remove"; "Move to top" is
+      // highlighted first and moves fake-model-2 ahead of fake-model.
+      await app.waitForText("Make this the primary resource", { timeout: 15_000 })
       await app.press("Enter")
       await app.waitForText("quick (2)", { timeout: 30_000 })
     })
@@ -890,7 +975,9 @@ test(
       await pressAll(app, ["ArrowDown"])
       await app.press("Enter")
       await app.waitForText(/Resource: fake\/fake-model-2\s/, { timeout: 30_000 })
-      await pressAll(app, ["ArrowDown", "ArrowDown"])
+      // Remove is the fourth resource-menu option (after Move to top, Move
+      // up, Move down).
+      await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown"])
       await app.press("Enter")
       await app.waitForText("Remove fake/fake-model-2 from quick?", { timeout: 30_000 })
       await app.press("Escape")
@@ -903,7 +990,9 @@ test(
       await pressAll(app, ["ArrowDown"])
       await app.press("Enter")
       await app.waitForText(/Resource: fake\/fake-model-2\s/, { timeout: 30_000 })
-      await pressAll(app, ["ArrowDown", "ArrowDown"])
+      // Remove is the fourth resource-menu option (after Move to top, Move
+      // up, Move down).
+      await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown"])
       await app.press("Enter")
       await app.waitForText("Remove fake/fake-model-2 from quick?", { timeout: 30_000 })
       await app.press("Enter")
@@ -919,7 +1008,7 @@ test(
       await app.press("Escape")
       await app.waitForText("quick (1)", { timeout: 15_000 })
       await app.press("Escape")
-      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await app.waitForText(MENU_TITLE, { timeout: 15_000 })
       await app.press("Escape")
       await app.waitForText("Ask anything", { timeout: 15_000 })
     })
@@ -929,7 +1018,7 @@ test(
 )
 
 test(
-  "pinning a resource shows in status and can be cleared",
+  "pinning a resource shows in the menu and health detail and can be cleared",
   { timeout: 240_000 },
   async ({ termwright: tw, terminal }) => {
     const launched = await launchTui(tw, terminal)
@@ -945,11 +1034,11 @@ test(
       // just-added resource is invisible to the pin menu until the flow is
       // re-entered (the re-open reads the server truth afresh).
       await app.press("Escape")
-      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await app.waitForText(MENU_TITLE, { timeout: 15_000 })
       await app.press("Escape")
       await app.waitForText("Ask anything", { timeout: 15_000 })
       await runAdaptiveCommand(app)
-      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
+      await app.waitForText(MENU_TITLE, { timeout: 30_000 })
     })
     await step("pin fake/fake-model", async () => {
       await chooseMainMenuItem(app, 3)
@@ -957,25 +1046,42 @@ test(
       await app.waitForText("fake/fake-model (quick)", { timeout: 15_000 })
       await pressAll(app, ["ArrowDown"])
       await app.press("Enter")
-      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
-    })
-    await step("status shows the pinned resource", async () => {
-      await app.press("Enter")
-      await app.waitForText("Adaptive status", { timeout: 30_000 })
-      await app.waitForText("pin: fake/fake-model", { timeout: 15_000 })
+      // First save of this dialog session: the toast shows once, and the
+      // reopened menu describes the pin in its Pin row.
+      await app.waitForText("Settings saved", { timeout: 30_000 })
+      await app.waitForText("pinned to fake/fake-model", { timeout: 30_000 })
+      // The patch-reopened menu can keep the highlight on the pin row, so
+      // close it and re-open fresh before entering Health (whose navigation
+      // below relies on the fresh menu's first-option highlight).
       await app.press("Escape")
-      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await app.waitForText("Ask anything", { timeout: 15_000 })
+      await runAdaptiveCommand(app)
+      await app.waitForText("Adaptive (observe)", { timeout: 30_000 })
     })
-    await step("clearing the pin restores pin: none", async () => {
+    await step("the health detail reports the pin", async () => {
+      // Health is the highlighted first menu option; the seeded resource is
+      // healthy, so its row carries no health tag.
+      await app.press("Enter")
+      await app.waitForText("tier quick", { timeout: 30_000 })
+      await app.press("Enter")
+      await app.waitForText("Health: fake/fake-model", { timeout: 30_000 })
+      await app.waitForText("pin: pinned to this resource", { timeout: 15_000 })
+      // Dismissing the detail reveals the resource's action select; escaping
+      // it returns to the health list, escaping that to the menu.
+      await app.press("Escape")
+      await app.waitForText("Pin this resource", { timeout: 15_000 })
+      await app.press("Escape")
+      await app.waitForText("tier quick", { timeout: 15_000 })
+      await app.press("Escape")
+      await app.waitForText(MENU_TITLE, { timeout: 15_000 })
+    })
+    await step("clearing the pin restores the force-one-resource description", async () => {
       await chooseMainMenuItem(app, 3)
       await app.waitForText("No pin", { timeout: 30_000 })
       await app.press("Enter")
-      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
-      await app.press("Enter")
-      await app.waitForText("Adaptive status", { timeout: 30_000 })
-      await app.waitForText("pin: none", { timeout: 15_000 })
-      await app.press("Escape")
-      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      // Second save of the session: silent — the reopened menu's Pin
+      // description is the evidence.
+      await app.waitForText("force one resource", { timeout: 30_000 })
     })
     await step("escape back home", async () => {
       await app.press("Escape")

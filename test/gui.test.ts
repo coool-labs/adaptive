@@ -92,7 +92,7 @@ describe("AdaptiveStatusPage", () => {
   it("renders the status rows for a live snapshot", async () => {
     const { api } = fakeApi({
       status: snapshot({
-        mode: "control",
+        mode: "active",
         pin: { providerID: "prov", id: "p" },
         tiers: tierMap({
           standard: [
@@ -101,6 +101,7 @@ describe("AdaptiveStatusPage", () => {
               health: "healthy",
               breaker: "closed",
               windowed: false,
+              windowUntil: null,
             },
           ],
         }),
@@ -110,7 +111,7 @@ describe("AdaptiveStatusPage", () => {
     })
     const { container, dispose } = await mountPage(api)
     const text = container.textContent
-    expect(text).toContain("control")
+    expect(text).toContain("active")
     expect(text).toContain("prov/p")
     expect(text).toContain("prov/a")
     expect(text).toContain("3")
@@ -132,12 +133,12 @@ describe("AdaptiveStatusPage", () => {
     const { api, updates } = fakeApi()
     const { container, dispose } = await mountPage(api)
     const select = requiredSelect(container)
-    select.value = "control"
+    select.value = "active"
     select.dispatchEvent(new Event("change"))
     await Promise.resolve()
     await Promise.resolve()
     await Promise.resolve()
-    expect(updates).toEqual([{ mode: "control" }])
+    expect(updates).toEqual([{ mode: "active" }])
     expect(container.querySelector(".adaptive-saved")?.textContent).toBe("Saved")
     dispose()
   })
@@ -191,12 +192,12 @@ describe("AdaptiveStatusPage", () => {
     const { container, dispose } = await mountPage(api)
     expect(listeners).toHaveLength(1)
     expect(container.textContent).toContain("observe")
-    current = snapshot({ mode: "control" })
+    current = snapshot({ mode: "active" })
     listeners[0]?.()
     await Promise.resolve()
     await Promise.resolve()
     await Promise.resolve()
-    expect(container.textContent).toContain("control")
+    expect(container.textContent).toContain("active")
     dispose()
   })
 
@@ -283,7 +284,7 @@ describe("gui entry", () => {
 
   it("renders the registered page against the typed RPC client", async () => {
     const rpcCalls: string[] = []
-    const { added, context } = fixture({ rpcCalls, snapshot: snapshot({ mode: "control" }) })
+    const { added, context } = fixture({ rpcCalls, snapshot: snapshot({ mode: "active" }) })
     requiredSetup()(context as never)
     const page = added[0]?.item as { render: () => unknown }
     const container = document.createElement("div")
@@ -294,7 +295,7 @@ describe("gui entry", () => {
     await Promise.resolve()
     expect(rpcCalls).toContain("settings-changed")
     expect(rpcCalls).toContain("status.get")
-    expect(container.textContent).toContain("control")
+    expect(container.textContent).toContain("active")
     disposeRoot()
   })
 })

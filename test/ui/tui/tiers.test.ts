@@ -6,6 +6,7 @@ import {
   modelMatches,
   modelPickerOptions,
   moveResource,
+  moveResourceToTop,
   removeResource,
   resourceLabel,
   tierEditorOptions,
@@ -20,7 +21,13 @@ import { defaultSettings, type SettingsV1 } from "../../../src/state/settings/in
 import type { PatchResult } from "../../../src/state/settings/types.js"
 
 function tierResource(providerID: string, id: string): TierResourceStatus {
-  return { ref: ref(providerID, id), health: "healthy", breaker: "closed", windowed: false }
+  return {
+    ref: ref(providerID, id),
+    health: "healthy",
+    breaker: "closed",
+    windowed: false,
+    windowUntil: null,
+  }
 }
 
 function ref(providerID: string, id: string, variant?: string): ModelRef {
@@ -40,6 +47,7 @@ describe("healthTag", () => {
     health: "healthy",
     breaker: "closed",
     windowed: false,
+    windowUntil: null,
   }
 
   it("is empty for healthy closed unwindowed resources and missing status", () => {
@@ -72,9 +80,13 @@ describe("tier menus", () => {
       receipts: 0,
     }
     expect(tierMenuOptions(status)).toEqual([
-      { title: "quick (1)", value: "quick" },
-      { title: "standard (2)", value: "standard" },
-      { title: "advanced (0)", value: "advanced" },
+      { title: "quick (1)", value: "quick", description: "p/a" },
+      { title: "standard (2)", value: "standard", description: "p/b · p/c" },
+      {
+        title: "advanced (0)",
+        value: "advanced",
+        description: "(empty — add models to enable routing)",
+      },
     ])
   })
 
@@ -89,8 +101,20 @@ describe("tier menus", () => {
       tiers: {
         quick: [],
         standard: [
-          { ref: ref("prov", "a"), health: "unavailable", breaker: "closed", windowed: false },
-          { ref: ref("prov", "b", "v"), health: "healthy", breaker: "closed", windowed: false },
+          {
+            ref: ref("prov", "a"),
+            health: "unavailable",
+            breaker: "closed",
+            windowed: false,
+            windowUntil: null,
+          },
+          {
+            ref: ref("prov", "b", "v"),
+            health: "healthy",
+            breaker: "closed",
+            windowed: false,
+            windowUntil: null,
+          },
         ],
         advanced: [],
       },
@@ -232,6 +256,19 @@ describe("reorder and remove", () => {
       ),
       { numRuns: 200 },
     )
+  })
+})
+
+describe("moveResourceToTop", () => {
+  it("moves the picked resource to the front and keeps the rest in order", () => {
+    const refs = [ref("p", "a"), ref("p", "b"), ref("p", "c")]
+    expect(moveResourceToTop(refs, 2)).toEqual([ref("p", "c"), ref("p", "a"), ref("p", "b")])
+  })
+
+  it("is a no-op copy for an out-of-bounds index", () => {
+    const refs = [ref("p", "a"), ref("p", "b")]
+    expect(moveResourceToTop(refs, 5)).toEqual(refs)
+    expect(moveResourceToTop(refs, -1)).toEqual(refs)
   })
 })
 

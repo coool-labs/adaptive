@@ -212,13 +212,13 @@ export function makeSupervisor(options: {
   })
 }
 
-/** Standard tier with the two inventory models, control mode. */
-export function controlStorage(): KeyFailStorage {
+/** Standard tier with the two inventory models, active mode. */
+export function activeStorage(): KeyFailStorage {
   const storage = new KeyFailStorage("unused")
   seed(
     storage,
     "coool.adaptive/settings",
-    settingsJSON("control", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
+    settingsJSON("active", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
   )
   return storage
 }

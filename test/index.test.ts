@@ -92,7 +92,7 @@ describe("plugin entry", () => {
   it("registers the six session hooks and the event subscription", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     const events = fakeEvents()
     const cleanup = await adaptivePlugin.setup(fakeContext({ storage, session, events }))
     expect([...session.registered.keys()].sort()).toEqual([...HOOK_NAMES].sort())
@@ -103,7 +103,7 @@ describe("plugin entry", () => {
   it("pumps execution events into admission (switch + receipt)", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     const events = fakeEvents()
     const cleanup = (await adaptivePlugin.setup(
       fakeContext({ storage, session, events }),
@@ -136,7 +136,7 @@ describe("plugin entry", () => {
   it("disposes all hook registrations and the subscription on cleanup", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     const events = fakeEvents()
     const cleanup = (await adaptivePlugin.setup(
       fakeContext({ storage, session, events }),
@@ -166,7 +166,7 @@ describe("plugin entry", () => {
     seed(
       storage,
       SETTINGS_KEY,
-      settingsJSON("control", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
+      settingsJSON("active", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
     )
     const events = fakeEvents()
     const cleanup = (await adaptivePlugin.setup(
@@ -196,7 +196,7 @@ describe("plugin entry", () => {
     seed(
       storage,
       SETTINGS_KEY,
-      settingsJSON("control", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
+      settingsJSON("active", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
     )
     const events = fakeEvents()
     const cleanup = (await adaptivePlugin.setup(
@@ -237,7 +237,7 @@ describe("plugin entry", () => {
   it("tracks a model.request hook with its request kind", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     const events = fakeEvents()
     const cleanup = (await adaptivePlugin.setup(
       fakeContext({ storage, session, events }),
@@ -253,7 +253,7 @@ describe("plugin entry", () => {
   it("processes an http.response hook without an attributable model", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     const events = fakeEvents()
     const cleanup = (await adaptivePlugin.setup(
       fakeContext({ storage, session, events }),
@@ -269,7 +269,7 @@ describe("plugin entry", () => {
   it("feeds an idle hook into the resume path (no parked records: no-op)", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     const events = fakeEvents()
     const cleanup = (await adaptivePlugin.setup(
       fakeContext({ storage, session, events }),
@@ -282,7 +282,7 @@ describe("plugin entry", () => {
   it("logs event-pump stream errors fail-open", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     const events = fakeEvents()
     const cleanup = (await adaptivePlugin.setup(
       fakeContext({ storage, session, events }),
@@ -300,7 +300,7 @@ describe("plugin entry", () => {
   it("registers the typed escalation tool and routes it into the supervisor", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     const events = fakeEvents()
     const addedTools: unknown[] = []
     const cleanup = (await adaptivePlugin.setup(
@@ -339,7 +339,7 @@ describe("plugin entry: rpc surface", () => {
   it("registers the adaptive rpc definition with four handlers", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     let record: RpcRecord | undefined
     const context = fakeContext({
       storage,
@@ -359,7 +359,7 @@ describe("plugin entry: rpc surface", () => {
     ])
     const handlers = record?.handlers ?? {}
     const settings = (await handlers["settings.get"]?.(undefined)) as { mode: string }
-    expect(settings.mode).toBe("control")
+    expect(settings.mode).toBe("active")
     const result = (await handlers["settings.set"]?.({ mode: "observe" })) as { ok: boolean }
     expect(result.ok).toBe(true)
     expect(storedSettings(storage).mode).toBe("observe")
@@ -370,7 +370,7 @@ describe("prompt hook through the entry", () => {
   it("routes the prompt report into admission (switch + receipt at prompt time)", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     const events = fakeEvents()
     const cleanup = (await adaptivePlugin.setup(
       fakeContext({ storage, session, events }),

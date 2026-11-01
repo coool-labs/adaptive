@@ -52,7 +52,7 @@ describe("runtime e2e: typed rpc surface on a real opencode host", () => {
   it("persists a valid patch and mirrors it in status", { timeout: 120_000 }, async () => {
     const host = await start()
     const patch = (await rpc(host).settings.set({
-      mode: "control",
+      mode: "active",
       tiers: { quick: [], standard: [{ providerID: "fake", id: "fake-model" }], advanced: [] },
       pin: { providerID: "fake", id: "fake-model" },
     })) as { ok: boolean; settings: Record<string, unknown> }
@@ -63,7 +63,7 @@ describe("runtime e2e: typed rpc surface on a real opencode host", () => {
       pin: unknown
       tiers: { standard: unknown[] }
     }
-    expect(settings.mode).toBe("control")
+    expect(settings.mode).toBe("active")
     expect(settings.pin).toEqual({ providerID: "fake", id: "fake-model" })
     expect(settings.tiers.standard).toEqual([{ providerID: "fake", id: "fake-model" }])
 
@@ -76,7 +76,7 @@ describe("runtime e2e: typed rpc surface on a real opencode host", () => {
       parked: number
       receipts: number
     }
-    expect(status.mode).toBe("control")
+    expect(status.mode).toBe("active")
     expect(status.pin).toEqual({ providerID: "fake", id: "fake-model" })
     expect(status.tiers.standard).toEqual([
       {
@@ -84,6 +84,7 @@ describe("runtime e2e: typed rpc surface on a real opencode host", () => {
         health: "healthy",
         breaker: "closed",
         windowed: false,
+        windowUntil: null,
       },
     ])
     expect(status.parked).toBe(0)
@@ -94,7 +95,7 @@ describe("runtime e2e: typed rpc surface on a real opencode host", () => {
     { timeout: 120_000 },
     async () => {
       const host = await start()
-      await rpc(host).settings.set({ mode: "control" })
+      await rpc(host).settings.set({ mode: "active" })
       const rejected = (await rpc(host).settings.set({ mode: "bogus" })) as {
         ok: boolean
         errors: string[]
@@ -102,7 +103,7 @@ describe("runtime e2e: typed rpc surface on a real opencode host", () => {
       expect(rejected.ok).toBe(false)
       expect(rejected.errors.length).toBeGreaterThan(0)
       const settings = (await rpc(host).settings.get()) as { mode: string }
-      expect(settings.mode).toBe("control")
+      expect(settings.mode).toBe("active")
     },
   )
 
@@ -122,7 +123,7 @@ describe("runtime e2e: typed rpc surface on a real opencode host", () => {
     async () => {
       const host = await start({ script: successScript })
       await rpc(host).settings.set({
-        mode: "control",
+        mode: "active",
         tiers: { quick: [], standard: [{ providerID: "fake", id: "fake-model" }], advanced: [] },
       })
       await host.run({ text: "hi" })

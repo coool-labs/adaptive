@@ -41,16 +41,88 @@ export function receiptLine(receipt: Receipt): string {
   return `#${String(receipt.id)} ${summarizeDecision(receipt.decision)} — ${outcomeLine(receipt.outcome)}`
 }
 
-export function receiptDetail(receipt: Receipt): string {
+export function receiptDetail(receipt: Receipt, now: number = Date.now()): string {
   return [
     `id: ${String(receipt.id)}`,
-    `at: ${new Date(receipt.at).toISOString()}`,
+    `when: ${relativeTime(receipt.at, now)} (${new Date(receipt.at).toISOString()})`,
     `session: ${receipt.sessionID}`,
     `unit: ${receipt.unitID ?? "-"}`,
     `tier: ${receipt.tier ?? "-"}`,
     `decision: ${summarizeDecision(receipt.decision)}`,
     `outcome: ${outcomeLine(receipt.outcome)}`,
+    "",
+    `What happened: ${whatHappened(receipt)}`,
   ].join("\n")
+}
+
+/** "just now" / "2m ago" / "3h ago" / "5d ago" for a receipt timestamp. */
+export function relativeTime(at: number, now: number): string {
+  const seconds = Math.max(0, Math.floor((now - at) / 1000))
+  if (seconds < 60) return "just now"
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${String(minutes)}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${String(hours)}h ago`
+  return `${String(Math.floor(hours / 24))}d ago`
+}
+
+/**
+ * Plain-language explanation for a receipt, keyed on the finite reason
+ * vocabulary. Unknown reasons fall through to the raw summary.
+ */
+export function whatHappened(receipt: Receipt): string {
+  const decision = receipt.decision
+  switch (decision.kind) {
+    case "apply":
+      return (
+        applyExplanation[decision.reason] ??
+        `Adaptive routed this turn to ${resourceLabel(decision.model)}.`
+      )
+    case "defer":
+      return deferExplanation[decision.reason] ?? "Adaptive left the model choice to OpenCode."
+    case "park":
+      return (
+        parkExplanation[decision.reason] ??
+        "Adaptive could not route this turn and left it to OpenCode."
+      )
+    case "escalate":
+      return `This turn needed stronger capability, so Adaptive moved it to ${resourceLabel(decision.target)}.`
+    case "observe-only":
+      return "Adaptive is observing: this is what it would have done, without applying it."
+  }
+}
+
+const applyExplanation: Record<string, string> = {
+  pin: "Adaptive routed to the resource you pinned.",
+  preferred:
+    "Adaptive chose this resource: it is the preferred resource for the tier and was available.",
+  fallback:
+    "The preferred resource was unavailable, so Adaptive moved the turn to the next resource in the tier.",
+  probe:
+    "Adaptive sent this turn as a recovery probe after an outage, to check whether the resource works again.",
+  draining: "Adaptive routed to this resource while its provider was draining capacity.",
+}
+
+const deferExplanation: Record<string, string> = {
+  "routing-defer": "No routing rule applied to this turn, so Adaptive left the choice to OpenCode.",
+  "tier-not-configured":
+    "The tier that would handle this turn has no models configured, so Adaptive left the choice to OpenCode.",
+  "adaptive-off": "Adaptive is switched off, so every turn runs on OpenCode's own choice.",
+  "pin-unverifiable":
+    "The pinned resource could not be verified as available, so Adaptive left the choice to OpenCode.",
+  "escalation-ceiling": "This unit had already escalated as far as the escalation budget allows.",
+  "escalation-no-candidate":
+    "No stronger resource was eligible to escalate to (unavailable, blocked, or not configured).",
+}
+
+const parkExplanation: Record<string, string> = {
+  "all-blocked":
+    "Every resource in the tier is currently unavailable, so the turn ran without Adaptive routing.",
+  "no-candidates":
+    "There are no models configured for this tier, so the turn ran without Adaptive routing.",
+  "no-compatible-resource":
+    "No configured resource fits this turn's requirements, so the turn ran without Adaptive routing.",
+  "pin-blocked": "The pinned resource is unavailable and no fallback is allowed while pinned.",
 }
 
 /** Receipts shown per dialog page (bounded view). */

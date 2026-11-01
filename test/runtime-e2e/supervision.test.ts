@@ -78,7 +78,7 @@ describe("runtime e2e: supervision on a real opencode host", () => {
     async () => {
       const host = await start()
       const patch = (await rpc(host).settings.set({
-        mode: "control",
+        mode: "active",
         tiers: { quick: [], standard: tierRefs(["fake-model"]), advanced: [] },
       })) as { ok: boolean }
       expect(patch.ok).toBe(true)
@@ -110,7 +110,7 @@ describe("runtime e2e: supervision on a real opencode host", () => {
     const observeReceipts = await receipts(host)
     const observeDecision = observeReceipts[observeReceipts.length - 1]?.decision
     expect(observeDecision?.kind).toBe("observe-only")
-    await rpc(host).settings.set({ mode: "control" })
+    await rpc(host).settings.set({ mode: "active" })
     await host.run({ text: "hi again", sessionID, script: successScript })
     await settle(1000)
     const list = await receipts(host)
@@ -150,7 +150,7 @@ describe("runtime e2e: supervision on a real opencode host", () => {
         },
       })
       await rpc(host).settings.set({
-        mode: "control",
+        mode: "active",
         tiers: { quick: [], standard: tierRefs(["fake-model", "fake-model-2"]), advanced: [] },
       })
       await host.run({ text: "hi" })
@@ -205,7 +205,7 @@ describe("runtime e2e: supervision on a real opencode host", () => {
       },
     })
     await rpc(host).settings.set({
-      mode: "control",
+      mode: "active",
       tiers: {
         quick: [],
         standard: tierRefs(["fake-model"]),
@@ -233,7 +233,7 @@ describe("runtime e2e: supervision on a real opencode host", () => {
         },
       })
       await rpc(host).settings.set({
-        mode: "control",
+        mode: "active",
         tiers: { quick: [], standard: tierRefs(["fake-model"]), advanced: [] },
       })
       // One fully-awaited run collects countable failures quickly; the host's
@@ -321,7 +321,7 @@ describe("runtime e2e: supervision on a real opencode host", () => {
         },
       })
       await rpc(host).settings.set({
-        mode: "control",
+        mode: "active",
         tiers: { quick: [], standard: tierRefs(["fake-model"]), advanced: [] },
       })
       const sessionID = (await host.client.session.create()).id
@@ -340,7 +340,7 @@ describe("runtime e2e: supervision on a real opencode host", () => {
   it("tracks concurrent sessions independently", { timeout: 120_000 }, async () => {
     const host = await start()
     await rpc(host).settings.set({
-      mode: "control",
+      mode: "active",
       tiers: { quick: [], standard: tierRefs(["fake-model"]), advanced: [] },
     })
     const [first, second] = await Promise.all([

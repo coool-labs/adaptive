@@ -138,7 +138,7 @@ function checkInvariants(input: SchedulerInput, decision: Decision, routing: "ti
   // Determinism.
   expect(admit(input)).toEqual(decision)
   // Observe and Control produce identical decisions (ADP-038).
-  expect(forMode(decision, "control")).toBe(decision)
+  expect(forMode(decision, "active")).toBe(decision)
   const observed = forMode(decision, "observe")
   expect(observed.kind).toBe("observe-only")
   if (observed.kind === "observe-only") {

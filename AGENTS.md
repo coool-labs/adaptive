@@ -178,5 +178,8 @@ merely when it compiles.
   consumers use.
 - UI copy is short and human ("Unavailable until 18:42", not "Provider health
   optimization"); TUI/GUI are views over typed RPC and hold no local routing
-  or settings state — the server is the single source of truth.
+  or settings state — the server is the single source of truth. The TUI is
+  dialog-driven; its one JSX exception is the footer status chip in
+  `src/tui.tsx` (host UI slots via `@opentui/solid`, mirroring the host's own
+  slot pattern — the file-level `@jsxImportSource` pragma is required).
 - Version bumps are commits named exactly after the version, tagged `vX.Y.Z`.

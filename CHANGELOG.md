@@ -11,7 +11,8 @@ Initial release.
 ### Added
 
 - Capability-tier routing (`quick` / `standard` / `advanced`) over user-configured ordered resource lists, resolved by a deterministic priority ladder (user pin → agent tier hint → default `standard`) with `defer` fallback — no LLM classifier in the routing path.
-- Operating modes `off` / `observe` (default after install, with a one-time dismissible invitation) / `control`; observe and control share one scheduler, so observed decisions are exactly the applied ones.
+- Operating modes `off` / `observe` (default after install, with a one-time dismissible invitation) / `active`; observe and active share one scheduler, so observed decisions are exactly the applied ones.
+- Settings persisted under the old `control` mode name migrate to `active` on read; patches must use the current vocabulary.
 - Horizontal failure recovery within the required tier: native-retry-aware veto with owned continuation, per-resource circuit breaker with a single half-open probe, recovery of preferred resources at safe boundaries, and durable park/resume of blocked work with clean continuation (never a replayed prompt).
 - Capability escalation only on structured evidence (context overflow, content policy) with a finite per-episode budget, recorded with reason and evidence.
 - Error classification (rate limit, quota exhaustion, outage, timeout, auth, invalid model, context overflow, content policy, user cancellation) with definitive vs. inferred evidence levels.

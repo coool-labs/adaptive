@@ -132,7 +132,7 @@ describe("runtime e2e: supervision lifecycle", () => {
       hosts.push(host)
       await rpc(host).settings.set({
         version: 1,
-        mode: "control",
+        mode: "active",
         tiers: {
           quick: [],
           standard: [{ providerID: "fake", id: "fake-model" }],
@@ -202,7 +202,7 @@ describe("runtime e2e: supervision lifecycle", () => {
       hosts.push(host)
       await rpc(host).settings.set({
         version: 1,
-        mode: "control",
+        mode: "active",
         tiers: {
           quick: [],
           standard: [{ providerID: "fake", id: "fake-model" }],
@@ -329,7 +329,7 @@ describe("runtime e2e: supervision lifecycle", () => {
       hosts.push(host)
       await rpc(host).settings.set({
         version: 1,
-        mode: "control",
+        mode: "active",
         tiers: {
           quick: [],
           standard: [
@@ -451,7 +451,7 @@ describe("runtime e2e: supervision lifecycle", () => {
       hosts.push(host)
       await rpc(host).settings.set({
         version: 1,
-        mode: "control",
+        mode: "active",
         tiers: { quick: [], standard: [{ providerID: "fake", id: "fake-model" }], advanced: [] },
       })
 
@@ -607,7 +607,7 @@ describe("runtime e2e: supervision lifecycle", () => {
         hosts.push(second)
         await rpc(second).settings.set({
           version: 1,
-          mode: "control",
+          mode: "active",
           tiers: {
             quick: [],
             standard: [{ providerID: "fake", id: "fake-model-2" }],
@@ -684,7 +684,7 @@ describe("runtime e2e: supervision lifecycle", () => {
       hosts.push(host)
       await rpc(host).settings.set({
         version: 1,
-        mode: "control",
+        mode: "active",
         tiers: {
           quick: [],
           standard: [
@@ -741,7 +741,7 @@ describe("runtime e2e: supervision lifecycle", () => {
       hosts.push(host)
       await rpc(host).settings.set({
         version: 1,
-        mode: "control",
+        mode: "active",
         tiers: {
           quick: [],
           standard: [
@@ -882,7 +882,7 @@ describe("runtime e2e: supervision lifecycle", () => {
       hosts.push(host)
       await rpc(host).settings.set({
         version: 1,
-        mode: "control",
+        mode: "active",
         tiers: { quick: [], standard: [{ providerID: "fake", id: "fake-model" }], advanced: [] },
       })
       host.provider.setScript({

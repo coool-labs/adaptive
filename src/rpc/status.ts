@@ -17,6 +17,13 @@ export interface TierResourceStatus {
   health: ResourceRecord["health"]
   breaker: ResourceRecord["breaker"]["state"]
   windowed: boolean
+  /**
+   * Wall-clock deadline of the active window (ms epoch); null when unwindowed.
+   * Null — not undefined: the host RPC encoder rejects JSON objects carrying a
+   * present-but-undefined key ("Expected JSON value"), which 500'd every
+   * status.get once any resource was configured.
+   */
+  windowUntil: number | null
 }
 
 export interface StatusSnapshot {
@@ -44,6 +51,7 @@ export function buildStatus(input: {
         health: record?.health ?? "healthy",
         breaker: record?.breaker.state ?? "closed",
         windowed: record?.window !== undefined,
+        windowUntil: record?.window?.until ?? null,
       }
     })
   }

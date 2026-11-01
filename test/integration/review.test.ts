@@ -12,7 +12,7 @@ import { parseReceiptsPayload } from "../../src/state/receipts/index.js"
 import { storedReceipts } from "../supervisor/helpers.js"
 import {
   INTERRUPTED_USER,
-  controlStorage,
+  activeStorage,
   FakeSupervisorSession,
   flush,
   makeSupervisor,
@@ -29,7 +29,7 @@ import { makeInfo } from "../adapters/opencode/helpers.js"
 
 describe("decision review", () => {
   it("records the full receipt narrative with outcomes", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
     await startTracking(supervisor, ref("prov", "a"))
@@ -73,7 +73,7 @@ describe("decision review", () => {
       next: { kind: "execution-started", sessionID: "s1", at: 30 },
     })
 
-    const observeStorage = controlStorage()
+    const observeStorage = activeStorage()
     seed(
       observeStorage,
       SETTINGS_KEY,
@@ -90,9 +90,9 @@ describe("decision review", () => {
       await observe.handleReport(report)
     }
 
-    const controlStorage2 = controlStorage()
+    const activeStorage2 = activeStorage()
     const control = makeSupervisor({
-      storage: controlStorage2,
+      storage: activeStorage2,
       session: new FakeSupervisorSession(),
     })
     for (const report of [e.start, e.select, e.fail, e.next]) {
@@ -100,7 +100,7 @@ describe("decision review", () => {
     }
 
     const observeReceipts = parseReceiptsPayload(storedReceipts(observeStorage))
-    const controlReceipts = parseReceiptsPayload(storedReceipts(controlStorage2))
+    const controlReceipts = parseReceiptsPayload(storedReceipts(activeStorage2))
     expect(observeReceipts).toHaveLength(2)
     expect(controlReceipts).toHaveLength(2)
     // Same inputs, same decisions — observe only wraps them.
@@ -124,11 +124,11 @@ describe("decision review", () => {
   })
 
   it("applies a user pin ahead of tier candidates", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     seed(
       storage,
       SETTINGS_KEY,
-      settingsJSON("control", { standard: [wireRef("prov", "a")] }, wireRef("prov", "b")),
+      settingsJSON("active", { standard: [wireRef("prov", "a")] }, wireRef("prov", "b")),
     )
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
@@ -145,7 +145,7 @@ describe("decision review", () => {
   })
 
   it("never fails over a user cancellation", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
     await startTracking(supervisor, ref("prov", "a"))
@@ -157,7 +157,7 @@ describe("decision review", () => {
   })
 
   it("respects a manual switch and falls back only after its failure", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
     // The user picks b before the unit starts (no pending self-switch note).
@@ -182,11 +182,11 @@ describe("decision review", () => {
   })
 
   it("applies a draining candidate when no ready equivalent exists", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     seed(
       storage,
       SETTINGS_KEY,
-      settingsJSON("control", {
+      settingsJSON("active", {
         standard: [wireRef("openai", "a"), wireRef("prov", "b")],
       }),
     )
@@ -220,11 +220,11 @@ describe("decision review", () => {
   })
 
   it("carries escalation evidence into the receipt decision", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     seed(
       storage,
       SETTINGS_KEY,
-      settingsJSON("control", {
+      settingsJSON("active", {
         standard: [wireRef("prov", "a")],
         advanced: [wireRef("prov", "b")],
       }),
@@ -262,7 +262,7 @@ describe("decision review", () => {
   })
 
   it("applies a mode switch at the next admission (no lying receipts)", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
     // Start in observe: nothing switches.
@@ -277,7 +277,7 @@ describe("decision review", () => {
     expect(readState(storage).mode).toBe("observe")
 
     // Flip to control: the NEXT admission applies the model.
-    const flipped = await supervisor.updateSettings({ mode: "control" })
+    const flipped = await supervisor.updateSettings({ mode: "active" })
     expect(flipped).toMatchObject({ ok: true })
     await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
     expect(session.log).toEqual(["switch:s1:prov/a"])

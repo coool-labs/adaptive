@@ -98,12 +98,12 @@ export default definePluginTestSuite({
     },
     "typed rpc applies a settings patch": async (ctx) => {
       const set = assertRecord(
-        await callRpc(ctx, "settings.set", { mode: "control" }),
+        await callRpc(ctx, "settings.set", { mode: "active" }),
         "settings.set returned a non-object output",
       )
       assert(set["ok"] === true, "valid patch must apply")
       const settings = assertRecord(set["settings"], "applied settings must be a record")
-      assert(settings["mode"] === "control", "applied settings must report the new mode")
+      assert(settings["mode"] === "active", "applied settings must report the new mode")
       const invalid = assertRecord(
         await callRpc(ctx, "settings.set", { mode: "bogus" }),
         "invalid patch returned a non-object output",
@@ -113,14 +113,14 @@ export default definePluginTestSuite({
         await callRpc(ctx, "settings.get", undefined),
         "settings.get returned a non-object output",
       )
-      assert(get["mode"] === "control", "settings.get must reflect the applied patch")
+      assert(get["mode"] === "active", "settings.get must reflect the applied patch")
     },
     "typed rpc status mirrors settings": async (ctx) => {
       const body = assertRecord(
         await callRpc(ctx, "status.get", undefined),
         "status.get returned a non-object output",
       )
-      assert(body["mode"] === "control", "status must mirror the applied mode")
+      assert(body["mode"] === "active", "status must mirror the applied mode")
       assert(isRecord(body["tiers"]), "status tiers must be a record")
       for (const tier of ["quick", "standard", "advanced"]) {
         assert(

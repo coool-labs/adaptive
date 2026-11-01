@@ -108,13 +108,13 @@ test.describe("cross-surface sync (ADP-044)", () => {
     const other = bindSurface(client)
     const watch = await liveWatch(other)
     try {
-      await rpc(page, "settings.set", { mode: "control" })
+      await rpc(page, "settings.set", { mode: "active" })
       const event = await watch.next(15_000)
       expect(event, "settings-changed event").toBeDefined()
       if (event === undefined) return
       expect(event.version).toBe(1)
-      expect((await other["settings.get"]()).mode).toBe("control")
-      expect((await other["status.get"]()).mode).toBe("control")
+      expect((await other["settings.get"]()).mode).toBe("active")
+      expect((await other["status.get"]()).mode).toBe("active")
     } finally {
       watch.close()
     }
@@ -128,15 +128,15 @@ test.describe("cross-surface sync (ADP-044)", () => {
     const other = bindSurface(client)
     const watch = await liveWatch(other)
     try {
-      const result = await other["settings.set"]({ mode: "control" })
+      const result = await other["settings.set"]({ mode: "active" })
       expect(result.ok).toBe(true)
       const event = await watch.next(15_000)
       expect(event, "settings-changed event").toBeDefined()
       // The web surface holds no settings state: a fresh load reads the
       // server and observes the same settings.
       await connect(page, HOST_PASSWORD)
-      expect((await rpc(page, "settings.get"))["mode"]).toBe("control")
-      expect((await rpc(page, "status.get"))["mode"]).toBe("control")
+      expect((await rpc(page, "settings.get"))["mode"]).toBe("active")
+      expect((await rpc(page, "status.get"))["mode"]).toBe("active")
     } finally {
       watch.close()
     }

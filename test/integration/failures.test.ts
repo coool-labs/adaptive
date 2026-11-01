@@ -11,7 +11,7 @@ import { parseParkedPayload } from "../../src/state/parked-work/index.js"
 import { storedParked, storedReceipts } from "../supervisor/helpers.js"
 import {
   StorageClock,
-  controlStorage,
+  activeStorage,
   FakeSupervisorSession,
   flush,
   intervalAttempt,
@@ -25,7 +25,7 @@ import {
 
 describe("fault-injection matrix", () => {
   it("recovers horizontally from a definitive rate limit (429)", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
     await startTracking(supervisor, ref("prov", "a"))
@@ -49,7 +49,7 @@ describe("fault-injection matrix", () => {
 
   it("waits out a rate-limit window and returns to the preferred resource", async () => {
     const clock = new StorageClock()
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session, clock: clock.tick })
     await startTracking(supervisor, ref("prov", "a"))
@@ -81,8 +81,8 @@ describe("fault-injection matrix", () => {
 
   it("opens the breaker after repeated outages and probes after backoff", async () => {
     const clock = new StorageClock()
-    const storage = controlStorage()
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    const storage = activeStorage()
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session, clock: clock.tick })
     await startTracking(supervisor, ref("prov", "a"))
@@ -107,7 +107,7 @@ describe("fault-injection matrix", () => {
   })
 
   it("recovers horizontally from a timeout (408) through the veto path", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
     await startTracking(supervisor, ref("prov", "a"))
@@ -117,7 +117,7 @@ describe("fault-injection matrix", () => {
     seed(
       storage,
       SETTINGS_KEY,
-      settingsJSON("control", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
+      settingsJSON("active", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
     )
     // A rate-limited a carries a hard-block window, so fresh admission
     // selects the sibling b as the recovery candidate.
@@ -140,7 +140,7 @@ describe("fault-injection matrix", () => {
   })
 
   it("leaves a same-model recovery to native retry (E3 regression)", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
     await startTracking(supervisor, ref("prov", "a"))
@@ -157,7 +157,7 @@ describe("fault-injection matrix", () => {
   })
 
   it("leaves ambiguous failures (no status) to native retry", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
     await startTracking(supervisor, ref("prov", "a"))
@@ -170,7 +170,7 @@ describe("fault-injection matrix", () => {
   })
 
   it("treats malformed 500 responses as unknown (no veto, no health damage)", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
     await startTracking(supervisor, ref("prov", "a"))
@@ -196,11 +196,11 @@ describe("fault-injection matrix", () => {
   })
 
   it("escalates capability failures to the next tier (context rejection)", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     seed(
       storage,
       SETTINGS_KEY,
-      settingsJSON("control", {
+      settingsJSON("active", {
         standard: [wireRef("prov", "a")],
         advanced: [wireRef("prov", "b")],
       }),

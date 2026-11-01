@@ -36,7 +36,13 @@ describe("buildStatus", () => {
     expect(snapshot.mode).toBe("observe")
     expect(snapshot.pin).toBeNull()
     expect(snapshot.tiers.standard).toEqual([
-      { ref: ref("prov", "a"), health: "healthy", breaker: "closed", windowed: false },
+      {
+        ref: ref("prov", "a"),
+        health: "healthy",
+        breaker: "closed",
+        windowed: false,
+        windowUntil: null,
+      },
     ])
     expect(snapshot.tiers.quick).toEqual([])
     expect(snapshot.tiers.advanced).toEqual([])
@@ -64,12 +70,15 @@ describe("buildStatus", () => {
       health: "rate_limited",
       breaker: "closed",
       windowed: true,
+      windowUntil: 99,
     })
     expect(b).toEqual({
       ref: ref("prov", "b", "high"),
       health: "healthy",
       breaker: "open",
       windowed: false,
+      // null, not undefined: the host RPC encoder rejects present-but-undefined keys.
+      windowUntil: null,
     })
     expect(snapshot.parked).toBe(2)
     expect(snapshot.receipts).toBe(7)

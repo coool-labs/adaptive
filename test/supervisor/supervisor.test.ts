@@ -24,7 +24,7 @@ import { CONTINUATION_PROMPT } from "../../src/execution/index.js"
 import { SETTINGS_KEY } from "../../src/state/settings/types.js"
 import { HEALTH_KEY } from "../../src/state/health/types.js"
 import {
-  controlStorage,
+  activeStorage,
   FailAfterStorage,
   FakeSupervisorSession,
   flush,
@@ -127,7 +127,7 @@ describe("supervisor", () => {
 
   it("applies the preferred tier model in control mode with a receipt", async () => {
     const session = new FakeSupervisorSession()
-    const storage = controlStorage()
+    const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session })
     await supervisor.handleReport(STARTED_S1)
     expect(session.log).toEqual(["switch:s1:prov/a"])
@@ -145,7 +145,7 @@ describe("supervisor", () => {
   it("applies an explicit pin even with empty tiers", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
-    seed(storage, "coool.adaptive/settings", settingsJSON("control", {}, wireRef("prov", "b")))
+    seed(storage, "coool.adaptive/settings", settingsJSON("active", {}, wireRef("prov", "b")))
     const supervisor = makeSupervisor({ storage, session })
     await supervisor.handleReport(STARTED_S1)
     expect(session.log).toEqual(["switch:s1:prov/b"])
@@ -161,7 +161,7 @@ describe("supervisor", () => {
 
   it("falls back to the next healthy candidate after a rate-limit failure", async () => {
     const session = new FakeSupervisorSession()
-    const storage = controlStorage()
+    const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session })
     await supervisor.handleReport(STARTED_S1)
     await supervisor.handleReport({
@@ -188,7 +188,7 @@ describe("supervisor", () => {
 
   it("attaches a failed outcome to the admission receipt", async () => {
     const session = new FakeSupervisorSession()
-    const storage = controlStorage()
+    const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session })
     await supervisor.handleReport(STARTED_S1)
     await supervisor.handleReport({
@@ -211,7 +211,7 @@ describe("supervisor", () => {
   it("status reflects a failure observed by another instance sharing the storage", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     const observer = makeSupervisor({ storage, session })
     await observer.handleReport(STARTED_S1)
     await observer.handleReport({
@@ -240,7 +240,7 @@ describe("supervisor", () => {
     try {
       const session = new FakeSupervisorSession()
       const storage = new KeyFailStorage(HEALTH_KEY)
-      seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+      seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED_S1)
       await supervisor.handleReport({
@@ -269,7 +269,7 @@ describe("supervisor", () => {
   it("a fresh instance assesses persisted failures before routing", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     const first = makeSupervisor({ storage, session })
     await first.handleReport(STARTED_S1)
     await first.handleReport({
@@ -300,7 +300,7 @@ describe("supervisor", () => {
 
   it("attaches an interrupted outcome for user cancellation without health damage", async () => {
     const session = new FakeSupervisorSession()
-    const storage = controlStorage()
+    const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session })
     await supervisor.handleReport(STARTED_S1)
     await supervisor.handleReport({
@@ -318,7 +318,7 @@ describe("supervisor", () => {
 
   it("records a receipt for unknown interruption reasons but leaves the unit open", async () => {
     const session = new FakeSupervisorSession()
-    const storage = controlStorage()
+    const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session })
     await supervisor.handleReport(STARTED_S1)
     await supervisor.handleReport({
@@ -342,7 +342,7 @@ describe("supervisor", () => {
     seed(
       storage,
       "coool.adaptive/settings",
-      settingsJSON("control", { standard: [wireRef("prov", "b")] }),
+      settingsJSON("active", { standard: [wireRef("prov", "b")] }),
     )
     const supervisor = makeSupervisor({ storage, session, infos: [makeInfo("prov", "b")] })
     // Trip the breaker (threshold 5 outage failures) while no unit is active.
@@ -371,7 +371,7 @@ describe("supervisor", () => {
     seed(
       storage,
       "coool.adaptive/settings",
-      settingsJSON("control", { standard: [wireRef("openai", "a")] }),
+      settingsJSON("active", { standard: [wireRef("openai", "a")] }),
     )
     const supervisor = makeSupervisor({ storage, session, infos: [makeInfo("openai", "a")] })
     await supervisor.handleReport({
@@ -393,7 +393,7 @@ describe("supervisor", () => {
 
   it("defers with a receipt when the inventory itself fails (fail-open)", async () => {
     const session = new FakeSupervisorSession()
-    const storage = controlStorage()
+    const storage = activeStorage()
     const model = {
       transform: () => Promise.reject(new Error("inventory unavailable")),
     } as unknown as ModelSource
@@ -419,7 +419,7 @@ describe("supervisor", () => {
     seed(
       storage,
       "coool.adaptive/settings",
-      settingsJSON("control", { standard: [wireRef("prov", "a")] }),
+      settingsJSON("active", { standard: [wireRef("prov", "a")] }),
     )
     const supervisor = makeSupervisor({ storage, session })
     await supervisor.handleReport(STARTED_S1)
@@ -430,7 +430,7 @@ describe("supervisor", () => {
   describe("retry hook", () => {
     it("vetoes native retry and owns horizontal recovery (settle → switch → prompt)", async () => {
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED_S1)
       const input = {
@@ -453,7 +453,7 @@ describe("supervisor", () => {
 
     it("stops vetoing after the per-unit budget is spent", async () => {
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED_S1)
       const retryInput = (): {
@@ -488,7 +488,7 @@ describe("supervisor", () => {
 
     it("leaves native retry untouched for non-definitive evidence", async () => {
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED_S1)
       const input = {
@@ -511,7 +511,7 @@ describe("supervisor", () => {
       seed(
         storage,
         "coool.adaptive/settings",
-        settingsJSON("control", { standard: [wireRef("prov", "a")] }),
+        settingsJSON("active", { standard: [wireRef("prov", "a")] }),
       )
       const supervisor = makeSupervisor({ storage, session, infos: [makeInfo("prov", "a")] })
       await supervisor.handleReport(STARTED_S1)
@@ -531,7 +531,7 @@ describe("supervisor", () => {
 
     it("leaves native retry untouched for capability failures (auth)", async () => {
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED_S1)
       const input = {
@@ -550,7 +550,7 @@ describe("supervisor", () => {
 
     it("parks the unit durably when owned recovery ops fail", async () => {
       const session = new FakeSupervisorSession({ failWait: true })
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED_S1)
       const input = {
@@ -585,7 +585,7 @@ describe("supervisor", () => {
       seed(
         storage,
         SETTINGS_KEY,
-        settingsJSON("control", { standard: [wireRef("prov", "a")] }, wireRef("prov", "b")),
+        settingsJSON("active", { standard: [wireRef("prov", "a")] }, wireRef("prov", "b")),
       )
       const supervisor = makeSupervisor({ storage, session })
       const input = {
@@ -618,7 +618,7 @@ describe("supervisor", () => {
 
     it("resumes a parked unit in control mode (settle, switch to the routed model, continuation prompt)", async () => {
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       seedParked(storage)
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
@@ -661,7 +661,7 @@ describe("supervisor", () => {
 
     it("stays parked with a receipt when admission still has no usable resource", async () => {
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       seedParked(storage)
       const supervisor = makeSupervisor({ storage, session })
       // Block both candidates before the idle boundary.
@@ -683,7 +683,7 @@ describe("supervisor", () => {
 
     it("drops the parked record when the session is gone", async () => {
       const session = new FakeSupervisorSession({ failGet: true })
-      const storage = controlStorage()
+      const storage = activeStorage()
       seedParked(storage)
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
@@ -693,7 +693,7 @@ describe("supervisor", () => {
 
     it("re-parks with a fresh timestamp when the resume prompt fails", async () => {
       const session = new FakeSupervisorSession({ failPrompt: true })
-      const storage = controlStorage()
+      const storage = activeStorage()
       seedParked(storage, 5)
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
@@ -706,7 +706,7 @@ describe("supervisor", () => {
   describe("work-unit model tracking", () => {
     it("seeds a new unit from the last external model selection", async () => {
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport({
         kind: "model-selected",
@@ -755,7 +755,7 @@ describe("supervisor", () => {
     it("logs and continues when a report handler throws (fail-open)", async () => {
       const errors = spyErrors()
       const supervisor = makeSupervisor({
-        storage: controlStorage(),
+        storage: activeStorage(),
         session: new FakeSupervisorSession(),
       })
       const hostile = {} as { kind: string }
@@ -772,7 +772,7 @@ describe("supervisor", () => {
     it("logs and leaves the decision when the veto path throws (fail-open)", async () => {
       const errors = spyErrors()
       const session = new FakeSupervisorSession()
-      const supervisor = makeSupervisor({ storage: controlStorage(), session })
+      const supervisor = makeSupervisor({ storage: activeStorage(), session })
       const input = {
         sessionID: "s1",
         model: ref("prov", "a"),
@@ -794,7 +794,7 @@ describe("supervisor", () => {
 
     it("tracks a model-request report for later attribution", async () => {
       const session = new FakeSupervisorSession()
-      const supervisor = makeSupervisor({ storage: controlStorage(), session })
+      const supervisor = makeSupervisor({ storage: activeStorage(), session })
       await supervisor.handleReport({
         kind: "model-request",
         sessionID: "s1",
@@ -815,7 +815,7 @@ describe("supervisor", () => {
 
     it("leaves the retry decision when recovery admission fails", async () => {
       const errors = spyErrors()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const model = {
         transform: () => Promise.reject(new Error("inventory unavailable")),
       } as unknown as ModelSource
@@ -845,7 +845,7 @@ describe("supervisor", () => {
       seed(
         storage,
         SETTINGS_KEY,
-        settingsJSON("control", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
+        settingsJSON("active", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
       )
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
@@ -878,7 +878,7 @@ describe("supervisor", () => {
           { id: "s9#1", sessionID: "s9", tier: "standard", reason: "all-blocked", parkedAt: 5 },
         ]),
       )
-      seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+      seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
       expect(errors.lines.join("\n")).toContain("[coool.adaptive] parked:")
@@ -888,7 +888,7 @@ describe("supervisor", () => {
     it("gives up on a parked record when its resume admission fails", async () => {
       const errors = spyErrors()
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       seed(
         storage,
         PARKED_KEY,
@@ -915,7 +915,7 @@ describe("supervisor", () => {
       const errors = spyErrors()
       const session = new FakeSupervisorSession()
       const storage = new KeyFailStorage(PARKED_KEY)
-      seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+      seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
       seed(
         storage,
         PARKED_KEY,
@@ -934,7 +934,7 @@ describe("supervisor", () => {
       const errors = spyErrors()
       const session = new FakeSupervisorSession({ failPrompt: true })
       const storage = new FailAfterStorage(PARKED_KEY, 1)
-      seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+      seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
       seed(
         storage,
         PARKED_KEY,
@@ -956,7 +956,7 @@ describe("supervisor", () => {
       const errors = spyErrors()
       const session = new FakeSupervisorSession()
       const storage = new KeyFailStorage(RECEIPTS_KEY)
-      seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+      seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
@@ -986,7 +986,7 @@ describe("supervisor", () => {
       seed(
         storage,
         SETTINGS_KEY,
-        settingsJSON("control", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
+        settingsJSON("active", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
       )
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
@@ -1024,7 +1024,7 @@ describe("supervisor", () => {
       seed(
         storage,
         SETTINGS_KEY,
-        settingsJSON("control", { standard: [wireRef("prov", "a")] }, wireRef("prov", "zzz")),
+        settingsJSON("active", { standard: [wireRef("prov", "a")] }, wireRef("prov", "zzz")),
       )
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
@@ -1035,7 +1035,7 @@ describe("supervisor", () => {
 
     it("attaches nothing when a terminal event has no active unit", async () => {
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport({ kind: "execution-succeeded", sessionID: "s1", at: 10 })
       await supervisor.handleReport({
@@ -1055,7 +1055,7 @@ describe("supervisor", () => {
 
     it("honors retryAfterMs from a failed execution as the rate-limit window", async () => {
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
@@ -1079,7 +1079,7 @@ describe("supervisor", () => {
 
     it("resets the veto budget when a unit is superseded", async () => {
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
@@ -1100,7 +1100,7 @@ describe("supervisor", () => {
 
     it("ignores http failures with no attributable model", async () => {
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
       expect(storedReceipts(storage)).toBeUndefined()
@@ -1109,7 +1109,7 @@ describe("supervisor", () => {
 
     it("honors a Retry-After header from a rate-limit failure", async () => {
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
@@ -1133,7 +1133,7 @@ describe("supervisor", () => {
 
     it("treats a 503 as an outage even with a Retry-After header (degraded, not windowed)", async () => {
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
@@ -1160,7 +1160,7 @@ describe("supervisor", () => {
     it("carries the hook error's retryAfterMs into classification", async () => {
       const errors = spyErrors()
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       const input = retryInput429()
       input.error.retryAfterMs = 5_000
@@ -1177,7 +1177,7 @@ describe("supervisor", () => {
       seed(
         storage,
         SETTINGS_KEY,
-        settingsJSON("control", { standard: [wireRef("prov", "b")] }, wireRef("prov", "a")),
+        settingsJSON("active", { standard: [wireRef("prov", "b")] }, wireRef("prov", "a")),
       )
       const supervisor = makeSupervisor({ storage, session })
       const input = {
@@ -1199,7 +1199,7 @@ describe("supervisor", () => {
       let now = 0
       const clock = (): number => now
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session, clock })
       await supervisor.handleReport(STARTED)
       // Trip both breakers.
@@ -1226,7 +1226,7 @@ describe("supervisor", () => {
     it("vetoes even without an active unit and parks nothing", async () => {
       const errors = spyErrors()
       const session = new FakeSupervisorSession({ failWait: true })
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       const input = retryInput429()
       await supervisor.handleRetry(input)
@@ -1239,7 +1239,7 @@ describe("supervisor", () => {
 
     it("returns immediately when idle finds no parked work", async () => {
       const session = new FakeSupervisorSession()
-      const storage = controlStorage()
+      const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
       expect(session.log).toEqual([])
@@ -1251,7 +1251,7 @@ describe("supervisor", () => {
       seed(
         storage,
         SETTINGS_KEY,
-        settingsJSON("control", { standard: [wireRef("prov", "a", "high")] }),
+        settingsJSON("active", { standard: [wireRef("prov", "a", "high")] }),
       )
       const supervisor = makeSupervisor({
         storage,
@@ -1267,7 +1267,7 @@ describe("supervisor", () => {
     const STARTED = { kind: "execution-started", sessionID: "s1", at: 10 } as const
 
     /** Control-mode settings with a standard and an advanced tier. */
-    function escalateStorage(mode: OperatingMode = "control"): KeyFailStorage {
+    function escalateStorage(mode: OperatingMode = "active"): KeyFailStorage {
       const storage = new KeyFailStorage("unused")
       seed(
         storage,
@@ -1380,7 +1380,7 @@ describe("supervisor", () => {
     it("defers with escalation-no-candidate when the next tier is empty", async () => {
       const session = new FakeSupervisorSession()
       const storage = new KeyFailStorage("unused")
-      seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+      seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
       await failingEpisode(storage, session, CONTEXT_OVERFLOW)
       expect(session.log).toEqual(["switch:s1:prov/a"])
       const receipts = parseReceiptsPayload(storedReceipts(storage))
@@ -1399,7 +1399,7 @@ describe("supervisor", () => {
       seed(
         storage,
         SETTINGS_KEY,
-        settingsJSON("control", { advanced: [wireRef("prov", "b")] }, null, {
+        settingsJSON("active", { advanced: [wireRef("prov", "b")] }, null, {
           reviewer: "advanced",
         }),
       )
@@ -1501,7 +1501,7 @@ describe("supervisor", () => {
       // there is no tier context to escalate within.
       const session = new FakeSupervisorSession()
       const storage = new KeyFailStorage("unused")
-      seed(storage, SETTINGS_KEY, settingsJSON("control", {}, wireRef("prov", "b")))
+      seed(storage, SETTINGS_KEY, settingsJSON("active", {}, wireRef("prov", "b")))
       await failingEpisode(storage, session, CONTEXT_OVERFLOW)
       expect(session.log).toEqual(["switch:s1:prov/b"])
       const receipts = parseReceiptsPayload(storedReceipts(storage))
@@ -1693,7 +1693,7 @@ describe("supervisor", () => {
       seed(
         storage,
         SETTINGS_KEY,
-        settingsJSON("control", {
+        settingsJSON("active", {
           standard: [wireRef("prov", "b"), wireRef("prov", "a")],
           advanced: [wireRef("prov", "b")],
         }),
@@ -1746,14 +1746,14 @@ describe("supervisor", () => {
 
 describe("supervisor: state API for surfaces", () => {
   it("exposes the loaded settings", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
-    expect(await supervisor.settings()).toMatchObject({ mode: "control" })
+    expect(await supervisor.settings()).toMatchObject({ mode: "active" })
   })
 
   it("persists a settings update", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
     const result = await supervisor.updateSettings({ mode: "observe" })
@@ -1763,20 +1763,20 @@ describe("supervisor: state API for surfaces", () => {
   })
 
   it("rejects an invalid patch without persisting", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
-    const result = await supervisor.updateSettings({ mode: "sideways" as "control" })
+    const result = await supervisor.updateSettings({ mode: "sideways" as "active" })
     expect(result.ok).toBe(false)
-    expect(storedSettings(storage).mode).toBe("control")
+    expect(storedSettings(storage).mode).toBe("active")
   })
 
   it("reports status counts", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
     const snapshot = await supervisor.status()
-    expect(snapshot.mode).toBe("control")
+    expect(snapshot.mode).toBe("active")
     expect(snapshot.parked).toBe(0)
     expect(snapshot.receipts).toBe(0)
     await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 1 })
@@ -1785,7 +1785,7 @@ describe("supervisor: state API for surfaces", () => {
   })
 
   it("lists receipts newest first", async () => {
-    const storage = controlStorage()
+    const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
     await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 1 })
@@ -1814,7 +1814,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
    * sibling (the scheduler prefers a ready candidate over a probe). */
   function singleStorage(): KeyFailStorage {
     const storage = new KeyFailStorage("unused")
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     return storage
   }
 
@@ -1849,7 +1849,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
 
   it("admits at prompt time: applies, records a unit-less receipt, and the opened unit adopts it", async () => {
     const session = new FakeSupervisorSession()
-    const storage = controlStorage()
+    const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session })
     await supervisor.handleReport(PROMPT_S1)
     expect(session.log).toEqual(["switch:s1:prov/a"])
@@ -1883,7 +1883,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
 
   it("skips admission for an owned continuation prompt (no receipt, no switch)", async () => {
     const session = new FakeSupervisorSession()
-    const storage = controlStorage()
+    const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session })
     const input = retryInput()
     await supervisor.handleRetry(input)
@@ -2026,7 +2026,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     seed(
       storage,
       SETTINGS_KEY,
-      settingsJSON("control", { standard: [wireRef("prov", "a")] }, wireRef("prov", "b")),
+      settingsJSON("active", { standard: [wireRef("prov", "a")] }, wireRef("prov", "b")),
     )
     const supervisor = makeSupervisor({ storage, session })
     await supervisor.handleReport(PROMPT_S1)
@@ -2114,7 +2114,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
       },
     }
     const session = { source } as unknown as FakeSupervisorSession
-    const storage = controlStorage()
+    const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session })
     // Two overlapping owned recoveries: each marks the session before its
     // prompt and only the last settle releases the in-flight window.
@@ -2145,7 +2145,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     const errors = spyErrors()
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage(RECEIPTS_KEY)
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     const supervisor = makeSupervisor({ storage, session })
     await supervisor.handleReport(PROMPT_S1)
     await supervisor.handleReport(STARTED_S1)
@@ -2161,7 +2161,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     const errors = spyErrors()
     const session = new FakeSupervisorSession()
     const storage = new FailOnceStorage(RECEIPTS_KEY, 2)
-    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
     const supervisor = makeSupervisor({ storage, session })
     await supervisor.handleReport(PROMPT_S1)
     await supervisor.handleReport(STARTED_S1)
@@ -2179,7 +2179,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     let now = 0
     const clock = (): number => now
     const session = new FakeSupervisorSession()
-    const storage = controlStorage()
+    const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session, clock })
     await trip(supervisor, now)
     // a's probe is due; the ready sibling wins, so the assessment's probe
@@ -2342,7 +2342,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     let now = 0
     const clock = (): number => now
     const session = new FakeSupervisorSession()
-    const storage = controlStorage()
+    const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session, clock })
     await trip(supervisor, now)
     await supervisor.handleReport({
@@ -2423,7 +2423,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
         Promise.resolve({ sessionID: input.sessionID }),
     }
     const session = { source } as unknown as FakeSupervisorSession
-    const storage = controlStorage()
+    const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session, clock })
     await trip(supervisor, now)
     await supervisor.handleReport({
@@ -2482,7 +2482,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
       prompt: () => Promise.resolve({ sessionID: "s1" }),
     }
     const session = { source } as unknown as FakeSupervisorSession
-    const storage = controlStorage()
+    const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session })
     // Nenhum breaker aberto: a admissão é um apply sem probe; a falha de
     // switch não toca o breaker e o fail-open registra o defer.
@@ -2595,7 +2595,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     seed(
       storage,
       SETTINGS_KEY,
-      settingsJSON("control", { standard: [wireRef("prov", "a")] }, wireRef("prov", "b")),
+      settingsJSON("active", { standard: [wireRef("prov", "a")] }, wireRef("prov", "b")),
     )
     const supervisor = makeSupervisor({ storage, session })
     await supervisor.handleReport(STARTED_S1)
@@ -2664,7 +2664,7 @@ describe("review regressions (continuation admission, idle sweep, escalation tar
     seed(
       storage,
       SETTINGS_KEY,
-      settingsJSON("control", {
+      settingsJSON("active", {
         standard: [wireRef("prov", "a")],
         advanced: [wireRef("prov", "b")],
       }),
@@ -2705,7 +2705,7 @@ describe("review regressions (continuation admission, idle sweep, escalation tar
     // Prompting a session mid-episode would supersede the user's in-flight
     // work; an idle event from another session must not touch it.
     const session = new FakeSupervisorSession()
-    const storage = controlStorage()
+    const storage = activeStorage()
     seed(storage, PARKED_KEY, {
       version: 1,
       parked: [
@@ -2728,7 +2728,7 @@ describe("review regressions (continuation admission, idle sweep, escalation tar
 
   it("the idle sweep resumes at most one parked record per session (A3/E5)", async () => {
     const session = new FakeSupervisorSession()
-    const storage = controlStorage()
+    const storage = activeStorage()
     seed(storage, PARKED_KEY, {
       version: 1,
       parked: [
@@ -2750,7 +2750,7 @@ describe("review regressions (continuation admission, idle sweep, escalation tar
     // episode: after a restart the tracker would hand out s1#3 again and the
     // next park would silently replace the parked record.
     const session = new FakeSupervisorSession()
-    const storage = controlStorage()
+    const storage = activeStorage()
     seed(storage, PARKED_KEY, {
       version: 1,
       parked: [
@@ -2779,7 +2779,7 @@ describe("review regressions (continuation admission, idle sweep, escalation tar
       evidence: { skipped: [] },
     } as const
     const session = new FakeSupervisorSession()
-    const storage = controlStorage()
+    const storage = activeStorage()
     seed(storage, RECEIPTS_KEY, {
       version: 1,
       receipts: [
@@ -2809,7 +2809,7 @@ describe("review regressions (continuation admission, idle sweep, escalation tar
     seed(
       storage,
       SETTINGS_KEY,
-      settingsJSON("control", {
+      settingsJSON("active", {
         standard: [wireRef("prov", "a")],
         advanced: [wireRef("prov", "zzz")],
       }),
@@ -2845,7 +2845,7 @@ describe("review regressions (continuation admission, idle sweep, escalation tar
     seed(
       storage,
       SETTINGS_KEY,
-      settingsJSON("control", {
+      settingsJSON("active", {
         standard: [wireRef("prov", "a")],
         advanced: [wireRef("prov", "b")],
       }),
@@ -2883,7 +2883,7 @@ describe("review regressions (continuation admission, idle sweep, escalation tar
     seed(
       storage,
       SETTINGS_KEY,
-      settingsJSON("control", {
+      settingsJSON("active", {
         standard: [wireRef("prov", "a")],
         advanced: [wireRef("prov", "a")],
       }),
@@ -2920,7 +2920,7 @@ describe("review regressions (continuation admission, idle sweep, escalation tar
       storage,
       SETTINGS_KEY,
       settingsJSON(
-        "control",
+        "active",
         { quick: [wireRef("prov", "b")], standard: [wireRef("prov", "a")] },
         null,
         { build: "quick" },
