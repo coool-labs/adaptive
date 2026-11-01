@@ -6,6 +6,7 @@
  * navigation, a full session turn through the fake provider, and the
  * plugin-TUI-mount limitation canary (see the canary test for the proof).
  */
+// covers: ["ADP-043"]
 import { expect, step, test } from "@termwright/test"
 import type { TermwrightFixtures } from "@termwright/test"
 import { spawnSync } from "node:child_process"

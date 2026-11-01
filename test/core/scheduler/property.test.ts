@@ -3,6 +3,7 @@
  * arbitrary inputs. Oracles come from ./helpers.js, written independently
  * from the implementation.
  */
+// covers: ["ADP-002", "ADP-011", "ADP-013", "ADP-015", "ADP-017", "ADP-019", "ADP-021", "ADP-022", "ADP-028", "ADP-029", "ADP-038"]
 import fc from "fast-check"
 import { describe, expect, it } from "vitest"
 import { checkCompatibility } from "../../../src/core/compatibility/gate.js"

@@ -1,3 +1,4 @@
+// covers: ["ADP-014", "ADP-016", "ADP-028"]
 import { describe, expect, it } from "vitest"
 import { sessionOps } from "../../../src/adapters/opencode/session-ops.js"
 import { coreRef, fakeSessionOps } from "./helpers.js"

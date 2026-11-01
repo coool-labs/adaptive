@@ -3,6 +3,7 @@
  * a unit's model is only ever changed at a safe boundary — never mid-work,
  * never while a failed execution is still settling.
  */
+// covers: ["ADP-016", "ADP-018"]
 import fc from "fast-check"
 import { describe, expect, it } from "vitest"
 

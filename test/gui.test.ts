@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// covers: ["ADP-034"]
 import { describe, expect, it } from "vitest"
 import { createComponent } from "solid-js"
 import { render } from "solid-js/web"

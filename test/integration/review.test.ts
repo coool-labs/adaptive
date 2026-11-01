@@ -3,6 +3,7 @@
  * narrative; Observe ≡ Control; manual intent wins; mode switches take
  * effect at the next admission.
  */
+// covers: ["ADP-002", "ADP-010", "ADP-015", "ADP-021", "ADP-028", "ADP-029", "ADP-030"]
 import { describe, expect, it } from "vitest"
 
 import { CONTINUATION_PROMPT } from "../../src/supervisor/log.js"

@@ -3,6 +3,7 @@
  * unit id, bounded retention with oldest-eviction, restart round-trips, and
  * total read-side parsing (ADP-031 discipline for state).
  */
+// covers: ["ADP-024"]
 import fc from "fast-check"
 import { describe, expect, test } from "vitest"
 import { PARK_REASONS } from "../../../src/core/scheduler/types.js"

@@ -1,3 +1,4 @@
+// covers: ["ADP-001", "ADP-010"]
 import { describe, expect, it } from "vitest"
 
 import { INTERRUPT_REASONS } from "../../../src/core/work-unit/interruption.js"

@@ -1,3 +1,4 @@
+// covers: ["ADP-030", "ADP-036"]
 import { describe, expect, it } from "vitest"
 import fc from "fast-check"
 import { buildStatus } from "../../src/rpc/status.js"

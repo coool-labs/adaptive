@@ -13,6 +13,7 @@
  *   so the TUI side is a typed client bound to the same RPC definition
  *   src/tui.ts binds (context.client.rpc(adaptiveRpc)).
  */
+// covers: ["ADP-044"]
 import { expect, test } from "@playwright/test"
 import { OpenCode } from "@opencode/client"
 import { adaptiveRpc } from "../../src/rpc/definition.js"

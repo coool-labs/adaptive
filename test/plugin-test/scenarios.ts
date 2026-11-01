@@ -8,6 +8,7 @@
  * The file is loaded by the plugin-test runner via Node type stripping, so it
  * must stick to erasable TypeScript syntax (no enums, no namespaces).
  */
+// covers: ["ADP-029", "ADP-030", "ADP-036", "ADP-040"]
 import { definePluginTestSuite } from "@coool/opencode-plugin-test"
 
 const PLUGIN_ID = "coool.adaptive"

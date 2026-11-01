@@ -1,3 +1,4 @@
+# covers: ["ADP-049"]
 name: CI
 
 on:

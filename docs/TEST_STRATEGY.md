@@ -59,12 +59,12 @@ Local OpenAI/OpenCode-compatible HTTP+SSE server scripting: success, streaming, 
 
 ## Traceability (ADP-047)
 
-- Tests and E2E scenarios declare `covers: ["ADP-xxx"]` metadata.
-- `scripts/traceability` scans test metadata vs REQUIREMENTS.md; CI fails if any E2E-applicable requirement lacks E2E coverage or any requirement lacks any coverage; emits a report artifact.
+- Test files, plugin-test scenarios, `vitest.config.ts`, CI workflow, CONTRIBUTING.md, and release scripts declare coverage with a `covers: ["ADP-xxx"]` literal (above the first import; `#` comment in YAML).
+- `npm run traceability` (`scripts/traceability.ts`) parses `docs/REQUIREMENTS.md` headings and fails on: an unknown ADP id (typo gate), a requirement with no declaring files, or an E2E-applicable requirement that no E2E file (runtime-e2e / e2e-web / e2e-tui / plugin-test) declares. Requirements that are inherently unit-level carry an explicit `NOT_E2E_APPLICABLE` exemption with a why-comment inside the script (safe default: applicable). The report lands in `test-artifacts/traceability.json`.
 
 ## Coverage (ADP-037)
 
-Vitest + V8 coverage, thresholds 100/100/100/100 on first-party `src/**`. Only genuinely generated/vendor code may be excluded, clearly identified. No `istanbul ignore`, no empty tests, no implementation-trivia assertions.
+Vitest + V8 coverage, thresholds 100/100/100/100 on first-party `src/**`. Only genuinely generated/vendor code may be excluded, clearly identified. No `istanbul ignore`, no empty tests, no implementation-trivia assertions. `npm run coverage` runs the `unit` project only: real-host runtime E2E under V8 instrumentation is pathologically slow and timing-flaky (receipt polling against an instrumented host), and `src/**` coverage is complete from the deterministic suite alone; runtime E2E still runs in every `npm test` and in `verify:release`.
 
 ## Regression policy (ADP-046)
 

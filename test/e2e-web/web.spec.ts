@@ -7,6 +7,7 @@
  * Semantic locators only (roles + accessible names); zero retries per
  * playwright.config.ts.
  */
+// covers: ["ADP-035", "ADP-042"]
 import { expect, test, type Page } from "@playwright/test"
 import { HOST_PASSWORD } from "../runtime-e2e/helpers.js"
 import { connect, hostUrl, rpc, rpcRaw } from "./app.js"

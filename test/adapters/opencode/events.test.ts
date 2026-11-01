@@ -1,3 +1,4 @@
+// covers: ["ADP-001"]
 import { describe, expect, it } from "vitest"
 import { SESSION_EVENT_TYPES, subscribeSessions } from "../../../src/adapters/opencode/events.js"
 import { fakeEvents, sessionEvent, wireRef } from "./helpers.js"

@@ -3,6 +3,7 @@
  * contract validates reason+evidence, and `execute` re-validates
  * defensively before recording against the session's current unit.
  */
+// covers: ["ADP-015"]
 import { describe, expect, it } from "vitest"
 
 import {

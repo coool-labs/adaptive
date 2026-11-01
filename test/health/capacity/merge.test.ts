@@ -1,3 +1,4 @@
+// covers: ["ADP-020"]
 import { describe, expect, it } from "vitest"
 import fc from "fast-check"
 

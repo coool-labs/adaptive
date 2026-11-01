@@ -1,3 +1,4 @@
+// covers: ["ADP-032", "ADP-033"]
 import { describe, expect, it } from "vitest"
 
 import tuiPlugin from "../src/tui.js"

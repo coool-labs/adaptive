@@ -5,6 +5,7 @@
  * payloads (receipts/parked are parsed back from storage — the stores are
  * private by design).
  */
+// covers: ["ADP-002", "ADP-010", "ADP-013", "ADP-015", "ADP-016", "ADP-024", "ADP-030", "ADP-031"]
 import { describe, expect, it, vi } from "vitest"
 
 import type { ModelSource } from "../../src/adapters/opencode/inventory.js"

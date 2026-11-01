@@ -1,3 +1,4 @@
+// covers: ["ADP-033"]
 import { describe, expect, it } from "vitest"
 import fc from "fast-check"
 import { mainMenuOptions, modeOptions, MAIN_MENU_ITEMS } from "../../../src/ui/tui/menu.js"

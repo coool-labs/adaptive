@@ -1,3 +1,4 @@
+// covers: ["ADP-034", "ADP-036"]
 import { describe, expect, it, vi } from "vitest"
 
 import { adaptiveGuiApi } from "../../../src/ui/gui/api.js"

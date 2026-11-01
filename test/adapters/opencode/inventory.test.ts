@@ -1,3 +1,4 @@
+// covers: ["ADP-006", "ADP-017"]
 import { describe, expect, it } from "vitest"
 import {
   candidateFor,

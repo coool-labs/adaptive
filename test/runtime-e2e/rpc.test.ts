@@ -1,3 +1,4 @@
+// covers: ["ADP-030", "ADP-036", "ADP-041", "ADP-051"]
 import { afterAll, describe, expect, it } from "vitest"
 import { rpc, rpcRaw, startHost, type StartedHost } from "./helpers.js"
 import type { FakeProviderScript } from "../fixtures/fake-provider/scenarios.js"

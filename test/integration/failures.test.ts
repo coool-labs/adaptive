@@ -2,6 +2,7 @@
  * Fault-injection matrix (T-22, TEST_STRATEGY): every error evidence drives
  * the right horizontal-vs-escalation fork through the real supervisor seams.
  */
+// covers: ["ADP-008", "ADP-013", "ADP-015"]
 import { describe, expect, it } from "vitest"
 
 import { SETTINGS_KEY } from "../../src/state/settings/types.js"

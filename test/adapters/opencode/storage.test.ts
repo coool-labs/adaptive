@@ -1,3 +1,4 @@
+// covers: ["ADP-024", "ADP-030"]
 import { describe, expect, it } from "vitest"
 import { storageSeam } from "../../../src/adapters/opencode/storage.js"
 import { FakeStorage } from "./helpers.js"

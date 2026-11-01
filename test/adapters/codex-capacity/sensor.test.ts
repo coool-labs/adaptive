@@ -1,3 +1,4 @@
+// covers: ["ADP-020"]
 import { describe, expect, it } from "vitest"
 import { CodexCapacitySensor } from "../../../src/adapters/codex-capacity/sensor.js"
 

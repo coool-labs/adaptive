@@ -11,6 +11,7 @@
  * immune to that reset and are used whenever a phase must not leak success
  * behaviors into a later phase.
  */
+// covers: ["ADP-008", "ADP-009", "ADP-013", "ADP-014", "ADP-015", "ADP-016", "ADP-018", "ADP-019", "ADP-022", "ADP-023", "ADP-024", "ADP-025", "ADP-026", "ADP-041"]
 import { execFileSync } from "node:child_process"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"

@@ -3,6 +3,7 @@
  * parked work) must survive a restart; runtime-only state (breaker, rate
  * windows, capacity sensor readings, per-unit budgets) resets honestly.
  */
+// covers: ["ADP-024", "ADP-030", "ADP-036"]
 import { describe, expect, it } from "vitest"
 
 import { CONTINUATION_PROMPT } from "../../src/supervisor/log.js"

@@ -1,3 +1,4 @@
+// covers: ["ADP-002", "ADP-003", "ADP-004", "ADP-005", "ADP-006", "ADP-027"]
 import fc from "fast-check"
 import { describe, expect, it } from "vitest"
 import {

@@ -2,6 +2,7 @@
  * Operating-mode wrapper tests (GOAL operating modes; ADP-038 observe/control
  * identity is property-tested too).
  */
+// covers: ["ADP-029", "ADP-038"]
 import { describe, expect, it } from "vitest"
 import { forMode } from "../../../src/core/scheduler/index.js"
 import type { Decision } from "../../../src/core/scheduler/index.js"

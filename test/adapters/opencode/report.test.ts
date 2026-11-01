@@ -1,3 +1,4 @@
+// covers: ["ADP-001", "ADP-027"]
 import { describe, expect, it } from "vitest"
 import {
   BODY_EXCERPT_LENGTH,

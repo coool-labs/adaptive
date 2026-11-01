@@ -1,3 +1,4 @@
+// covers: ["ADP-036", "ADP-051"]
 import { describe, expect, it } from "vitest"
 import { adaptiveRpc, ADAPTIVE_RPC_ID } from "../../src/rpc/definition.js"
 

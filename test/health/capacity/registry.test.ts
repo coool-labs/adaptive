@@ -1,3 +1,4 @@
+// covers: ["ADP-020"]
 import { describe, expect, it } from "vitest"
 
 import { CapacityRegistry } from "../../../src/health/capacity/registry.js"

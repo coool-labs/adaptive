@@ -3,6 +3,7 @@
  * across restart, structural bounding (the no-secrets invariant), outcome
  * attachment, and total read-side parsing (ADP-031 discipline for state).
  */
+// covers: ["ADP-030", "ADP-051"]
 import fc from "fast-check"
 import { describe, expect, test } from "vitest"
 import {

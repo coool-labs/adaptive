@@ -3,6 +3,7 @@
  * a reason and evidence; the parser is total and bounded (model-produced JSON
  * is untrusted even though the standard schema describes it).
  */
+// covers: ["ADP-015"]
 import fc from "fast-check"
 import { describe, expect, it } from "vitest"
 

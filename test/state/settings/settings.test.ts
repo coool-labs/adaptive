@@ -4,6 +4,7 @@
  * seam. The read path is total — arbitrary garbage must degrade to defaults,
  * never throw (ADP-031 discipline for state).
  */
+// covers: ["ADP-005", "ADP-028", "ADP-029", "ADP-032", "ADP-036"]
 import fc from "fast-check"
 import { afterEach, describe, expect, test, vi } from "vitest"
 import {

@@ -1,3 +1,4 @@
+// covers: ["ADP-039"]
 import { afterEach, describe, expect, it } from "vitest"
 import { createFakeProvider, type FakeProvider } from "./server.js"
 import {

@@ -1,3 +1,4 @@
+// covers: ["ADP-030", "ADP-033"]
 import { describe, expect, it } from "vitest"
 import {
   outcomeLine,

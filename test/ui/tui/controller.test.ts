@@ -1,3 +1,4 @@
+// covers: ["ADP-032", "ADP-033"]
 import { describe, expect, it } from "vitest"
 
 import { INVITE_MESSAGE, INVITE_TITLE, runAdaptive } from "../../../src/ui/tui/controller.js"

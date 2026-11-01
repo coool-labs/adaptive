@@ -1,3 +1,4 @@
+// covers: ["ADP-001", "ADP-014"]
 import { describe, expect, it } from "vitest"
 import type { SessionRetry } from "@opencode/plugin/promise/session"
 import { registerSessionHooks } from "../../../src/adapters/opencode/hooks.js"

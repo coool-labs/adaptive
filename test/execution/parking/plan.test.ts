@@ -4,6 +4,7 @@
  * holds (tier unconfigured), and drops (session gone). Includes a store
  * integration: select → resume pops the record for clean continuation.
  */
+// covers: ["ADP-022", "ADP-024"]
 import fc from "fast-check"
 import { describe, expect, it } from "vitest"
 

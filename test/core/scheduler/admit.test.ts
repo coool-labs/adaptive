@@ -2,6 +2,7 @@
  * Unit scenarios for admission routing, one per decision kind and reason
  * (TASKS T-09). Fixtures in ./helpers.js.
  */
+// covers: ["ADP-002", "ADP-003", "ADP-005", "ADP-016", "ADP-019", "ADP-021", "ADP-022", "ADP-028"]
 import { describe, expect, it } from "vitest"
 import { admit, schedulerHealthKey } from "../../../src/core/scheduler/index.js"
 import type { ModelRef } from "../../../src/core/work-unit/types.js"

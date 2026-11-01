@@ -7,6 +7,7 @@
  * Routing at runtime is pin → agent-role hint → default standard; the tier
  * hint needs the agent observed once (warm-up) before it can route.
  */
+// covers: ["ADP-002", "ADP-003", "ADP-005", "ADP-017", "ADP-028", "ADP-029", "ADP-031", "ADP-036", "ADP-041"]
 import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"

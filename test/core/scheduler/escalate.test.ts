@@ -1,6 +1,7 @@
 /**
  * Escalation planner unit tests (ADP-015): ladder order, budget, evidence.
  */
+// covers: ["ADP-011", "ADP-013", "ADP-015"]
 import { describe, expect, it } from "vitest"
 import { planEscalation } from "../../../src/core/scheduler/index.js"
 import type { EscalationInput } from "../../../src/core/scheduler/index.js"

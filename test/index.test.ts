@@ -4,6 +4,7 @@
  * ~30 domains — the entry touches four, so the fixture passes a structural
  * object through an explicit cast instead of faking the rest.
  */
+// covers: ["ADP-029", "ADP-031"]
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import adaptivePlugin, { PLUGIN_ID } from "../src/index.js"

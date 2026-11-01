@@ -1,3 +1,4 @@
+// covers: ["ADP-028", "ADP-036", "ADP-051"]
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { adaptiveRpcHandlers, type AdaptiveRpcSource } from "../../src/rpc/handlers.js"
 import type { PatchResult, SettingsPatch } from "../../src/state/settings/types.js"
