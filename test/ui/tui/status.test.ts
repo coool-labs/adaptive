@@ -5,7 +5,7 @@ import {
   clockTime,
   healthEntries,
   statusLine,
-  statusPage,
+  statusTable,
   STATUS_EMPTY_MESSAGE,
 } from "../../../src/ui/tui/status.js"
 import type { StatusSnapshot, TierResourceStatus } from "../../../src/rpc/status.js"
@@ -32,7 +32,7 @@ function snapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot {
   }
 }
 
-describe("status page", () => {
+describe("status table", () => {
   it("flattens configured resources in tier order", () => {
     const s = snapshot({
       tiers: {
@@ -57,9 +57,9 @@ describe("status page", () => {
     expect(clockTime(at)).toBe("18:42")
   })
 
-  it("groups the models by tier with the user's priority order inside each group", () => {
+  it("aligns every row into columns with a header row, tier then priority order", () => {
     const at = new Date(2026, 0, 1, 18, 42).getTime()
-    const text = statusPage(
+    const lines = statusTable(
       snapshot({
         pin: { providerID: "prov", id: "m2" },
         tiers: {
@@ -82,26 +82,21 @@ describe("status page", () => {
         },
       }),
     )
-    expect(text).toBe(
-      [
-        "quick:",
-        "  prov/m2 — healthy (pinned)",
-        "standard:",
-        "  prov/m1 — rate_limited, windowed until 18:42",
-        "  prov/m0 — healthy",
-        "advanced:",
-        "  prov/m3 — healthy, breaker open",
-      ].join("\n"),
-    )
+    expect(lines[0]).toBe("MODEL    TIER      HEALTH        STATE")
+    expect(lines[1]).toBe("prov/m2  quick     healthy       (pinned)")
+    expect(lines[2]).toBe("prov/m1  standard  rate_limited  windowed until 18:42")
+    expect(lines[3]).toBe("prov/m0  standard  healthy       -")
+    expect(lines[4]).toBe("prov/m3  advanced  healthy       breaker open")
   })
 
-  it("omits empty tiers instead of printing empty groups", () => {
-    const text = statusPage(snapshot({ tiers: { quick: [entry()], standard: [], advanced: [] } }))
-    expect(text).toBe("quick:\n  prov/m1 — healthy")
+  it("pads columns to the widest cell and right-trims the last column", () => {
+    const lines = statusTable(snapshot({ tiers: { quick: [entry()], standard: [], advanced: [] } }))
+    expect(lines[0]).toBe("MODEL    TIER   HEALTH   STATE")
+    expect(lines[1]).toBe("prov/m1  quick  healthy  -")
   })
 
-  it("marks an unknown window deadline and a probing breaker", () => {
-    const text = statusPage(
+  it("marks an unknown window deadline and a probing breaker in STATE", () => {
+    const lines = statusTable(
       snapshot({
         tiers: {
           quick: [
@@ -113,9 +108,12 @@ describe("status page", () => {
         },
       }),
     )
-    const lines = text.split("\n")
-    expect(lines[1]).toBe("  prov/m1 — rate_limited, windowed (deadline unknown)")
-    expect(lines[2]).toBe("  prov/m1 — healthy, probing")
+    expect(lines[1]).toContain("windowed (deadline unknown)")
+    expect(lines[2]).toContain("probing")
+  })
+
+  it("returns no lines when nothing is configured", () => {
+    expect(statusTable(snapshot())).toEqual([])
   })
 
   it("renders one line per resource without a tier prefix (statusLine)", () => {
@@ -143,9 +141,9 @@ describe("status page", () => {
     )
     const breakerArb = fc.constantFrom("closed", "open", "half_open")
     const refArb = fc.record({
-      providerID: fc.string({ minLength: 1, maxLength: 4 }),
-      id: fc.string({ minLength: 1, maxLength: 4 }),
-      variant: fc.option(fc.string({ minLength: 1, maxLength: 4 }), { nil: null }),
+      providerID: fc.stringMatching(/^[a-z0-9]{1,4}$/),
+      id: fc.stringMatching(/^[a-z0-9]{1,4}$/),
+      variant: fc.option(fc.stringMatching(/^[a-z0-9]{1,4}$/), { nil: null }),
     }) as fc.Arbitrary<{ providerID: string; id: string; variant?: string }>
     const tierArb = fc.array(
       fc.record({
@@ -160,21 +158,19 @@ describe("status page", () => {
     fc.assert(
       fc.property(
         fc.constantFrom<"off" | "observe" | "active">("off", "observe", "active"),
-        fc.option(refArb, { nil: null }).map((v) => v ?? null),
+        fc.option(refArb, { nil: null }),
         tierArb,
         tierArb,
         tierArb,
         (mode, pin, quick, standard, advanced) => {
           const s = snapshot({ mode, pin, tiers: { quick, standard, advanced } })
-          const lines = statusPage(s)
-            .split("\n")
-            .filter((line) => line.length > 0 && !line.endsWith(":"))
-          // One status line per configured resource; group headers only for
-          // non-empty tiers.
-          expect(lines).toHaveLength(quick.length + standard.length + advanced.length)
+          const lines = statusTable(s)
+          const count = quick.length + standard.length + advanced.length
+          // One table row per configured resource, plus the header row when
+          // anything is configured; every row has exactly four columns.
+          expect(lines).toHaveLength(count === 0 ? 0 : count + 1)
           for (const line of lines) {
-            expect(line.startsWith("  ")).toBe(true)
-            expect(line).toMatch(/ — /)
+            expect(line.split(/  +/)).toHaveLength(4)
           }
           expect(STATUS_EMPTY_MESSAGE.length).toBeGreaterThan(0)
         },

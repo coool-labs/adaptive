@@ -65,6 +65,26 @@ export default define({
       select: (options) => context.ui.dialog.select(options),
       confirm: (options) => context.ui.dialog.confirm(options),
       alert: (options) => context.ui.dialog.alert(options),
+      table: (spec) =>
+        // The host has no table dialog; a custom dialog render gives the
+        // column grid full terminal width (an alert message wraps at the
+        // dialog's narrow column). Escape closes the dialog and fires
+        // onClose, which resolves the view promise.
+        new Promise<void>((resolve) => {
+          context.ui.dialog.show(
+            () => (
+              <box style={{ flexDirection: "column" }}>
+                <text>{spec.title}</text>
+                {spec.lines.map((line) => (
+                  <text>{line}</text>
+                ))}
+              </box>
+            ),
+            () => {
+              resolve()
+            },
+          )
+        }),
       toast: (message, variant) => {
         context.ui.toast.show({ message, variant })
       },

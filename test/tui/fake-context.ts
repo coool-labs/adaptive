@@ -11,6 +11,8 @@ export interface DialogRecord {
   confirmQueue: (boolean | undefined)[]
   alerts: { title: string; message: string }[]
   toasts: { message: string; variant?: string }[]
+  /** Custom dialog renders (the status table), newest last. */
+  shows: { render: () => unknown; onClose: (() => void) | undefined }[]
 }
 
 export interface SlotRecord {
@@ -26,6 +28,8 @@ export function fakeTuiContext(options: {
   failSelect?: unknown
   /** The screen the palette command runs from (home when absent). */
   route?: Route | undefined
+  /** The status snapshot the fake rpc serves (empty tiers when absent). */
+  status?: unknown
   /** The session-mode override the fake rpc serves (null = no override). */
   sessionMode?: OperatingMode | null
   failSessionModeGet?: boolean
@@ -50,7 +54,9 @@ export function fakeTuiContext(options: {
     confirmQueue: [],
     alerts: [],
     toasts: [],
+    shows: [],
   }
+  const shows = dialogs.shows
   const layers: unknown[] = []
   const slots: SlotRecord[] = []
   const events: { name: string; handler: (event: unknown) => void }[] = []
@@ -91,13 +97,15 @@ export function fakeTuiContext(options: {
           return Promise.resolve({ ok: true, settings: options.settings })
         },
         "status.get": () =>
-          Promise.resolve({
-            mode: "observe",
-            pin: null,
-            tiers: { quick: [], standard: [], advanced: [] },
-            parked: 0,
-            receipts: 0,
-          }),
+          Promise.resolve(
+            options.status ?? {
+              mode: "observe",
+              pin: null,
+              tiers: { quick: [], standard: [], advanced: [] },
+              parked: 0,
+              receipts: 0,
+            },
+          ),
         "receipts.list": () => Promise.resolve([]),
         "session-mode.get": (input: { sessionID: string }) => {
           counts.sessionModeGets += 1
@@ -135,6 +143,9 @@ export function fakeTuiContext(options: {
         alert: (spec: { title: string; message: string }) => {
           dialogs.alerts.push(spec)
           return Promise.resolve()
+        },
+        show: (render: () => unknown, onClose?: () => void) => {
+          shows.push({ render, onClose })
         },
       },
       toast: {

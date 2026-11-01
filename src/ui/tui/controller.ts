@@ -17,7 +17,7 @@ import type { PatchResult } from "../../state/settings/types.js"
 import type { SessionModeSetResult } from "../../state/session-modes/index.js"
 import type { Receipt } from "../../state/receipts/types.js"
 import type { StatusSnapshot } from "../../rpc/status.js"
-import { STATUS_EMPTY_MESSAGE, statusPage } from "./status.js"
+import { STATUS_EMPTY_MESSAGE, statusTable } from "./status.js"
 import { mainMenuOptions, modeOptions, sessionModeOptions, type MainMenuChoice } from "./menu.js"
 import {
   modelPickerOptions,
@@ -50,6 +50,8 @@ export interface AdaptiveView {
     label?: { confirm?: string; cancel?: string }
   }): Promise<boolean | undefined>
   alert(options: { title: string; message: string }): Promise<void>
+  /** A column-aligned text table (header row first); Escape closes it. */
+  table(spec: { title: string; lines: string[] }): Promise<void>
   toast(message: string, variant: "info" | "success" | "warning" | "error"): void
 }
 
@@ -248,18 +250,20 @@ async function runModeMenu(
 }
 
 /**
- * The status view: every configured model with its state on one page,
- * grouped by tier in priority order. No per-resource selection step — the
- * page IS the view; Escape returns to the menu.
+ * The status view: every configured model with its state as a column-aligned
+ * table (header row, tier order, priority order within tiers). No
+ * per-resource selection step — the table IS the view; Escape returns to the
+ * menu.
  */
 async function runStatusView(env: AdaptiveEnv): Promise<void> {
   const snapshot = await tryApi(env, () => env.api.status())
   if (snapshot === undefined) return
   const configured = TIERS.some((tier) => snapshot.tiers[tier].length > 0)
-  await env.view.alert({
-    title: "Status",
-    message: configured ? statusPage(snapshot) : STATUS_EMPTY_MESSAGE,
-  })
+  if (!configured) {
+    await env.view.alert({ title: "Status", message: STATUS_EMPTY_MESSAGE })
+    return
+  }
+  await env.view.table({ title: "Status", lines: statusTable(snapshot) })
 }
 
 type TierEditorOutcome = SettingsV1 | undefined
@@ -415,10 +419,11 @@ async function runReceiptsView(env: AdaptiveEnv): Promise<void> {
   for (let offset = 0; ;) {
     const page = receiptPage(all.slice(offset))
     const hasNext = offset + RECEIPTS_PAGE_SIZE < all.length
-    const options: SelectOption<Receipt | "next">[] = page.map((receipt) => ({
+    const options: SelectOption<Receipt | "next" | "prev">[] = page.map((receipt) => ({
       title: receiptLine(receipt),
       value: receipt,
     }))
+    if (offset > 0) options.push({ title: "Previous page", value: "prev" })
     if (hasNext) options.push({ title: "Next page", value: "next" })
     const pick = await env.view.select({
       title: `Receipts (${String(all.length)}, newest first)`,
@@ -427,6 +432,10 @@ async function runReceiptsView(env: AdaptiveEnv): Promise<void> {
     if (pick === undefined) return
     if (pick === "next") {
       offset += RECEIPTS_PAGE_SIZE
+      continue
+    }
+    if (pick === "prev") {
+      offset = Math.max(0, offset - RECEIPTS_PAGE_SIZE)
       continue
     }
     await env.view.alert({ title: `Receipt #${String(pick.id)}`, message: receiptDetail(pick) })

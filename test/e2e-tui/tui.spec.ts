@@ -78,13 +78,16 @@ interface Launched {
   app: TerminalApp
   sidecar: Sidecar
   servicePort: number
+  /** The sandbox home (receipt seeding for the pagination journey). */
+  home: string
+  project: string
 }
 
 /** Launch one fresh TUI against its own fake-provider sidecar. */
 async function launchTui(
   tw: TermwrightFixture,
   terminal: TerminalFixture,
-  options: { failAfterTitle?: boolean } = {},
+  options: { failAfterTitle?: boolean; paths?: { home: string; project: string } } = {},
 ): Promise<Launched> {
   // Bundle the sidecar entry to plain JS: the termwright host node has no TS
   // loader, and vite-node is not shipped by this dependency tree.
@@ -118,12 +121,12 @@ async function launchTui(
   })
   expect(sidecar.pid).toBeGreaterThan(0)
 
-  const home = mkdtempSync(join(tmpdir(), "adaptive-tui-home-"))
+  const home = options.paths?.home ?? mkdtempSync(join(tmpdir(), "adaptive-tui-home-"))
   mkdirSync(join(home, "config", "opencode"), { recursive: true })
   mkdirSync(join(home, ".config", "opencode"), { recursive: true })
   mkdirSync(join(home, "data"), { recursive: true })
   mkdirSync(join(home, "cache"), { recursive: true })
-  const project = mkdtempSync(join(tmpdir(), "adaptive-tui-proj-"))
+  const project = options.paths?.project ?? mkdtempSync(join(tmpdir(), "adaptive-tui-proj-"))
   // The provider definition must be present in BOTH configs: the plugin's
   // server-side model inventory is scoped to the location the plugin loads
   // from — the global config in this sandbox — so a provider that exists
@@ -199,7 +202,38 @@ async function launchTui(
     env,
     cwd: project,
   })
-  return { app, sidecar, servicePort }
+  return { app, sidecar, servicePort, home, project }
+}
+
+/**
+ * Plant receipts directly in the sandbox's plugin storage between two boots:
+ * the store loads them at plugin setup, so the receipts browser can be
+ * exercised with more than a page of data without replaying dozens of turns
+ * (the "Getting started" popup blocks a second turn in one boot anyway).
+ */
+function seedReceipts(home: string, count: number): void {
+  const hex = (text: string): string => {
+    let out = ""
+    for (const c of text) out += c.charCodeAt(0).toString(16).padStart(4, "0")
+    return out
+  }
+  const now = Date.now()
+  const receipts = Array.from({ length: count }, (_, index) => ({
+    id: index + 1,
+    at: now - (count - index) * 60_000,
+    sessionID: `seed-${String(index)}`,
+    decision: { kind: "defer", reason: "routing-defer" },
+  }))
+  const value = JSON.stringify({ version: 1, receipts })
+  const seeded = spawnSync(
+    "sqlite3",
+    [
+      join(home, "data", "opencode", "opencode.db"),
+      `INSERT OR REPLACE INTO kv (key, value, time_created, time_updated) VALUES ('plugin:${hex("coool.adaptive")}:coool.adaptive/receipts', '${value.replaceAll("'", "''")}', '${String(now)}', '${String(now)}')`,
+    ],
+    { encoding: "utf8" },
+  )
+  expect(seeded.status).toBe(0)
 }
 
 /** Boot the TUI and wait for the home screen. */
@@ -688,6 +722,68 @@ test(
 )
 
 test(
+  "the receipts browser pages forward and back through the whole list",
+  { timeout: 300_000 },
+  async ({ termwright: tw, terminal }) => {
+    const paths = {
+      home: mkdtempSync(join(tmpdir(), "adaptive-tui-home-")),
+      project: mkdtempSync(join(tmpdir(), "adaptive-tui-proj-")),
+    }
+    // First boot: creates the plugin storage the seeding then fills.
+    const first = await launchTui(tw, terminal, { paths })
+    await bootTui(first)
+    await first.app.close()
+    await closeLaunched(first)
+    seedReceipts(paths.home, 25)
+
+    // Second boot on the same sandbox: the store loads the seeded receipts.
+    const launched = await launchTui(tw, terminal, { paths })
+    const app = launched.app
+    await bootTui(launched)
+    await step("page one lists the newest receipts and offers the next page", async () => {
+      await openAdaptiveMenu(app)
+      // Receipts is the last (fifth) menu option.
+      await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText("Receipts (25, newest first)", { timeout: 30_000 })
+      // Newest first: the top row is the highest seeded id, and the page
+      // ends with "Next page" (20 receipts + the action).
+      await app.waitForText("#25 ", { timeout: 15_000 })
+      await pressAll(
+        app,
+        Array.from({ length: 20 }, () => "ArrowDown"),
+      )
+      await app.press("Enter")
+    })
+    await step("page two offers the way back to page one", async () => {
+      await app.waitForText("Previous page", { timeout: 15_000 })
+      // The remaining 5 receipts are listed before the actions.
+      await app.waitForText("#1 ", { timeout: 15_000 })
+      await pressAll(
+        app,
+        Array.from({ length: 5 }, () => "ArrowDown"),
+      )
+      await app.press("Enter")
+    })
+    await step("page one is shown again after going back", async () => {
+      await app.waitForText("Receipts (25, newest first)", { timeout: 15_000 })
+      await app.waitForText("#25 ", { timeout: 15_000 })
+      // The re-rendered page's highlight reset to the top, and the ~58-col
+      // dialog only renders the visible options window — scroll to the
+      // bottom to prove "Next page" is offered again.
+      await pressAll(
+        app,
+        Array.from({ length: 20 }, () => "ArrowDown"),
+      )
+      await app.waitForText("Next page", { timeout: 15_000 })
+    })
+    await escapeToBase(app)
+    await app.close()
+    await closeLaunched(launched)
+  },
+)
+
+test(
   "switching to off disables routing and the menu reflects it",
   { timeout: 120_000 },
   async ({ termwright: tw, terminal }) => {
@@ -766,10 +862,21 @@ test(
           // retrying it inside the loop covers that drop.
           await openAdaptiveMenu(app)
           // Status is the highlighted first menu option; it opens with the
-          // WHOLE inventory on one page — models grouped by tier, one line
-          // per model. The windowed resource's line carries its state and
-          // the local-clock recovery deadline; no selection step follows.
-          await openStatusPage(app, /rate_limited, windowed\s+until \d{2}:\d{2}/)
+          // WHOLE inventory as one column-aligned table — a header row, then
+          // one row per model (tier order, priority order within tiers).
+          // The table dialog is ~58 columns: long rows wrap mid-token, so
+          // the anchor stays within one wrapped line and the recovery
+          // deadline (which can split across the wrap) is asserted on the
+          // flattened screen text afterwards.
+          await openStatusPage(app, /rate_limited\s+windowed\s+until/)
+          await app.waitForQuiet({ quietMs: 300 })
+          // screen().text() is a synchronous read; the waitForQuiet above
+          // covers the render race (raw reads right after a match are racy).
+          const flat = app.screen().text().replace(/\n/g, "")
+          // The wrapped continuation line is padded inside the dialog, so
+          // even flattened text carries spaces where the wrap split the
+          // clock time — allow them.
+          expect(flat).toMatch(/windowed until\s*\d{1,2}:\s*\d{2}/)
           return
         } catch (error) {
           if (attempt === 4) throw error
@@ -1070,10 +1177,10 @@ test(
       await runAdaptiveCommand(app)
       await app.waitForText("Adaptive (observe)", { timeout: 30_000 })
     })
-    await step("the status page marks the pinned resource", async () => {
+    await step("the status table marks the pinned resource", async () => {
       // Status is the highlighted first menu option; the pinned (healthy)
-      // resource's line carries the pin marker on the one-page view.
-      await openStatusPage(app, /healthy \(pinned\)/)
+      // resource's STATE column carries the pin marker on the table view.
+      await openStatusPage(app, /healthy\s+\(pinned\)/)
       await app.press("Escape")
       await app.waitForText(MENU_TITLE, { timeout: 15_000 })
     })

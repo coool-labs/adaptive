@@ -176,4 +176,59 @@ describe("the prompt chip's session mode (ADP-054)", () => {
       vi.useRealTimers()
     }
   })
+
+  it("renders the status table dialog as one text node per line", async () => {
+    const status = {
+      mode: "observe",
+      pin: null,
+      tiers: {
+        quick: [],
+        standard: [
+          {
+            ref: { providerID: "prov", id: "m1" },
+            health: "healthy",
+            breaker: "closed",
+            windowed: false,
+            windowUntil: null,
+          },
+        ],
+        advanced: [],
+      },
+      parked: 0,
+      receipts: 0,
+    }
+    const { context, dialogs, layers } = fakeTuiContext({
+      settings: {
+        ...settingsJSON("observe"),
+        tiers: { quick: [], standard: [{ providerID: "prov", id: "m1" }], advanced: [] },
+      },
+      clientPatches: [],
+      status,
+    })
+    await tuiPlugin.setup(context)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // Drive the status flow far enough to open the custom table dialog:
+    // the invitation's follow-up select takes the first queued pick (true =
+    // "Open the menu now"), then the main menu opens the status view.
+    dialogs.selectQueue.push(true, "status")
+    ;(layers[0] as { commands: { run: () => void }[] }).commands[0]?.run()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const shown = dialogs.shows.at(-1)
+    if (shown === undefined) throw new Error("the status table dialog never opened")
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const dispose = render(() => shown.render() as Node, container)
+    await Promise.resolve()
+    // jsdom collapses the opentui intrinsic tree (the same parser mangling
+    // the chip's span test hits), so the assertion is on the text content:
+    // the title line plus the aligned rows from statusTable (whose column
+    // layout the statusTable unit tests pin).
+    const text = container.textContent
+    expect(text).toContain("Status")
+    expect(text).toContain("MODEL")
+    // Closing the dialog (Escape on the host side) resolves the view's
+    // promise through the onClose handoff.
+    shown.onClose?.()
+    dispose()
+  })
 })

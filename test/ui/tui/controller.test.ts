@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest"
 
 import { INVITE_MESSAGE, INVITE_TITLE, runAdaptive } from "../../../src/ui/tui/controller.js"
 import { errorText } from "../../../src/ui/tui/options.js"
-import { STATUS_EMPTY_MESSAGE } from "../../../src/ui/tui/status.js"
+import { STATUS_EMPTY_MESSAGE, statusTable } from "../../../src/ui/tui/status.js"
 import type { Receipt } from "../../../src/state/receipts/index.js"
 import type { SettingsPatch, SettingsV1 } from "../../../src/state/settings/index.js"
 import type { PatchResult } from "../../../src/state/settings/index.js"
@@ -15,6 +15,7 @@ interface FakeView extends AdaptiveView {
   selectQueue: unknown[]
   confirmQueue: (boolean | undefined)[]
   alerts: { title: string; message: string }[]
+  tables: { title: string; lines: string[] }[]
   toasts: { message: string; variant?: string }[]
   selects: string[]
   selectOptions: { title: string; value: unknown }[][]
@@ -25,6 +26,7 @@ function fakeView(): FakeView {
     selectQueue: [] as unknown[],
     confirmQueue: [] as (boolean | undefined)[],
     alerts: [] as { title: string; message: string }[],
+    tables: [] as { title: string; lines: string[] }[],
     toasts: [] as { message: string; variant?: string }[],
     selects: [] as string[],
     selectOptions: [] as { title: string; value: unknown }[][],
@@ -42,6 +44,10 @@ function fakeView(): FakeView {
     },
     alert: (spec) => {
       state.alerts.push(spec)
+      return Promise.resolve()
+    },
+    table: (spec) => {
+      state.tables.push(spec)
       return Promise.resolve()
     },
     toast: (message, variant) => {
@@ -246,14 +252,15 @@ describe("controller: main menu", () => {
 })
 
 describe("controller: status branch", () => {
-  it("shows every configured model on one page, grouped by tier", async () => {
+  it("shows every configured model as a table, then returns to the menu", async () => {
     const snapshot = statusSnapshot({ tiers: { quick: [], standard: [resource()], advanced: [] } })
     const e = env({ api: fakeApi({ status: () => Promise.resolve(snapshot) }) })
     e.view.selectQueue.push("status", ...EXIT)
     await runAdaptive(e)
-    expect(e.view.alerts).toHaveLength(1)
-    expect(e.view.alerts[0]?.title).toBe("Status")
-    // The page is the whole view: no per-resource selection follows — the
+    expect(e.view.tables).toHaveLength(1)
+    expect(e.view.tables[0]?.title).toBe("Status")
+    expect(e.view.tables[0]?.lines).toEqual(statusTable(snapshot))
+    // The table is the whole view: no per-resource selection follows — the
     // loop returns straight to the main menu (whose pick then exits).
     expect(e.view.selects).toEqual(["Adaptive (observe)", "Adaptive (observe)"])
   })
@@ -854,16 +861,21 @@ describe("controller: receipts branch", () => {
       receipt({ id: index + 1, decision: { kind: "defer", reason: "routing-defer" } }),
     )
     const e = env({ api: fakeApi({ receipts: () => Promise.resolve(many) }) })
-    // Browse: open receipts → next page → pick the last receipt → detail → leave.
-    e.view.selectQueue.push("receipts", "next", many[24], undefined)
+    // Browse: open receipts → next page → back to page 1 → last receipt →
+    // detail → leave.
+    e.view.selectQueue.push("receipts", "next", "prev", many[24], undefined)
     await runAdaptive(e)
 
     // Page 1 of the browser (selectOptions[0] is the main menu).
     expect(e.view.selectOptions[1]).toHaveLength(21)
     expect(e.view.selectOptions[1]?.at(-1)).toEqual({ title: "Next page", value: "next" })
-    // Second page: the remaining 5 receipts, no further page.
-    expect(e.view.selectOptions[2]).toHaveLength(5)
-    expect(e.view.selectOptions[2]?.some((option) => option.title === "Next page")).toBe(false)
+    // Second page: the remaining 5 receipts plus the way back (no next).
+    expect(e.view.selectOptions[2]).toHaveLength(6)
+    expect(e.view.selectOptions[2]?.at(-1)).toEqual({ title: "Previous page", value: "prev" })
+    // "Previous page" re-renders the first page (its options are 21 again,
+    // ending in "Next page" and without a way back).
+    expect(e.view.selectOptions[3]).toHaveLength(21)
+    expect(e.view.selectOptions[3]?.some((option) => option.title === "Previous page")).toBe(false)
     // The picked receipt's detail was shown.
     expect(e.view.alerts[0]?.title).toContain("#25")
   })

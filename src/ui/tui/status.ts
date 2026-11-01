@@ -35,33 +35,57 @@ function pinnedTo(ref: TierResourceStatus["ref"], pin: StatusSnapshot["pin"]): b
 
 /** One plain status line for a resource: health, window, breaker, pin. */
 export function statusLine(status: TierResourceStatus, pin: StatusSnapshot["pin"]): string {
-  let line = `${resourceLabel(status.ref)} — ${status.health}`
+  return `${resourceLabel(status.ref)} — ${status.health}${stateSuffix(status, pin)}`
+}
+
+/** Everything after the health state: window, breaker, pin. */
+function stateSuffix(status: TierResourceStatus, pin: StatusSnapshot["pin"]): string {
+  let suffix = ""
   if (status.windowed) {
-    line +=
+    suffix +=
       status.windowUntil === null
         ? ", windowed (deadline unknown)"
         : `, windowed until ${clockTime(status.windowUntil)}`
   }
-  if (status.breaker === "open") line += ", breaker open"
-  else if (status.breaker === "half_open") line += ", probing"
-  if (pinnedTo(status.ref, pin)) line += " (pinned)"
-  return line
+  if (status.breaker === "open") suffix += ", breaker open"
+  else if (status.breaker === "half_open") suffix += ", probing"
+  if (pinnedTo(status.ref, pin)) suffix += " (pinned)"
+  return suffix
+}
+
+/** The STATE column of the status table: window, breaker, pin markers. */
+export function stateCell(status: TierResourceStatus, pin: StatusSnapshot["pin"]): string {
+  return stateSuffix(status, pin).replace(/^[, ]+/, "") || "-"
 }
 
 /**
- * The whole inventory on one screen: models grouped by tier (quick, standard,
- * advanced — each group in the user's priority order), one line per model.
- * There is no per-resource selection step: the page IS the view.
+ * The whole inventory as a column-aligned table (header row first): models
+ * grouped in tier order (quick → standard → advanced), one row per model,
+ * columns padded to the widest cell so the grid reads at a glance. There is
+ * no per-resource selection step: the table IS the view.
  */
-export function statusPage(snapshot: StatusSnapshot): string {
-  const lines: string[] = []
-  for (const tier of TIERS) {
-    const resources = snapshot.tiers[tier]
-    if (resources.length === 0) continue
-    lines.push(`${tier}:`)
-    for (const status of resources) lines.push(`  ${statusLine(status, snapshot.pin)}`)
-  }
-  return lines.join("\n")
+export function statusTable(snapshot: StatusSnapshot): string[] {
+  const header = ["MODEL", "TIER", "HEALTH", "STATE"]
+  const rows = healthEntries(snapshot).map(({ tier, status }) => [
+    resourceLabel(status.ref),
+    tier,
+    status.health,
+    stateCell(status, snapshot.pin),
+  ])
+  if (rows.length === 0) return []
+  // Header and rows are built together, always four cells wide — the column
+  // index cannot be out of range.
+  const widths = header.map((cell, column) =>
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    Math.max(cell.length, ...rows.map((row) => row[column]!.length)),
+  )
+  const render = (cells: string[]): string =>
+    cells
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      .map((cell, column) => cell.padEnd(widths[column]!))
+      .join("  ")
+      .trimEnd()
+  return [render(header), ...rows.map(render)]
 }
 
 /** Empty-state copy for the status view when nothing is configured. */
