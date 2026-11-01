@@ -17,7 +17,13 @@ import type { SettingsPatch, SettingsV1 } from "../../state/settings/index.js"
 import type { PatchResult } from "../../state/settings/types.js"
 import type { Receipt } from "../../state/receipts/types.js"
 import type { StatusSnapshot } from "../../rpc/status.js"
-import { HEALTH_EMPTY_MESSAGE, healthDetail, healthEntries, type HealthEntry } from "./status.js"
+import {
+  HEALTH_EMPTY_MESSAGE,
+  healthDetail,
+  healthEntries,
+  healthOverview,
+  type HealthEntry,
+} from "./status.js"
 import { mainMenuOptions, modeOptions, type MainMenuChoice } from "./menu.js"
 import {
   modelPickerOptions,
@@ -189,6 +195,10 @@ async function runHealthView(env: AdaptiveEnv, feedback: SaveFeedback): Promise<
     await env.view.alert({ title: "Health", message: HEALTH_EMPTY_MESSAGE })
     return undefined
   }
+  // The overview comes first: every resource's state on a single screen.
+  // The per-resource drill-down below is for detail and actions, not the
+  // only way to see health.
+  await env.view.alert({ title: "Health", message: healthOverview(snapshot) })
   for (;;) {
     const options: SelectOption<HealthEntry | "back">[] = entries.map((entry) => ({
       title: `${resourceLabel(entry.status.ref)}${healthTag(entry.status)}`,
@@ -196,7 +206,7 @@ async function runHealthView(env: AdaptiveEnv, feedback: SaveFeedback): Promise<
       value: entry,
     }))
     options.push({ title: "Back", value: "back" })
-    const pick = await env.view.select({ title: "Health", options })
+    const pick = await env.view.select({ title: "Inspect a resource", options })
     if (pick === undefined || pick === "back") return undefined
     await env.view.alert({
       title: `Health: ${resourceLabel(pick.status.ref)}`,

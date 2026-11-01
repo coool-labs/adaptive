@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest"
 
 import { INVITE_MESSAGE, INVITE_TITLE, runAdaptive } from "../../../src/ui/tui/controller.js"
 import { errorText } from "../../../src/ui/tui/options.js"
-import { HEALTH_EMPTY_MESSAGE, healthDetail } from "../../../src/ui/tui/status.js"
+import { HEALTH_EMPTY_MESSAGE, healthDetail, healthOverview } from "../../../src/ui/tui/status.js"
 import type { Receipt } from "../../../src/state/receipts/index.js"
 import type { SettingsPatch, SettingsV1 } from "../../../src/state/settings/index.js"
 import type { PatchResult } from "../../../src/state/settings/index.js"
@@ -248,8 +248,12 @@ describe("controller: health branch", () => {
     const picked = { tier: "standard" as const, status: resource() }
     e.view.selectQueue.push("health", picked, "back", ...EXIT)
     await runAdaptive(e)
-    expect(e.view.alerts[0]?.title).toBe("Health: prov/m1")
-    expect(e.view.alerts[0]?.message).toBe(healthDetail(picked, snapshot))
+    // The whole inventory's health is on the first screen; drilling into a
+    // resource is optional.
+    expect(e.view.alerts[0]?.title).toBe("Health")
+    expect(e.view.alerts[0]?.message).toBe(healthOverview(snapshot))
+    expect(e.view.alerts[1]?.title).toBe("Health: prov/m1")
+    expect(e.view.alerts[1]?.message).toBe(healthDetail(picked, snapshot))
     // The detail is followed by actions, not a dead end.
     expect(e.view.selectOptions[2]?.map((o) => o.title)).toEqual([
       "Pin this resource",

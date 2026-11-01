@@ -10,7 +10,7 @@
  * long enough for a status inspection.
  */
 import { createFakeProvider } from "./server.js"
-import { FAKE_SCENARIOS } from "./scenarios.js"
+import { FAKE_SCENARIOS, type FakeProviderBehavior } from "./scenarios.js"
 
 const portArg = process.argv.findIndex((arg) => arg === "--port")
 const raw = portArg >= 0 ? (process.argv[portArg + 1] ?? "") : ""
@@ -22,11 +22,18 @@ if (!Number.isInteger(port) || port <= 0 || port > 65535) {
 
 const failAfterTitle = process.argv.some((arg) => arg === "--fail-after-title")
 const success = FAKE_SCENARIOS["recovery-after-n"].behaviors.at(-1)
-const quotaExhausted = FAKE_SCENARIOS["quota-exhausted"].behaviors.at(0)
-if (success === undefined || quotaExhausted === undefined) {
+const rawQuota = FAKE_SCENARIOS["quota-exhausted"].behaviors.at(0)
+if (success === undefined || rawQuota === undefined) {
   console.error("recovery-after-n / quota-exhausted scenarios are malformed")
   process.exit(2)
 }
+// The health window mirrors Retry-After; 60s is tighter than the journey's
+// dialog navigation can reliably beat, so the sidecar stretches it to 300s
+// while keeping the quota shape (the host still fast-fails the turn).
+const quotaExhausted: FakeProviderBehavior =
+  rawQuota.status === 429 && rawQuota.headers !== undefined
+    ? { ...rawQuota, headers: { ...rawQuota.headers, "retry-after": "300" } }
+    : rawQuota
 
 const provider = await createFakeProvider(
   failAfterTitle

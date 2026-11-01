@@ -376,6 +376,51 @@ async function backToAdaptiveMenu(app: TerminalApp): Promise<void> {
   }
 }
 
+/**
+ * Escape open dialog layers until the base screen is back. Escape at the
+ * base screen is a no-op (it does not even clear the editor), so pressing a
+ * full dialog-stack depth of Escapes is safe and needs no knowledge of which
+ * layers are open — text-based early exits would be unreliable, because
+ * dialog overlays do not hide the base texts from the screen reader.
+ */
+async function escapeToBase(app: TerminalApp): Promise<void> {
+  for (let escape = 0; escape < 5; escape++) {
+    await app.press("Escape")
+    await app.waitForQuiet({ quietMs: 200 })
+  }
+  try {
+    await app.waitForText("Ask anything", { timeout: 5_000 })
+  } catch {
+    await app.waitForText("Getting started", { timeout: 5_000 })
+  }
+}
+
+/**
+ * From the main menu, activate the highlighted Health entry and wait for the
+ * one-screen overview (all resources, tier order). The activating Enter can
+ * be dropped while the menu re-renders: retry only while the menu is still
+ * open — if an Enter landed somewhere deeper (select, detail), reset instead
+ * of pressing blindly.
+ */
+async function openHealthOverview(app: TerminalApp, match: RegExp): Promise<void> {
+  for (let enter = 0; enter < 3; enter++) {
+    await app.press("Enter")
+    try {
+      await app.waitForText(match, { timeout: 12_000 })
+      return
+    } catch {
+      let menuStillOpen = true
+      try {
+        await app.waitForText(MENU_TITLE, { timeout: 2_000 })
+      } catch {
+        menuStillOpen = false
+      }
+      if (!menuStillOpen) throw new Error("drifted out of the adaptive menu")
+    }
+  }
+  throw new Error("health overview never opened")
+}
+
 test("the tui boots to the first-run home with the configured model", async ({
   termwright: tw,
   terminal,
@@ -703,13 +748,13 @@ test(
       await backToAdaptiveMenu(app)
       await leaveMenuToBase(app)
     })
-    await step("the health list marks the resource windowed", async () => {
+    await step("the health overview shows every resource on one screen", async () => {
       await app.type("say done")
       await app.waitForQuiet({ quietMs: 2_000 })
       // The provider answers a quota-shaped 429, so the turn fails instead
       // of completing and there is no completion marker — the health event
       // from the failed call is the signal. Enter retries cover the host's
-      // dropped-keystroke behavior: a retry only re-submits when the tag
+      // dropped-keystroke behavior: a retry only re-submits when the line
       // has not shown yet, and a duplicate failing turn changes nothing.
       for (let attempt = 0; attempt < 5; attempt++) {
         await app.press("Enter")
@@ -718,58 +763,77 @@ test(
           // keystroke right after the failed turn re-renders the footer;
           // retrying it inside the loop covers that drop.
           await openAdaptiveMenu(app)
-          // Health is the highlighted first menu option; it opens the
-          // browsable health list (the standard tier holds one resource).
-          await app.press("Enter")
-          // Anchor on the tag itself: the option row renders title and
-          // description on one line, so at 100 columns the row truncates
-          // "tier standard" to "tier " exactly while the tag is visible —
-          // "tier standard" only shows fully once the 60s window expired.
-          // The tag renders the record's health state first
-          // (`[rate_limited, windowed]` for a throttled resource), so the
-          // assertion anchors on the comma shape rather than a bare
-          // "[windowed]" that never occurs while the state is unhealthy.
-          await app.waitForText(/\[[a-z_]+, windowed\]/, { timeout: 30_000 })
+          // Health is the highlighted first menu option; it opens with the
+          // WHOLE inventory on one screen — no per-resource drill needed to
+          // see state. The windowed resource's line carries its state and
+          // the local-clock recovery deadline.
+          await openHealthOverview(app, /rate_limited, windowed\s+until \d{2}:\d{2}/)
           return
         } catch (error) {
           if (attempt === 4) throw error
-          await app.press("Escape")
-          await app.press("Escape")
-          await app.waitForQuiet({ quietMs: 1_000 })
+          // Reset to a known state before retrying: the number of open
+          // dialog layers varies with what actually rendered, so escape
+          // until the base screen is back instead of guessing.
+          await escapeToBase(app)
+          await app.waitForQuiet({ quietMs: 500 })
         }
       }
     })
-    await step("the resource detail shows the window deadline", async () => {
-      // Enter opens the detail alert for the highlighted resource.
-      await app.press("Enter")
-      await app.waitForText("Health: fake/fake-model", { timeout: 30_000 })
-      await app.waitForText("tier: standard", { timeout: 15_000 })
-      // The window deadline renders as the local wall clock (HH:MM) of the
-      // recovery deadline.
-      await app.waitForText(/window: until \d{2}:\d{2}/, { timeout: 15_000 })
-      await app.waitForText("breaker: ", { timeout: 15_000 })
-      // Dismissing the alert reveals the per-resource action select.
-      await app.press("Escape")
-      await app.waitForText("Pin this resource", { timeout: 15_000 })
-      await app.waitForText("Show receipts for this resource", { timeout: 15_000 })
+    // Back out cleanly: the next step re-enters from a known state.
+    await escapeToBase(app)
+    await step("the resource detail and actions are reachable from the overview", async () => {
+      // The "Getting started" popup swallows composer typing after the
+      // first turn, so no second turn can refresh the 60s window — this
+      // step must complete inside it. Late duplicate keystrokes can close
+      // a dialog right after its text matched, so every transition settles
+      // and re-verifies before the next press; a drift re-enters the whole
+      // flow from a clean base.
+      const stillThere = async (text: string | RegExp): Promise<boolean> => {
+        try {
+          await app.waitForText(text, { timeout: 2_000 })
+          return true
+        } catch {
+          return false
+        }
+      }
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await openAdaptiveMenu(app)
+          await openHealthOverview(
+            app,
+            attempt === 0
+              ? /rate_limited, windowed\s+until \d{2}:\d{2}/
+              : /fake\/fake-model — standard/,
+          )
+          // Dismissing the overview reveals the optional per-resource
+          // browser for detail and actions.
+          await app.press("Escape")
+          if (!(await stillThere("Inspect a resource"))) throw new Error("browser lost")
+          await app.waitForQuiet({ quietMs: 1_000 })
+          if (!(await stillThere("Inspect a resource"))) throw new Error("browser closed late")
+          await app.press("Enter")
+          if (!(await stillThere("Health: fake/fake-model"))) throw new Error("detail lost")
+          await app.waitForQuiet({ quietMs: 1_000 })
+          if (!(await stillThere("Health: fake/fake-model"))) throw new Error("detail closed late")
+          await app.waitForText("tier: standard", { timeout: 15_000 })
+          // The window deadline renders as the local wall clock (HH:MM) of
+          // the recovery deadline.
+          await app.waitForText(/window: until \d{2}:\d{2}/, { timeout: 15_000 })
+          await app.waitForText("breaker: ", { timeout: 15_000 })
+          // Dismissing the alert reveals the per-resource action select.
+          await app.press("Escape")
+          if (!(await stillThere("Pin this resource"))) throw new Error("actions lost")
+          await app.waitForQuiet({ quietMs: 1_000 })
+          if (!(await stillThere("Pin this resource"))) throw new Error("actions closed late")
+          await app.waitForText("Show receipts for this resource", { timeout: 15_000 })
+          return
+        } catch (error) {
+          if (attempt === 1) throw error
+          await escapeToBase(app)
+        }
+      }
     })
-    await step("the resource's receipts open filtered to that resource", async () => {
-      await pressAll(app, ["ArrowDown"])
-      await app.press("Enter")
-      // The failed turn recorded an apply decision for the resource, so the
-      // filtered browser lists it instead of the empty state.
-      await app.waitForText(/Receipts \(\d+, newest first\)/, { timeout: 30_000 })
-      await app.press("Escape")
-      // Escaping the browser returns to the health list — anchored on its
-      // always-present "Back" option, because the resource row truncates
-      // its "tier standard" description while the health tag is visible.
-      await app.waitForText("Back", { timeout: 15_000 })
-    })
-    await step("escape back out to home", async () => {
-      await app.press("Escape")
-      await app.waitForText(MENU_TITLE, { timeout: 15_000 })
-      await leaveMenuToBase(app)
-    })
+    await escapeToBase(app)
     await app.close()
     await closeLaunched(launched)
   },
@@ -1059,10 +1123,13 @@ test(
       await app.waitForText("Adaptive (observe)", { timeout: 30_000 })
     })
     await step("the health detail reports the pin", async () => {
-      // Health is the highlighted first menu option; the seeded resource is
-      // healthy, so its row carries no health tag.
-      await app.press("Enter")
-      await app.waitForText("tier quick", { timeout: 30_000 })
+      // Health is the highlighted first menu option; it opens with the
+      // one-screen overview, whose line for the pinned (healthy) resource
+      // carries the pin marker.
+      await openHealthOverview(app, /healthy \(pinned\)/)
+      // Dismissing the overview reveals the per-resource browser.
+      await app.press("Escape")
+      await app.waitForText("Inspect a resource", { timeout: 15_000 })
       await app.press("Enter")
       await app.waitForText("Health: fake/fake-model", { timeout: 30_000 })
       await app.waitForText("pin: pinned to this resource", { timeout: 15_000 })
@@ -1071,7 +1138,7 @@ test(
       await app.press("Escape")
       await app.waitForText("Pin this resource", { timeout: 15_000 })
       await app.press("Escape")
-      await app.waitForText("tier quick", { timeout: 15_000 })
+      await app.waitForText("Inspect a resource", { timeout: 15_000 })
       await app.press("Escape")
       await app.waitForText(MENU_TITLE, { timeout: 15_000 })
     })

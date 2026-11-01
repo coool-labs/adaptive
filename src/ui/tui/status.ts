@@ -48,12 +48,34 @@ export function healthDetail(entry: HealthEntry, snapshot: StatusSnapshot): stri
         : `window: until ${clockTime(status.windowUntil)}`,
     )
   }
-  if (snapshot.pin !== null) {
-    const pinned =
-      snapshot.pin.providerID === status.ref.providerID &&
-      snapshot.pin.id === status.ref.id &&
-      snapshot.pin.variant === status.ref.variant
-    if (pinned) lines.push("pin: pinned to this resource")
+  if (pinnedTo(status.ref, snapshot.pin)) lines.push("pin: pinned to this resource")
+  return lines.join("\n")
+}
+
+function pinnedTo(ref: TierResourceStatus["ref"], pin: StatusSnapshot["pin"]): boolean {
+  if (pin === null) return false
+  return pin.providerID === ref.providerID && pin.id === ref.id && pin.variant === ref.variant
+}
+
+/**
+ * The whole inventory's health on one screen: one plain line per configured
+ * resource, tier order. This is what the health view opens with — drilling
+ * into a single resource is optional, not the only way to see state.
+ */
+export function healthOverview(snapshot: StatusSnapshot): string {
+  const lines: string[] = []
+  for (const { status, tier } of healthEntries(snapshot)) {
+    let line = `${resourceLabel(status.ref)} — ${tier} — ${status.health}`
+    if (status.windowed) {
+      line +=
+        status.windowUntil === null
+          ? ", windowed (deadline unknown)"
+          : `, windowed until ${clockTime(status.windowUntil)}`
+    }
+    if (status.breaker === "open") line += ", breaker open"
+    else if (status.breaker === "half_open") line += ", probing"
+    if (pinnedTo(status.ref, snapshot.pin)) line += " (pinned)"
+    lines.push(line)
   }
   return lines.join("\n")
 }

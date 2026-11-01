@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest"
 import fc from "fast-check"
 import {
+  healthOverview,
   clockTime,
   healthDetail,
   healthEntries,
@@ -89,6 +90,56 @@ describe("health view", () => {
     expect(text).not.toContain("pin:")
   })
 
+  it("summarizes every resource on one screen (overview)", () => {
+    const at = new Date(2026, 0, 1, 18, 42).getTime()
+    const text = healthOverview(
+      snapshot({
+        pin: { providerID: "prov", id: "m2" },
+        tiers: {
+          quick: [entry({ ref: { providerID: "prov", id: "m2" } })],
+          standard: [
+            entry({
+              ref: { providerID: "prov", id: "m1" },
+              health: "rate_limited",
+              windowed: true,
+              windowUntil: at,
+            }),
+          ],
+          advanced: [
+            entry({
+              ref: { providerID: "prov", id: "m3" },
+              health: "healthy",
+              breaker: "open",
+            }),
+          ],
+        },
+      }),
+    )
+    const lines = text.split("\n")
+    expect(lines).toHaveLength(3)
+    expect(lines[0]).toBe("prov/m2 — quick — healthy (pinned)")
+    expect(lines[1]).toBe("prov/m1 — standard — rate_limited, windowed until 18:42")
+    expect(lines[2]).toBe("prov/m3 — advanced — healthy, breaker open")
+  })
+
+  it("marks an unknown window deadline and a probing breaker in the overview", () => {
+    const text = healthOverview(
+      snapshot({
+        tiers: {
+          quick: [
+            entry({ health: "rate_limited", windowed: true, windowUntil: null }),
+            entry({ breaker: "half_open" }),
+          ],
+          standard: [],
+          advanced: [],
+        },
+      }),
+    )
+    const lines = text.split("\n")
+    expect(lines[0]).toBe("prov/m1 — quick — rate_limited, windowed (deadline unknown)")
+    expect(lines[1]).toBe("prov/m1 — quick — healthy, probing")
+  })
+
   it("never throws over arbitrary snapshots (property)", () => {
     const healthArb = fc.constantFrom(
       "healthy",
@@ -128,6 +179,12 @@ describe("health view", () => {
             expect(text).toContain("health:")
             expect(text).toContain("breaker:")
           }
+          // Every resource appears exactly once in the overview.
+          expect(
+            healthOverview(s)
+              .split("\n")
+              .filter((line) => line.length > 0),
+          ).toHaveLength(quick.length + standard.length + advanced.length)
           expect(HEALTH_EMPTY_MESSAGE.length).toBeGreaterThan(0)
         },
       ),
