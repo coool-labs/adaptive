@@ -5,7 +5,9 @@
  * Reachable journeys: boot/first-run state, keyboard-only palette
  * navigation, the full /adaptive dialog flow (first-run invitation, status
  * alert, observe→control mode switch with persistence, receipts empty state,
- * Escape cancellation at every level), a full session turn through the fake
+ * Escape cancellation at every level), the tier editor (search-and-add,
+ * reorder, remove with confirm/cancel, persistence within the session), the
+ * pin flow with its status rendering, a full session turn through the fake
  * provider, and dimension runs.
  *
  * Host facts (empirical, OpenCode 2.2.5):
@@ -455,6 +457,257 @@ test(
     await step("escape dismisses the alert and closes the menu", async () => {
       await app.press("Escape")
       await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await app.press("Escape")
+      await app.waitForText("Ask anything", { timeout: 15_000 })
+    })
+    await app.close()
+    await closeLaunched(launched)
+  },
+)
+
+// Tier-editor and pin journeys (ADP-033). Facts verified live (OpenCode
+// 2.2.5): the tier list menu titles its options `quick (N)` / `standard (N)` /
+// `advanced (N)`; the editor select is titled `Tier: <tier>` and lists "Add
+// model…" first, one row per resource (`provider/model`, empty health tag
+// while healthy), then "Back". The model picker shows EVERY catalog entry on
+// an empty query — not just the configured fake provider: the opencode/*
+// builtin free models come first, the fake models (`fake/fake-model`, then
+// `fake/fake-model-2`) are the last two entries, and EVERY picker model has
+// host-reported variants (`@low`/`@medium`/…): picking one opens the
+// `Variant: <model>` select, where "(model default)" is highlighted first and
+// Enter keeps the resource label variant-free. Filtering with
+// "fake" therefore narrows the picker to exactly the two fake models. Option
+// rows render title and description on one line, and screen rows are padded
+// to the full width, so label-boundary regexes anchor on `\s` after the
+// label: `fake/fake-model\s` matches the bare label's row (or the
+// `Resource: fake/fake-model` title) but not the `fake/fake-model-2` row,
+// whose label continues with `-2`. The "Settings saved" toast is
+// never asserted after the invitation dismissal (the host keeps it on screen,
+// so the assertion would be vacuous) — saves are verified by re-reading the
+// resulting state (tier counts, editor rows, status lines) instead.
+// Each test boots its own sandbox, so leftover tier entries never leak
+// between tests; the cleanup journeys themselves are covered by the remove
+// and clear-pin steps below.
+
+/** Activate the main-menu option at `index` (status 0, mode 1, tiers 2, pin 3). */
+async function chooseMainMenuItem(app: TerminalApp, index: number): Promise<void> {
+  await pressAll(
+    app,
+    Array.from({ length: index }, () => "ArrowDown"),
+  )
+  await app.press("Enter")
+}
+
+/** From the main menu, open the tiers flow and land on the tier list menu. */
+async function openTierMenu(app: TerminalApp, quickCount: number): Promise<void> {
+  await chooseMainMenuItem(app, 2)
+  await app.waitForText(`quick (${String(quickCount)})`, { timeout: 30_000 })
+}
+
+/** From the tier list menu, enter the quick tier editor (quick is highlighted). */
+async function openQuickEditor(app: TerminalApp): Promise<void> {
+  await app.press("Enter")
+  await app.waitForText("Tier: quick", { timeout: 30_000 })
+}
+
+/**
+ * From the quick editor, add a model through the picker: "Add model…" is the
+ * highlighted first option, `keys` are typed into the picker search one key
+ * at a time (with any ArrowDown moves appended), and Enter activates the
+ * highlighted entry. Every picker model — the fake ones included — then opens
+ * the `Variant: <model>` select (variants are host-reported), where Enter
+ * accepts the highlighted "(model default)" and keeps the resource label
+ * variant-free. The flow lands back on the tier menu, verified by quick's
+ * count growing to `newCount`.
+ */
+async function addHighlightedModel(
+  app: TerminalApp,
+  keys: string[],
+  newCount: number,
+): Promise<void> {
+  await app.press("Enter")
+  await app.waitForText("Search provider / model / name", { timeout: 30_000 })
+  await pressAll(app, keys)
+  await app.waitForQuiet({ quietMs: 300 })
+  await app.press("Enter")
+  await app.waitForText(/Variant: fake\/fake-model/, { timeout: 30_000 })
+  await app.press("Enter")
+  await app.waitForText(`quick (${String(newCount)})`, { timeout: 30_000 })
+}
+
+test(
+  "the tier editor adds a model through search and saves it",
+  { timeout: 180_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal)
+    const app = launched.app
+    await bootTui(launched)
+    await step("open the quick tier editor", async () => {
+      await openAdaptiveMenu(app)
+      await openTierMenu(app, 0)
+      await openQuickEditor(app)
+      await app.waitForText("Add model…", { timeout: 15_000 })
+    })
+    await step("the model picker lists the fake catalog", async () => {
+      await app.press("Enter")
+      await app.waitForText("Search provider / model / name", { timeout: 30_000 })
+      await app.waitForText("fake/fake-model-2", { timeout: 15_000 })
+      await app.waitForText("Fake Model 2", { timeout: 15_000 })
+    })
+    await step("filter the picker to fake-model-2 and save", async () => {
+      // "fake" narrows the picker to the two fake models in catalog order
+      // (fake-model first), so one ArrowDown lands on fake-model-2.
+      await pressAll(app, ["f", "a", "k", "e", "ArrowDown"])
+      await app.waitForQuiet({ quietMs: 300 })
+      await app.press("Enter")
+      await app.waitForText(/Variant: fake\/fake-model/, { timeout: 30_000 })
+      await app.press("Enter")
+      await app.waitForText("quick (1)", { timeout: 30_000 })
+    })
+    await step("reopening the editor lists the saved resource", async () => {
+      await openQuickEditor(app)
+      await app.waitForText(/fake\/fake-model-2\s/, { timeout: 15_000 })
+    })
+    await step("escape back out to home", async () => {
+      await app.press("Escape")
+      await app.waitForText("quick (1)", { timeout: 15_000 })
+      await app.press("Escape")
+      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await app.press("Escape")
+      await app.waitForText("Ask anything", { timeout: 15_000 })
+    })
+    await app.close()
+    await closeLaunched(launched)
+  },
+)
+
+test(
+  "the tier editor reorders and removes resources with confirmation",
+  { timeout: 240_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal)
+    const app = launched.app
+    await bootTui(launched)
+    await step("seed quick with fake-model and fake-model-2", async () => {
+      await openAdaptiveMenu(app)
+      await openTierMenu(app, 0)
+      await openQuickEditor(app)
+      // The "fake" filter narrows the picker to the two fake models in
+      // catalog order (fake-model first), so the highlighted entry is
+      // fake-model; one ArrowDown then lands on fake-model-2.
+      await addHighlightedModel(app, ["f", "a", "k", "e"], 1)
+      await openQuickEditor(app)
+      await addHighlightedModel(app, ["f", "a", "k", "e", "ArrowDown"], 2)
+    })
+    await step("move the second resource up", async () => {
+      await openQuickEditor(app)
+      await pressAll(app, ["ArrowDown", "ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText(/Resource: fake\/fake-model-2\s/, { timeout: 30_000 })
+      await app.press("Enter")
+      await app.waitForText("quick (2)", { timeout: 30_000 })
+    })
+    await step("the reordered editor puts fake-model-2 first", async () => {
+      await openQuickEditor(app)
+      await pressAll(app, ["ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText(/Resource: fake\/fake-model-2\s/, { timeout: 30_000 })
+    })
+    await step("escaping the remove confirm keeps the resource", async () => {
+      await app.press("Escape")
+      await app.waitForText("quick (2)", { timeout: 15_000 })
+      await openQuickEditor(app)
+      await pressAll(app, ["ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText(/Resource: fake\/fake-model-2\s/, { timeout: 30_000 })
+      await pressAll(app, ["ArrowDown", "ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText("Remove fake/fake-model-2 from quick?", { timeout: 30_000 })
+      await app.press("Escape")
+      await app.waitForText("quick (2)", { timeout: 30_000 })
+      await openQuickEditor(app)
+      await app.waitForText(/fake\/fake-model\s/, { timeout: 15_000 })
+      await app.waitForText(/fake\/fake-model-2\s/, { timeout: 15_000 })
+    })
+    await step("confirming the remove saves and drops the resource", async () => {
+      await pressAll(app, ["ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText(/Resource: fake\/fake-model-2\s/, { timeout: 30_000 })
+      await pressAll(app, ["ArrowDown", "ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText("Remove fake/fake-model-2 from quick?", { timeout: 30_000 })
+      await app.press("Enter")
+      await app.waitForText("quick (1)", { timeout: 30_000 })
+      await openQuickEditor(app)
+      await pressAll(app, ["ArrowDown"])
+      await app.press("Enter")
+      // Only fake-model remains: entering the first resource row must name
+      // it, which also proves the removed label is gone from the list.
+      await app.waitForText(/Resource: fake\/fake-model\s/, { timeout: 30_000 })
+    })
+    await step("escape back out to home", async () => {
+      await app.press("Escape")
+      await app.waitForText("quick (1)", { timeout: 15_000 })
+      await app.press("Escape")
+      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await app.press("Escape")
+      await app.waitForText("Ask anything", { timeout: 15_000 })
+    })
+    await app.close()
+    await closeLaunched(launched)
+  },
+)
+
+test(
+  "pinning a resource shows in status and can be cleared",
+  { timeout: 240_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal)
+    const app = launched.app
+    await bootTui(launched)
+    await step("seed quick with fake-model", async () => {
+      await openAdaptiveMenu(app)
+      await openTierMenu(app, 0)
+      await openQuickEditor(app)
+      await addHighlightedModel(app, ["f", "a", "k", "e"], 1)
+      // The controller loads settings once per /adaptive run and the tier
+      // editor never returns its updates to the main-menu loop, so a
+      // just-added resource is invisible to the pin menu until the flow is
+      // re-entered (the re-open reads the server truth afresh).
+      await app.press("Escape")
+      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await app.press("Escape")
+      await app.waitForText("Ask anything", { timeout: 15_000 })
+      await runAdaptiveCommand(app)
+      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
+    })
+    await step("pin fake/fake-model", async () => {
+      await chooseMainMenuItem(app, 3)
+      await app.waitForText("No pin", { timeout: 30_000 })
+      await app.waitForText("fake/fake-model (quick)", { timeout: 15_000 })
+      await pressAll(app, ["ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
+    })
+    await step("status shows the pinned resource", async () => {
+      await app.press("Enter")
+      await app.waitForText("Adaptive status", { timeout: 30_000 })
+      await app.waitForText("pin: fake/fake-model", { timeout: 15_000 })
+      await app.press("Escape")
+      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+    })
+    await step("clearing the pin restores pin: none", async () => {
+      await chooseMainMenuItem(app, 3)
+      await app.waitForText("No pin", { timeout: 30_000 })
+      await app.press("Enter")
+      await app.waitForText("Health of every configured resource", { timeout: 30_000 })
+      await app.press("Enter")
+      await app.waitForText("Adaptive status", { timeout: 30_000 })
+      await app.waitForText("pin: none", { timeout: 15_000 })
+      await app.press("Escape")
+      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+    })
+    await step("escape back home", async () => {
       await app.press("Escape")
       await app.waitForText("Ask anything", { timeout: 15_000 })
     })
