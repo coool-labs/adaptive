@@ -50,6 +50,7 @@ export default define({
           id: "coool.adaptive.menu",
           title: "Adaptive",
           group: "Adaptive",
+          palette: true,
           slash: { name: "adaptive" },
           run: () => {
             void runAdaptive({ api, view, models }).catch((error: unknown) => {

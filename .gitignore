@@ -7,3 +7,4 @@ coverage
 GOAL.md
 test-artifacts
 .playwright-cli
+.termwright

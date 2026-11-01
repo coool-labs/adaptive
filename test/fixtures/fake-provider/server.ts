@@ -28,6 +28,8 @@ export interface FakeProvider {
 
 export interface FakeProviderOptions {
   host?: string
+  /** Fixed port; 0 (default) picks a free one. The sidecar entry point needs a fixed port. */
+  port?: number
 }
 
 const sleep = (ms: number, timers: Set<NodeJS.Timeout>): Promise<void> =>
@@ -265,7 +267,7 @@ export async function createFakeProvider(
 
   const host = options?.host ?? "127.0.0.1"
   await new Promise<void>((resolve) => {
-    server.listen(0, host, () => {
+    server.listen(options?.port ?? 0, host, () => {
       resolve()
     })
   })

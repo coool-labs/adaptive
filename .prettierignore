@@ -5,3 +5,4 @@ package-lock.json
 GOAL.md
 test-artifacts
 .playwright-cli
+.termwright

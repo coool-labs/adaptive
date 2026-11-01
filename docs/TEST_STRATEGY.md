@@ -40,7 +40,9 @@ Documented limitations (minimal proofs per GOAL):
 
 ## TUI E2E journeys (ADP-043)
 
-`/adaptive`; first-run state; Observe/Control switch; model search; selection; reorder; remove; save; persistence; navigation; Escape/cancel; keyboard-only; status inspection; health/recovery state; validation errors; server restart/reconnect.
+Real PTY (Termwright) against the real OpenCode TUI + fake-provider sidecar: boot/first-run state (empty editor, configured model active); keyboard-only command-palette navigation with Escape/cancel; a full session turn through the provider; 80x24 and wide-dimension runs (`npm run e2e:tui`).
+
+Documented limitation (2.2.5, proven by the minimal reproducible canary in `test/e2e-tui/tui.spec.ts`): the interactive TUI does not load plugin `./tui` bundles from project-config or config-dir discovery — plugin TUI commands (`/adaptive`, and with them the Observe/Control switch, model search/selection/reorder/remove, save/persistence, status/health/validation and restart/reconnect dialog journeys) cannot surface. The canary asserts the plugin command is absent from the palette; a host that mounts plugin TUI bundles flips it and those journeys get implemented.
 
 ## Deterministic fake provider (ADP-039)
 

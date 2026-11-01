@@ -10,7 +10,7 @@ import { ADAPTIVE_RPC_ID } from "../../src/rpc/definition.js"
 
 // import.meta.dirname/url are unreliable under vite-node (not file URLs), so
 // resolve the repo root by walking up to this package's manifest.
-const REPO_ROOT = ((): string => {
+export const REPO_ROOT = ((): string => {
   let dir = process.cwd()
   for (;;) {
     if (

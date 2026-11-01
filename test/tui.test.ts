@@ -134,9 +134,14 @@ describe("tui entry", () => {
       clientPatches: [],
     })
     await tuiPlugin.setup(context)
-    const layer = layers[0] as { commands: { id: string; slash: { name: string } }[] }
+    const layer = layers[0] as {
+      commands: { id: string; slash: { name: string }; palette?: boolean }[]
+    }
     expect(layer.commands[0]?.id).toBe("coool.adaptive.menu")
     expect(layer.commands[0]?.slash.name).toBe("adaptive")
+    // palette:true is what makes the command discoverable in the TUI command
+    // palette (the /adaptive slash flow only lands in the editor).
+    expect(layer.commands[0]?.palette).toBe(true)
   })
 
   it("runs the invite flow through the host dialogs", async () => {
