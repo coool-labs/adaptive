@@ -2,3 +2,6 @@ dist
 coverage
 .scratch
 package-lock.json
+GOAL.md
+test-artifacts
+.playwright-cli

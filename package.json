@@ -35,7 +35,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "plugin-test": "opencode-plugin-test"
+    "plugin-test": "opencode-plugin-test",
+    "e2e:web": "playwright test"
   },
   "peerDependencies": {
     "@opencode/plugin": ">=2.2.1 <3"
@@ -48,6 +49,7 @@
     "@coool/opencode-plugin-test": "github:Hacklone/opencode-plugin-test",
     "@eslint/js": "^9.39.5",
     "@opencode/plugin": "2.2.5",
+    "@playwright/test": "^1.64.1",
     "@types/node": "^24",
     "@vitest/coverage-v8": "^4",
     "eslint": "^9",

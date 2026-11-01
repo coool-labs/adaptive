@@ -24,8 +24,22 @@ const REPO_ROOT = ((): string => {
     dir = parent
   }
 })()
-const HOST_PASSWORD = "adaptive-e2e"
+export const HOST_PASSWORD = "adaptive-e2e"
 const BOOT_TIMEOUT_MS = 90_000
+
+const STARTED_HOSTS: StartedHost[] = []
+
+/**
+ * Closes every host this process started (and removes its temp dirs). The
+ * web E2E teardown cannot carry the live handle across the setup/teardown
+ * module boundary, so the registry is the shared channel.
+ */
+export async function closeAllHosts(): Promise<void> {
+  for (const host of [...STARTED_HOSTS].reverse()) {
+    await host.close()
+  }
+  STARTED_HOSTS.length = 0
+}
 
 // The plugin-context client binds definitions via client.rpc(definition); the
 // raw @opencode/client exposes only the generic call — unwrap it here.
@@ -192,7 +206,7 @@ export async function startHost(
     }
   }
   if (!ready) {
-    child.kill("SIGTERM")
+    child.kill("SIGKILL")
     await provider.close()
     if (owned) {
       rmSync(home, { recursive: true, force: true })
@@ -201,16 +215,6 @@ export async function startHost(
     throw new Error(
       `opencode serve did not become ready within ${String(BOOT_TIMEOUT_MS)}ms; stderr: ${stderr.slice(0, 2000) || bootError}`,
     )
-  }
-
-  const close = async (): Promise<void> => {
-    child.kill("SIGTERM")
-    await provider.close()
-    await wait(300)
-    if (owned) {
-      rmSync(home, { recursive: true, force: true })
-      rmSync(project, { recursive: true, force: true })
-    }
   }
 
   const run = async (input: {
@@ -232,7 +236,31 @@ export async function startHost(
     return { sessionID }
   }
 
-  return { client, baseUrl, provider, stderrLines, home, project, run, close }
+  const close = async (): Promise<void> => {
+    // The host ignores a bare SIGTERM (observed: orphaned `opencode serve`
+    // processes survived it), so give it a short grace period, then SIGKILL
+    // and await exit — a leaked server would keep ports and state files held.
+    child.kill("SIGTERM")
+    const exited = new Promise<void>((resolve) => {
+      child.once("exit", () => {
+        resolve()
+      })
+    })
+    const grace = wait(500).then(() => {
+      child.kill("SIGKILL")
+    })
+    await Promise.race([exited, grace])
+    await exited
+    await provider.close()
+    if (owned) {
+      rmSync(home, { recursive: true, force: true })
+      rmSync(project, { recursive: true, force: true })
+    }
+    STARTED_HOSTS.splice(STARTED_HOSTS.indexOf(started), 1)
+  }
+  const started: StartedHost = { client, baseUrl, provider, stderrLines, home, project, run, close }
+  STARTED_HOSTS.push(started)
+  return started
 }
 
 // The raw POST transport, exposed for wire-level tests (invalid input gates).

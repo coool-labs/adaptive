@@ -29,7 +29,14 @@ Documented limitations (minimal proofs per GOAL):
 
 ## Web E2E journeys (ADP-042)
 
-First install/Observe default; open settings; add model; search; variants; reorder; remove; validation; save; reload persistence; Observe→Control; Control→Observe; shared server settings; health/status display; quota/draining display; unavailable display; recovery display; server disconnect/reconnect; settings synchronization; keyboard accessibility; empty states; error states.
+Real-web coverage (`test/e2e-web/web.spec.ts` via `npm run e2e:web`: Playwright against the real OpenCode v2 web app served by `opencode serve` with the packed plugin on an isolated host; Chromium desktop, Chromium narrow 390x844, WebKit; zero retries):
+
+Password connect → home empty state; wrong password → error state (stays on the form); keyboard-operable connect (pressSequentially + Enter); settings page reachable and renders at every viewport width (narrow reaches Settings through the banner Tabs dialog); documented settings tabs visible; models catalog search finds the configured model and shows its empty state for unknown models; Extensions → Plugins lists `coool.adaptive`; plugin RPC integration from browser page context (settings.get Observe default on first install, settings.set control → reload → persistence → back to observe, invalid patch rejected at the schema gate, status.get mirroring mode/tiers/receipts).
+
+Documented limitations (minimal proofs per GOAL):
+
+- **Plugin GUI surfaces in the web app** (open Adaptive settings, mode switch, health/status/quota/draining/unavailable/recovery displays, receipts preview) cannot load on host 2.2.5: the web SPA mounts plugin GUI contributions only through the desktop-shell bridge (`bridge.pluginGuis()`), never fetches `/api/plugin/gui?id=…`, and `/api/command` lists only native commands — verified by network log and bundle archaeology; the canary test asserts the absence so a future host that mounts plugin GUIs fails the canary and the journeys get implemented. The desktop-shell GUI is covered by the gui unit tests; TUI status display is covered by TUI E2E.
+- **Add model / model search / variants / reorder / remove** as web journeys: the host web settings expose only the model-catalog picker (search + visibility) and OAuth-managed providers; custom providers are "Manage in opencode.json" (file configuration, not a UI journey). Model search and its empty state are covered; catalog mutation journeys are not applicable to a custom-provider host.
 
 ## TUI E2E journeys (ADP-043)
 
