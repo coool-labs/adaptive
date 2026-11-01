@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest"
 import fc from "fast-check"
 import {
-  healthSummary,
+  statusSummary,
   mainMenuOptions,
   modeOptions,
   MAIN_MENU_ITEMS,
@@ -35,10 +35,10 @@ function emptySettings(): SettingsV1 {
 }
 
 describe("main menu", () => {
-  it("pins the menu items and puts health first", () => {
-    expect([...MAIN_MENU_ITEMS]).toEqual(["health", "models", "mode", "pin", "receipts"])
+  it("pins the menu items and puts status first", () => {
+    expect([...MAIN_MENU_ITEMS]).toEqual(["status", "models", "mode", "pin", "receipts"])
     const options = mainMenuOptions(emptySettings(), emptyStatus())
-    expect(options.map((o) => o.title)).toEqual(["Health", "Models", "Mode", "Pin", "Receipts"])
+    expect(options.map((o) => o.title)).toEqual(["Status", "Models", "Mode", "Pin", "Receipts"])
     for (const option of options) {
       expect(typeof option.description).toBe("string")
       expect(option.description?.length ?? 0).toBeGreaterThan(0)
@@ -53,15 +53,15 @@ describe("main menu", () => {
       windowed: true,
       windowUntil: 0,
     }
-    expect(healthSummary(undefined)).toBe("how every configured resource is doing")
-    expect(healthSummary(emptyStatus())).toBe("no models configured yet")
+    expect(statusSummary(undefined)).toBe("how every configured model is doing")
+    expect(statusSummary(emptyStatus())).toBe("no models configured yet")
     expect(
-      healthSummary({ ...emptyStatus(), tiers: { quick: [busy], standard: [], advanced: [busy] } }),
+      statusSummary({ ...emptyStatus(), tiers: { quick: [busy], standard: [], advanced: [busy] } }),
     ).toBe("2 resources · 2 windowed")
     // A healthy inventory omits the windowed note entirely.
     const healthy: TierResourceStatus = { ...busy, windowed: false, health: "healthy" }
     expect(
-      healthSummary({ ...emptyStatus(), tiers: { quick: [healthy], standard: [], advanced: [] } }),
+      statusSummary({ ...emptyStatus(), tiers: { quick: [healthy], standard: [], advanced: [] } }),
     ).toBe("1 resource")
   })
 

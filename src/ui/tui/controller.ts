@@ -12,18 +12,11 @@ import type { OperatingMode } from "../../core/scheduler/types.js"
 import type { TierName } from "../../core/tier-policy/types.js"
 import { TIERS } from "../../core/tier-policy/types.js"
 import type { ModelRef } from "../../core/work-unit/types.js"
-import { sameModelRef } from "../../core/work-unit/types.js"
 import type { SettingsPatch, SettingsV1 } from "../../state/settings/index.js"
 import type { PatchResult } from "../../state/settings/types.js"
 import type { Receipt } from "../../state/receipts/types.js"
 import type { StatusSnapshot } from "../../rpc/status.js"
-import {
-  HEALTH_EMPTY_MESSAGE,
-  healthDetail,
-  healthEntries,
-  healthOverview,
-  type HealthEntry,
-} from "./status.js"
+import { STATUS_EMPTY_MESSAGE, statusPage } from "./status.js"
 import { mainMenuOptions, modeOptions, type MainMenuChoice } from "./menu.js"
 import {
   modelPickerOptions,
@@ -34,7 +27,6 @@ import {
   tierEditorOptions,
   tierMenuOptions,
   variantOptions,
-  healthTag,
   type ModelSummary,
 } from "./tiers.js"
 import { errorText, type SelectOption } from "./options.js"
@@ -147,8 +139,8 @@ export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
       options: mainMenuOptions(settings, status),
     })
     if (choice === undefined) return
-    if (choice === "health") {
-      settings = (await runHealthView(env, feedback)) ?? settings
+    if (choice === "status") {
+      await runStatusView(env)
       continue
     }
     if (choice === "models") {
@@ -180,58 +172,19 @@ async function runModeMenu(
   return applySettings(env, { mode: pick }, feedback)
 }
 
-type HealthOutcome = SettingsV1 | undefined
-
 /**
- * The browsable health view: one option per configured resource (with its
- * live health tag), opening into a detail alert plus actions (pin, filtered
- * receipts). Settings change only through the pin action.
+ * The status view: every configured model with its state on one page,
+ * grouped by tier in priority order. No per-resource selection step — the
+ * page IS the view; Escape returns to the menu.
  */
-async function runHealthView(env: AdaptiveEnv, feedback: SaveFeedback): Promise<HealthOutcome> {
+async function runStatusView(env: AdaptiveEnv): Promise<void> {
   const snapshot = await tryApi(env, () => env.api.status())
-  if (snapshot === undefined) return undefined
-  const entries = healthEntries(snapshot)
-  if (entries.length === 0) {
-    await env.view.alert({ title: "Health", message: HEALTH_EMPTY_MESSAGE })
-    return undefined
-  }
-  // The overview comes first: every resource's state on a single screen.
-  // The per-resource drill-down below is for detail and actions, not the
-  // only way to see health.
-  await env.view.alert({ title: "Health", message: healthOverview(snapshot) })
-  for (;;) {
-    const options: SelectOption<HealthEntry | "back">[] = entries.map((entry) => ({
-      title: `${resourceLabel(entry.status.ref)}${healthTag(entry.status)}`,
-      description: `tier ${entry.tier}`,
-      value: entry,
-    }))
-    options.push({ title: "Back", value: "back" })
-    const pick = await env.view.select({ title: "Inspect a resource", options })
-    if (pick === undefined || pick === "back") return undefined
-    await env.view.alert({
-      title: `Health: ${resourceLabel(pick.status.ref)}`,
-      message: healthDetail(pick, snapshot),
-    })
-    const action = await env.view.select({
-      title: resourceLabel(pick.status.ref),
-      options: [
-        {
-          title: "Pin this resource",
-          value: "pin",
-          description: "always route to this resource when it's available",
-        },
-        { title: "Show receipts for this resource", value: "receipts" },
-        { title: "Back", value: "back" },
-      ],
-    })
-    if (action === "pin") {
-      const next = await applySettings(env, { pin: pick.status.ref }, feedback)
-      if (next !== undefined) return next
-    }
-    if (action === "receipts") {
-      await runReceiptsView(env, pick.status.ref)
-    }
-  }
+  if (snapshot === undefined) return
+  const configured = TIERS.some((tier) => snapshot.tiers[tier].length > 0)
+  await env.view.alert({
+    title: "Status",
+    message: configured ? statusPage(snapshot) : STATUS_EMPTY_MESSAGE,
+  })
 }
 
 type TierEditorOutcome = SettingsV1 | undefined
@@ -371,27 +324,13 @@ async function runPinMenu(
   return applySettings(env, { pin: pick.kind === "clear" ? null : pick.ref }, feedback)
 }
 
-/** Does this receipt describe a decision about `ref`? */
-function receiptMatches(receipt: Receipt, ref: ModelRef): boolean {
-  const decision = receipt.decision
-  if (decision.kind === "apply") return sameModelRef(decision.model, ref)
-  if (decision.kind === "escalate") return sameModelRef(decision.target, ref)
-  if (decision.kind === "observe-only")
-    return receiptMatches({ ...receipt, decision: decision.would }, ref)
-  return false
-}
-
-async function runReceiptsView(env: AdaptiveEnv, filter?: ModelRef): Promise<void> {
+async function runReceiptsView(env: AdaptiveEnv): Promise<void> {
   const all = await tryApi(env, () => env.api.receipts())
   if (all === undefined) return
-  const list = filter === undefined ? all : all.filter((receipt) => receiptMatches(receipt, filter))
-  if (list.length === 0) {
+  if (all.length === 0) {
     await env.view.alert({
       title: "Receipts",
-      message:
-        filter === undefined
-          ? "No decisions recorded yet."
-          : `No decisions recorded for ${resourceLabel(filter)}.`,
+      message: "No decisions recorded yet.",
     })
     return
   }
@@ -399,15 +338,15 @@ async function runReceiptsView(env: AdaptiveEnv, filter?: ModelRef): Promise<voi
   // the rest of the list the title count promises. Viewing a detail returns
   // to the same page; Escape (undefined pick) leaves the browser.
   for (let offset = 0; ;) {
-    const page = receiptPage(list.slice(offset))
-    const hasNext = offset + RECEIPTS_PAGE_SIZE < list.length
+    const page = receiptPage(all.slice(offset))
+    const hasNext = offset + RECEIPTS_PAGE_SIZE < all.length
     const options: SelectOption<Receipt | "next">[] = page.map((receipt) => ({
       title: receiptLine(receipt),
       value: receipt,
     }))
     if (hasNext) options.push({ title: "Next page", value: "next" })
     const pick = await env.view.select({
-      title: `Receipts (${String(list.length)}, newest first)`,
+      title: `Receipts (${String(all.length)}, newest first)`,
       options,
     })
     if (pick === undefined) return

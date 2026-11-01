@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest"
 
 import { INVITE_MESSAGE, INVITE_TITLE, runAdaptive } from "../../../src/ui/tui/controller.js"
 import { errorText } from "../../../src/ui/tui/options.js"
-import { HEALTH_EMPTY_MESSAGE, healthDetail, healthOverview } from "../../../src/ui/tui/status.js"
+import { STATUS_EMPTY_MESSAGE } from "../../../src/ui/tui/status.js"
 import type { Receipt } from "../../../src/state/receipts/index.js"
 import type { SettingsPatch, SettingsV1 } from "../../../src/state/settings/index.js"
 import type { PatchResult } from "../../../src/state/settings/index.js"
@@ -241,165 +241,31 @@ describe("controller: main menu", () => {
   })
 })
 
-describe("controller: health branch", () => {
-  it("lists configured resources and opens the browsable detail", async () => {
+describe("controller: status branch", () => {
+  it("shows every configured model on one page, grouped by tier", async () => {
     const snapshot = statusSnapshot({ tiers: { quick: [], standard: [resource()], advanced: [] } })
     const e = env({ api: fakeApi({ status: () => Promise.resolve(snapshot) }) })
-    const picked = { tier: "standard" as const, status: resource() }
-    e.view.selectQueue.push("health", picked, "back", ...EXIT)
+    e.view.selectQueue.push("status", ...EXIT)
     await runAdaptive(e)
-    // The whole inventory's health is on the first screen; drilling into a
-    // resource is optional.
-    expect(e.view.alerts[0]?.title).toBe("Health")
-    expect(e.view.alerts[0]?.message).toBe(healthOverview(snapshot))
-    expect(e.view.alerts[1]?.title).toBe("Health: prov/m1")
-    expect(e.view.alerts[1]?.message).toBe(healthDetail(picked, snapshot))
-    // The detail is followed by actions, not a dead end.
-    expect(e.view.selectOptions[2]?.map((o) => o.title)).toEqual([
-      "Pin this resource",
-      "Show receipts for this resource",
-      "Back",
-    ])
+    expect(e.view.alerts).toHaveLength(1)
+    expect(e.view.alerts[0]?.title).toBe("Status")
+    // The page is the whole view: no per-resource selection follows — the
+    // loop returns straight to the main menu (whose pick then exits).
+    expect(e.view.selects).toEqual(["Adaptive (observe)", "Adaptive (observe)"])
   })
 
-  it("alerts the empty state when nothing is configured", async () => {
+  it("shows the empty state when nothing is configured", async () => {
     const e = env()
-    e.view.selectQueue.push("health", ...EXIT)
+    e.view.selectQueue.push("status", ...EXIT)
     await runAdaptive(e)
-    expect(e.view.alerts[0]?.message).toBe(HEALTH_EMPTY_MESSAGE)
+    expect(e.view.alerts[0]?.message).toBe(STATUS_EMPTY_MESSAGE)
   })
 
-  it("pins the resource from the health view", async () => {
-    const { e, patches } = envWith({
-      status: () =>
-        Promise.resolve(
-          statusSnapshot({ tiers: { quick: [], standard: [resource()], advanced: [] } }),
-        ),
-    })
-    e.view.selectQueue.push("health", { tier: "standard", status: resource() }, "pin", ...EXIT)
-    await runAdaptive(e)
-    expect(patches).toEqual([{ pin: { providerID: "prov", id: "m1" } }])
-    expect(e.view.toasts.some((t) => t.message === "Settings saved")).toBe(true)
-  })
-
-  it("alerts and stays in the health view when the pin patch is rejected", async () => {
-    const e = env({
-      api: {
-        ...fakeApi({
-          status: () =>
-            Promise.resolve(
-              statusSnapshot({ tiers: { quick: [], standard: [resource()], advanced: [] } }),
-            ),
-        }),
-        setSettings: () => Promise.resolve({ ok: false, errors: ["pin refused"] }),
-      },
-    })
-    e.view.selectQueue.push("health", { tier: "standard", status: resource() }, "pin", ...EXIT)
-    await runAdaptive(e)
-    expect(e.view.alerts.some((a) => a.title === "Invalid settings")).toBe(true)
-  })
-
-  it("shows the filtered empty state when the resource has no receipts", async () => {
-    const e = env({
-      api: fakeApi({
-        status: () =>
-          Promise.resolve(
-            statusSnapshot({ tiers: { quick: [], standard: [resource()], advanced: [] } }),
-          ),
-        receipts: () => Promise.resolve([]),
-      }),
-    })
-    e.view.selectQueue.push(
-      "health",
-      { tier: "standard", status: resource() },
-      "receipts",
-      undefined,
-    )
-    await runAdaptive(e)
-    expect(e.view.alerts.some((a) => a.message === "No decisions recorded for prov/m1.")).toBe(true)
-  })
-
-  it("filters receipts for the picked resource", async () => {
-    const apply = receipt({
-      id: 2,
-      decision: {
-        kind: "apply",
-        model: { providerID: "prov", id: "m1" },
-        tier: "standard",
-        reason: "preferred",
-        evidence: { skipped: [] },
-      },
-    })
-    const other = receipt({
-      id: 3,
-      decision: {
-        kind: "apply",
-        model: { providerID: "prov", id: "zz" },
-        tier: "standard",
-        reason: "preferred",
-        evidence: { skipped: [] },
-      },
-    })
-    const escalated = receipt({
-      id: 4,
-      decision: {
-        kind: "escalate",
-        target: { providerID: "prov", id: "m1" },
-        step: "tier",
-        tier: "advanced",
-        evidence: [],
-        budgetRemaining: 1,
-      },
-    })
-    const observed = receipt({
-      id: 5,
-      decision: {
-        kind: "observe-only",
-        would: {
-          kind: "apply",
-          model: { providerID: "prov", id: "m1" },
-          tier: "standard",
-          reason: "preferred",
-          evidence: { skipped: [] },
-        },
-      },
-    })
-    const parked = receipt({
-      id: 6,
-      decision: { kind: "park", reason: "all-blocked", detail: "every candidate blocked" },
-    })
-    const e = env({
-      api: fakeApi({
-        status: () =>
-          Promise.resolve(
-            statusSnapshot({ tiers: { quick: [], standard: [resource()], advanced: [] } }),
-          ),
-        receipts: () => Promise.resolve([apply, other, escalated, observed, parked]),
-      }),
-    })
-    e.view.selectQueue.push(
-      "health",
-      { tier: "standard", status: resource() },
-      "receipts",
-      undefined,
-      ...EXIT,
-    )
-    await runAdaptive(e)
-    // The receipts browser shows every decision about the picked resource
-    // (its apply, the escalation to it, and an observe-only decision about
-    // it) and hides the rest.
-    expect(e.view.selectOptions[3]?.map((o) => o.title)).toEqual([
-      expect.stringContaining("#2"),
-      expect.stringContaining("#4"),
-      expect.stringContaining("#5"),
-    ])
-  })
-
-  it("toasts when the health view cannot load status, while the menu stays silent", async () => {
+  it("toasts when the status page cannot load, while the menu stays silent", async () => {
     const e = env({ api: failingApi("status", new Error("down")) })
-    e.view.selectQueue.push("health", ...EXIT)
+    e.view.selectQueue.push("status", ...EXIT)
     await runAdaptive(e)
-    // The menu descriptions degrade silently; the health view's own fetch toasts.
+    // The menu descriptions degrade silently; the status view's own fetch toasts.
     expect(e.view.toasts.map((t) => t.message)).toEqual(["down"])
   })
 })

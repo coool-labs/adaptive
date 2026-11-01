@@ -12,12 +12,12 @@ import type { SettingsV1 } from "../../state/settings/index.js"
 import type { SelectOption } from "./options.js"
 import { resourceLabel } from "./tiers.js"
 
-export const MAIN_MENU_ITEMS = ["health", "models", "mode", "pin", "receipts"] as const
+export const MAIN_MENU_ITEMS = ["status", "models", "mode", "pin", "receipts"] as const
 export type MainMenuChoice = (typeof MAIN_MENU_ITEMS)[number]
 
-/** "3 resources · 1 windowed" — the health line under the menu entry. */
-export function healthSummary(status: StatusSnapshot | undefined): string {
-  if (status === undefined) return "how every configured resource is doing"
+/** "3 resources · 1 windowed" — the status line under the menu entry. */
+export function statusSummary(status: StatusSnapshot | undefined): string {
+  if (status === undefined) return "how every configured model is doing"
   const total = TIERS.reduce((sum, tier) => sum + status.tiers[tier].length, 0)
   if (total === 0) return "no models configured yet"
   const windowed = TIERS.reduce(
@@ -40,11 +40,11 @@ export function mainMenuOptions(
 ): SelectOption<MainMenuChoice>[] {
   return MAIN_MENU_ITEMS.map((item) => {
     switch (item) {
-      case "health":
+      case "status":
         return {
-          title: "Health",
+          title: "Status",
           value: item,
-          description: healthSummary(status),
+          description: statusSummary(status),
         }
       case "models":
         return {

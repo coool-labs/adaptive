@@ -107,7 +107,7 @@ describe("tui entry: full flows", () => {
     if (run === undefined) throw new Error("slash command was not registered")
     const selects = dialogs.selectQueue
     // menu: status -> receipts -> mode -> change -> exit
-    selects.push("health", "receipts", "mode", "active", undefined)
+    selects.push("status", "receipts", "mode", "active", undefined)
     run()
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(dialogs.alerts.some((a) => a.message.includes("No models configured yet"))).toBe(true)

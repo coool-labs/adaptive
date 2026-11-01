@@ -4,11 +4,11 @@
  *
  * Reachable journeys: boot/first-run state, keyboard-only palette
  * navigation, the full /adaptive dialog flow (first-run invitation with its
- * follow-up select, the browsable health view with its empty state and
- * per-resource detail, observe→active mode switch with persistence, receipts
+ * follow-up select, the single-page status view with its empty state,
+ * observe→active mode switch with persistence, receipts
  * empty state and detail, Escape cancellation at every level), the tier
  * editor (search-and-add, move-to-top reorder, remove with confirm/cancel,
- * persistence within the session), the pin flow with its menu and health
+ * persistence within the session), the pin flow with its menu and status-page
  * rendering, a full session turn through the fake provider, the reconnect
  * after the background service daemon dies, and dimension runs.
  *
@@ -396,13 +396,13 @@ async function escapeToBase(app: TerminalApp): Promise<void> {
 }
 
 /**
- * From the main menu, activate the highlighted Health entry and wait for the
- * one-screen overview (all resources, tier order). The activating Enter can
- * be dropped while the menu re-renders: retry only while the menu is still
- * open — if an Enter landed somewhere deeper (select, detail), reset instead
- * of pressing blindly.
+ * From the main menu, activate the highlighted Status entry and wait for the
+ * one-page view (every model with its state, grouped by tier). The
+ * activating Enter can be dropped while the menu re-renders: retry only
+ * while the menu is still open — if an Enter landed somewhere deeper, reset
+ * instead of pressing blindly.
  */
-async function openHealthOverview(app: TerminalApp, match: RegExp): Promise<void> {
+async function openStatusPage(app: TerminalApp, match: RegExp): Promise<void> {
   for (let enter = 0; enter < 3; enter++) {
     await app.press("Enter")
     try {
@@ -418,7 +418,7 @@ async function openHealthOverview(app: TerminalApp, match: RegExp): Promise<void
       if (!menuStillOpen) throw new Error("drifted out of the adaptive menu")
     }
   }
-  throw new Error("health overview never opened")
+  throw new Error("status page never opened")
 }
 
 test("the tui boots to the first-run home with the configured model", async ({
@@ -526,15 +526,15 @@ test(
 )
 
 test(
-  "the health view shows its empty state on a fresh install and escape backs out of every level",
+  "the status page shows its empty state on a fresh install and escape backs out of every level",
   { timeout: 120_000 },
   async ({ termwright: tw, terminal }) => {
     const launched = await launchTui(tw, terminal)
     const app = launched.app
     await bootTui(launched)
-    await step("health empty state on a fresh install", async () => {
+    await step("status empty state on a fresh install", async () => {
       await openAdaptiveMenu(app)
-      // The main menu highlights its first option (Health) on open, and its
+      // The main menu highlights its first option (Status) on open, and its
       // description degrades to the nothing-configured line.
       await app.waitForText("no models configured yet", { timeout: 15_000 })
       await app.press("Enter")
@@ -547,7 +547,7 @@ test(
       await app.waitForText("Adaptive (observe)", { timeout: 15_000 })
     })
     await step("escape from the mode menu returns to the menu, not home", async () => {
-      // Mode is the third menu option (Health, Models, Mode, Pin, Receipts).
+      // Mode is the third menu option (Status, Models, Mode, Pin, Receipts).
       await pressAll(app, ["ArrowDown", "ArrowDown"])
       await app.press("Enter")
       await app.waitForText("Adaptive does nothing", { timeout: 30_000 })
@@ -556,7 +556,7 @@ test(
       await app.waitForText("Adaptive (observe)", { timeout: 15_000 })
     })
     await step("the pin menu degrades to an alert with nothing configured", async () => {
-      // A fresh open starts the highlight on Health, so Pin is three rows
+      // A fresh open starts the highlight on Status, so Pin is three rows
       // down; the empty pin menu is an alert, not a select.
       await leaveMenuToBase(app)
       await runAdaptiveCommand(app)
@@ -626,7 +626,7 @@ test(
     await bootTui(launched)
     await step("empty receipts alert", async () => {
       await openAdaptiveMenu(app)
-      // Receipts is the fifth menu option; the highlight starts on Health.
+      // Receipts is the fifth menu option; the highlight starts on Status.
       await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"])
       await app.press("Enter")
       await app.waitForText("No decisions recorded yet.", { timeout: 30_000 })
@@ -712,7 +712,7 @@ test(
 )
 
 test(
-  "the health view shows a windowed resource and its recovery deadline after a failed turn",
+  "the status page shows a windowed resource and its recovery deadline after a failed turn",
   { timeout: 300_000 },
   async ({ termwright: tw, terminal }) => {
     const launched = await launchTui(tw, terminal, { failAfterTitle: true })
@@ -748,7 +748,7 @@ test(
       await backToAdaptiveMenu(app)
       await leaveMenuToBase(app)
     })
-    await step("the health overview shows every resource on one screen", async () => {
+    await step("the status page shows every resource on one screen", async () => {
       await app.type("say done")
       await app.waitForQuiet({ quietMs: 2_000 })
       // The provider answers a quota-shaped 429, so the turn fails instead
@@ -763,11 +763,11 @@ test(
           // keystroke right after the failed turn re-renders the footer;
           // retrying it inside the loop covers that drop.
           await openAdaptiveMenu(app)
-          // Health is the highlighted first menu option; it opens with the
-          // WHOLE inventory on one screen — no per-resource drill needed to
-          // see state. The windowed resource's line carries its state and
-          // the local-clock recovery deadline.
-          await openHealthOverview(app, /rate_limited, windowed\s+until \d{2}:\d{2}/)
+          // Status is the highlighted first menu option; it opens with the
+          // WHOLE inventory on one page — models grouped by tier, one line
+          // per model. The windowed resource's line carries its state and
+          // the local-clock recovery deadline; no selection step follows.
+          await openStatusPage(app, /rate_limited, windowed\s+until \d{2}:\d{2}/)
           return
         } catch (error) {
           if (attempt === 4) throw error
@@ -776,60 +776,6 @@ test(
           // until the base screen is back instead of guessing.
           await escapeToBase(app)
           await app.waitForQuiet({ quietMs: 500 })
-        }
-      }
-    })
-    // Back out cleanly: the next step re-enters from a known state.
-    await escapeToBase(app)
-    await step("the resource detail and actions are reachable from the overview", async () => {
-      // The "Getting started" popup swallows composer typing after the
-      // first turn, so no second turn can refresh the 60s window — this
-      // step must complete inside it. Late duplicate keystrokes can close
-      // a dialog right after its text matched, so every transition settles
-      // and re-verifies before the next press; a drift re-enters the whole
-      // flow from a clean base.
-      const stillThere = async (text: string | RegExp): Promise<boolean> => {
-        try {
-          await app.waitForText(text, { timeout: 2_000 })
-          return true
-        } catch {
-          return false
-        }
-      }
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          await openAdaptiveMenu(app)
-          await openHealthOverview(
-            app,
-            attempt === 0
-              ? /rate_limited, windowed\s+until \d{2}:\d{2}/
-              : /fake\/fake-model — standard/,
-          )
-          // Dismissing the overview reveals the optional per-resource
-          // browser for detail and actions.
-          await app.press("Escape")
-          if (!(await stillThere("Inspect a resource"))) throw new Error("browser lost")
-          await app.waitForQuiet({ quietMs: 1_000 })
-          if (!(await stillThere("Inspect a resource"))) throw new Error("browser closed late")
-          await app.press("Enter")
-          if (!(await stillThere("Health: fake/fake-model"))) throw new Error("detail lost")
-          await app.waitForQuiet({ quietMs: 1_000 })
-          if (!(await stillThere("Health: fake/fake-model"))) throw new Error("detail closed late")
-          await app.waitForText("tier: standard", { timeout: 15_000 })
-          // The window deadline renders as the local wall clock (HH:MM) of
-          // the recovery deadline.
-          await app.waitForText(/window: until \d{2}:\d{2}/, { timeout: 15_000 })
-          await app.waitForText("breaker: ", { timeout: 15_000 })
-          // Dismissing the alert reveals the per-resource action select.
-          await app.press("Escape")
-          if (!(await stillThere("Pin this resource"))) throw new Error("actions lost")
-          await app.waitForQuiet({ quietMs: 1_000 })
-          if (!(await stillThere("Pin this resource"))) throw new Error("actions closed late")
-          await app.waitForText("Show receipts for this resource", { timeout: 15_000 })
-          return
-        } catch (error) {
-          if (attempt === 1) throw error
-          await escapeToBase(app)
         }
       }
     })
@@ -902,7 +848,7 @@ test(
 // between tests; the cleanup journeys themselves are covered by the remove
 // and clear-pin steps below.
 
-/** Activate the main-menu option at `index` (health 0, models 1, mode 2, pin 3, receipts 4). */
+/** Activate the main-menu option at `index` (status 0, models 1, mode 2, pin 3, receipts 4). */
 async function chooseMainMenuItem(app: TerminalApp, index: number): Promise<void> {
   await pressAll(
     app,
@@ -1115,30 +1061,17 @@ test(
       await app.waitForText("Settings saved", { timeout: 30_000 })
       await app.waitForText("pinned to fake/fake-model", { timeout: 30_000 })
       // The patch-reopened menu can keep the highlight on the pin row, so
-      // close it and re-open fresh before entering Health (whose navigation
+      // close it and re-open fresh before entering Status (whose navigation
       // below relies on the fresh menu's first-option highlight).
       await app.press("Escape")
       await app.waitForText("Ask anything", { timeout: 15_000 })
       await runAdaptiveCommand(app)
       await app.waitForText("Adaptive (observe)", { timeout: 30_000 })
     })
-    await step("the health detail reports the pin", async () => {
-      // Health is the highlighted first menu option; it opens with the
-      // one-screen overview, whose line for the pinned (healthy) resource
-      // carries the pin marker.
-      await openHealthOverview(app, /healthy \(pinned\)/)
-      // Dismissing the overview reveals the per-resource browser.
-      await app.press("Escape")
-      await app.waitForText("Inspect a resource", { timeout: 15_000 })
-      await app.press("Enter")
-      await app.waitForText("Health: fake/fake-model", { timeout: 30_000 })
-      await app.waitForText("pin: pinned to this resource", { timeout: 15_000 })
-      // Dismissing the detail reveals the resource's action select; escaping
-      // it returns to the health list, escaping that to the menu.
-      await app.press("Escape")
-      await app.waitForText("Pin this resource", { timeout: 15_000 })
-      await app.press("Escape")
-      await app.waitForText("Inspect a resource", { timeout: 15_000 })
+    await step("the status page marks the pinned resource", async () => {
+      // Status is the highlighted first menu option; the pinned (healthy)
+      // resource's line carries the pin marker on the one-page view.
+      await openStatusPage(app, /healthy \(pinned\)/)
       await app.press("Escape")
       await app.waitForText(MENU_TITLE, { timeout: 15_000 })
     })

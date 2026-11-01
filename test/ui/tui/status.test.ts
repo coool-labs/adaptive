@@ -2,11 +2,11 @@
 import { describe, expect, it } from "vitest"
 import fc from "fast-check"
 import {
-  healthOverview,
   clockTime,
-  healthDetail,
   healthEntries,
-  HEALTH_EMPTY_MESSAGE,
+  statusLine,
+  statusPage,
+  STATUS_EMPTY_MESSAGE,
 } from "../../../src/ui/tui/status.js"
 import type { StatusSnapshot, TierResourceStatus } from "../../../src/rpc/status.js"
 
@@ -32,7 +32,7 @@ function snapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot {
   }
 }
 
-describe("health view", () => {
+describe("status page", () => {
   it("flattens configured resources in tier order", () => {
     const s = snapshot({
       tiers: {
@@ -57,42 +57,9 @@ describe("health view", () => {
     expect(clockTime(at)).toBe("18:42")
   })
 
-  it("details health, breaker, and the window deadline", () => {
-    const at = new Date(2026, 0, 1, 9, 5).getTime()
-    const s = snapshot({ pin: { providerID: "prov", id: "m1" } })
-    const text = healthDetail(
-      {
-        tier: "standard",
-        status: entry({ health: "rate_limited", windowed: true, windowUntil: at }),
-      },
-      s,
-    )
-    expect(text).toContain("health: rate_limited")
-    expect(text).toContain("breaker: closed")
-    expect(text).toContain("window: until 09:05")
-    expect(text).toContain("tier: standard")
-    expect(text).toContain("pin: pinned to this resource")
-  })
-
-  it("details a window whose deadline is unknown", () => {
-    const text = healthDetail(
-      { tier: "quick", status: entry({ windowed: true, windowUntil: null }) },
-      snapshot(),
-    )
-    expect(text).toContain("window: active (deadline unknown)")
-  })
-
-  it("omits the pin line for other resources", () => {
-    const text = healthDetail(
-      { tier: "quick", status: entry({ ref: { providerID: "prov", id: "other" } }) },
-      snapshot({ pin: { providerID: "prov", id: "m1" } }),
-    )
-    expect(text).not.toContain("pin:")
-  })
-
-  it("summarizes every resource on one screen (overview)", () => {
+  it("groups the models by tier with the user's priority order inside each group", () => {
     const at = new Date(2026, 0, 1, 18, 42).getTime()
-    const text = healthOverview(
+    const text = statusPage(
       snapshot({
         pin: { providerID: "prov", id: "m2" },
         tiers: {
@@ -104,26 +71,37 @@ describe("health view", () => {
               windowed: true,
               windowUntil: at,
             }),
+            entry({ ref: { providerID: "prov", id: "m0" } }),
           ],
           advanced: [
             entry({
               ref: { providerID: "prov", id: "m3" },
-              health: "healthy",
               breaker: "open",
             }),
           ],
         },
       }),
     )
-    const lines = text.split("\n")
-    expect(lines).toHaveLength(3)
-    expect(lines[0]).toBe("prov/m2 — quick — healthy (pinned)")
-    expect(lines[1]).toBe("prov/m1 — standard — rate_limited, windowed until 18:42")
-    expect(lines[2]).toBe("prov/m3 — advanced — healthy, breaker open")
+    expect(text).toBe(
+      [
+        "quick:",
+        "  prov/m2 — healthy (pinned)",
+        "standard:",
+        "  prov/m1 — rate_limited, windowed until 18:42",
+        "  prov/m0 — healthy",
+        "advanced:",
+        "  prov/m3 — healthy, breaker open",
+      ].join("\n"),
+    )
   })
 
-  it("marks an unknown window deadline and a probing breaker in the overview", () => {
-    const text = healthOverview(
+  it("omits empty tiers instead of printing empty groups", () => {
+    const text = statusPage(snapshot({ tiers: { quick: [entry()], standard: [], advanced: [] } }))
+    expect(text).toBe("quick:\n  prov/m1 — healthy")
+  })
+
+  it("marks an unknown window deadline and a probing breaker", () => {
+    const text = statusPage(
       snapshot({
         tiers: {
           quick: [
@@ -136,8 +114,22 @@ describe("health view", () => {
       }),
     )
     const lines = text.split("\n")
-    expect(lines[0]).toBe("prov/m1 — quick — rate_limited, windowed (deadline unknown)")
-    expect(lines[1]).toBe("prov/m1 — quick — healthy, probing")
+    expect(lines[1]).toBe("  prov/m1 — rate_limited, windowed (deadline unknown)")
+    expect(lines[2]).toBe("  prov/m1 — healthy, probing")
+  })
+
+  it("renders one line per resource without a tier prefix (statusLine)", () => {
+    const at = new Date(2026, 0, 1, 9, 5).getTime()
+    expect(
+      statusLine(entry({ health: "rate_limited", windowed: true, windowUntil: at }), null),
+    ).toBe("prov/m1 — rate_limited, windowed until 09:05")
+    expect(statusLine(entry(), { providerID: "prov", id: "m1" })).toBe("prov/m1 — healthy (pinned)")
+    expect(
+      statusLine(entry({ ref: { providerID: "prov", id: "other" } }), {
+        providerID: "prov",
+        id: "m1",
+      }),
+    ).toBe("prov/other — healthy")
   })
 
   it("never throws over arbitrary snapshots (property)", () => {
@@ -174,18 +166,17 @@ describe("health view", () => {
         tierArb,
         (mode, pin, quick, standard, advanced) => {
           const s = snapshot({ mode, pin, tiers: { quick, standard, advanced } })
-          for (const e of healthEntries(s)) {
-            const text = healthDetail(e, s)
-            expect(text).toContain("health:")
-            expect(text).toContain("breaker:")
+          const lines = statusPage(s)
+            .split("\n")
+            .filter((line) => line.length > 0 && !line.endsWith(":"))
+          // One status line per configured resource; group headers only for
+          // non-empty tiers.
+          expect(lines).toHaveLength(quick.length + standard.length + advanced.length)
+          for (const line of lines) {
+            expect(line.startsWith("  ")).toBe(true)
+            expect(line).toMatch(/ — /)
           }
-          // Every resource appears exactly once in the overview.
-          expect(
-            healthOverview(s)
-              .split("\n")
-              .filter((line) => line.length > 0),
-          ).toHaveLength(quick.length + standard.length + advanced.length)
-          expect(HEALTH_EMPTY_MESSAGE.length).toBeGreaterThan(0)
+          expect(STATUS_EMPTY_MESSAGE.length).toBeGreaterThan(0)
         },
       ),
       { numRuns: 100 },
