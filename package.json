@@ -14,9 +14,9 @@
       "types": "./dist/index.d.ts"
     },
     "./tui": {
+      "types": "./dist/tui.d.ts",
       "import": "./dist/tui.js",
-      "default": "./dist/tui.js",
-      "types": "./dist/tui.d.ts"
+      "default": "./dist/tui.js"
     },
     "./rpc": {
       "import": "./dist/rpc.js",
@@ -34,6 +34,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && vite build --config guiconfig.ts",
+    "pack:check": "vite-node scripts/pack-check.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "coverage": "vitest run --coverage --project unit",

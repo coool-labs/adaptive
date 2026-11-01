@@ -1,14 +1,33 @@
 # covers: ["ADP-049"]
 name: CI
 
+# All gates from ADP-049, no paid credentials anywhere: tests run against the
+# deterministic fake provider and opencode hosts installed from npm.
+#
+# Job layout:
+# - gates: format, lint, typecheck, unit/integration/property/runtime tests,
+#   100% coverage, build, pack + publish dry-run, traceability (Node matrix).
+#   The runtime-e2e project inside `npm test` boots real opencode hosts, so
+#   the CLI is installed from npm and OPENCODE_BIN points at it.
+# - plugin-test: packed-plugin tests against OpenCode 2.2.1 / current / latest
+#   (the tool self-installs each host from npm).
+# - web-e2e: Playwright journeys (Chromium + WebKit, desktop + narrow) against
+#   a real host.
+# - tui-e2e: Termwright PTY journeys. The PTY backend is darwin-only, so this
+#   leg runs on macOS; Node is pinned to a Termwright-certified major (22/24).
+
 on:
   push:
     branches: [main]
   pull_request:
 
+env:
+  OPENCODE_VERSION: "2.2.5"
+
 jobs:
-  verify:
+  gates:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -20,9 +39,55 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+      - run: npm i -g @opencode/cli@$OPENCODE_VERSION
+      - run: echo "OPENCODE_BIN=$(which opencode)" >> "$GITHUB_ENV"
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
       - run: npm run coverage
       - run: npm run build
+      - run: npm run pack:check
+      - run: npm run traceability
+
+  plugin-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run plugin-test
+
+  web-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm i -g @opencode/cli@$OPENCODE_VERSION
+      - run: echo "OPENCODE_BIN=$(which opencode)" >> "$GITHUB_ENV"
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npm run e2e:web
+
+  tui-e2e:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm i -g @opencode/cli@$OPENCODE_VERSION
+      - run: echo "OPENCODE_BIN=$(which opencode)" >> "$GITHUB_ENV"
+      - run: npm run e2e:tui

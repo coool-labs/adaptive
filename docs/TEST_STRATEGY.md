@@ -66,6 +66,12 @@ Local OpenAI/OpenCode-compatible HTTP+SSE server scripting: success, streaming, 
 
 Vitest + V8 coverage, thresholds 100/100/100/100 on first-party `src/**`. Only genuinely generated/vendor code may be excluded, clearly identified. No `istanbul ignore`, no empty tests, no implementation-trivia assertions. `npm run coverage` runs the `unit` project only: real-host runtime E2E under V8 instrumentation is pathologically slow and timing-flaky (receipt polling against an instrumented host), and `src/**` coverage is complete from the deterministic suite alone; runtime E2E still runs in every `npm test` and in `verify:release`.
 
+## Packaging and CI (ADP-048/049/050)
+
+- `npm run pack:check` (`scripts/pack-check.ts`): builds a real tarball with `npm pack`, inspects it — required entrypoints (`dist/index.js`, `dist/tui.js`, `dist/rpc.js`, `dist/gui-experimental.cjs`, their `.d.ts`, `LICENSE`, `README.md`, `package.json`), forbidden content (`src/`, `test/`, `docs/`, `scripts/`, `node_modules`, `GOAL.md`, `coverage/`), manifest fields (name / semver version / MIT) — then runs `npm publish --dry-run`. Report artifact: `test-artifacts/pack-check.json`. The static publish contract is additionally asserted in `test/package.test.ts` (exact exports key set, MIT, minimal runtime dependencies).
+- CI (`.github/workflows/ci.yml`): `gates` job (ubuntu, Node 20/22/24: format, lint, typecheck, `npm test` — including the real-host runtime E2E project —, coverage, build, pack:check, traceability; the opencode CLI is installed from npm and picked up through `OPENCODE_BIN`), `plugin-test` job (packed plugin against OpenCode 2.2.1 / current / latest, self-installed hosts), `web-e2e` job (ubuntu; Chromium + WebKit via `playwright install --with-deps`), `tui-e2e` job (macOS runner — the Termwright PTY backend is darwin-only — with Node pinned to a Termwright-certified major 24). No paid credentials anywhere; all provider traffic goes to the fake provider.
+- `npm run verify:release` (`scripts/verify-release.ts`) runs the whole chain in one command, aborting at the first failure: format:check → lint → typecheck → test → coverage → build → pack:check → plugin-test → e2e:web → e2e:tui (Node 22/24 PATH prefix on newer runtimes, macOS-only PTY) → traceability.
+
 ## Regression policy (ADP-046)
 
 Every behavioral bug: failing-first test → fix → wider suite → keep test forever. Enforced in CONTRIBUTING.md and applied throughout the project including the final adversarial review.

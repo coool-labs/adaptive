@@ -161,7 +161,9 @@ export async function startHost(
     if (!/API_TOKEN|API_KEY|_TOKEN$/.test(key)) childEnv[key] = value
   }
   const child: ChildProcess = spawn(
-    "/opt/homebrew/bin/opencode",
+    // CI runners install opencode elsewhere (npm i -g @opencode/cli); the
+    // homebrew path is only the local default.
+    process.env["OPENCODE_BIN"] ?? "/opt/homebrew/bin/opencode",
     ["serve", "--port", String(port), "--hostname", "127.0.0.1"],
     {
       cwd: project,

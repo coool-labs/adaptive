@@ -3,9 +3,6 @@
  * Publish-readiness gate (ADP-050): runs the complete local verification
  * pipeline in one command, aborting at the first failing step. Run via
  * `npm run verify:release`.
- *
- * Note: packaging validation (npm pack / npm publish --dry-run with tarball
- * inspection) is enforced by the packaging task's script and CI, not here.
  */
 import { spawnSync } from "node:child_process"
 
@@ -16,6 +13,7 @@ const STEPS = [
   "test",
   "coverage",
   "build",
+  "pack:check",
   "plugin-test",
   "e2e:web",
   "e2e:tui",

@@ -15,8 +15,15 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { REPO_ROOT } from "../runtime-e2e/helpers.js"
 
-const NODE24 = `${process.env["HOME"] ?? ""}/.nvm/versions/node/v24.15.0/bin/node`
-const OPENCODE = "/opt/homebrew/bin/opencode"
+// The fake-provider sidecar needs a Termwright-certified Node (22/24). Locally
+// the default runtime may be newer (v26), so fall back to the nvm install; on
+// CI the job pins Node 24, so the current runtime is already certified.
+const sidecarNode = [22, 24].includes(Number.parseInt(process.version.slice(1), 10))
+  ? process.execPath
+  : `${process.env["HOME"] ?? ""}/.nvm/versions/node/v24.15.0/bin/node`
+// CI runners install opencode elsewhere (npm i -g @opencode/cli); the
+// homebrew path is only the local default.
+const OPENCODE = process.env["OPENCODE_BIN"] ?? "/opt/homebrew/bin/opencode"
 const PASSWORD = "adaptive-e2e"
 
 const stripTokens = (env: NodeJS.ProcessEnv): Record<string, string> => {
@@ -62,7 +69,7 @@ async function launchTui(tw: TermwrightFixture, terminal: TerminalFixture): Prom
   // never touched.
   const port = 40_000 + 2 * Math.floor(Math.random() * 9_000)
   const sidecar = await tw.sidecars.launch({
-    command: [NODE24, sidecarEntry, "--port", String(port)],
+    command: [sidecarNode, sidecarEntry, "--port", String(port)],
     ready: { output: "FAKE_PROVIDER_READY", stream: "stdout" },
   })
   expect(sidecar.pid).toBeGreaterThan(0)
