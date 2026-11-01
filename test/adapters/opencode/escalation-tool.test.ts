@@ -1,6 +1,9 @@
 /**
- * Escalation tool tests (T-18, ADP-015): the Standard Schema v1 input
- * contract validates reason+evidence, and `execute` re-validates
+ * Escalation tool tests (T-18, ADP-015): the input schema is a plain JSON
+ * Schema object — the host builds the model-facing tool definition by
+ * converting the schema and silently drops tools whose schema it cannot
+ * convert (a Standard Schema implementation was dropped with "Schema vendor
+ * does not support JSON Schema conversion" on 2.2.5). `execute` re-validates
  * defensively before recording against the session's current unit.
  */
 // covers: ["ADP-015"]
@@ -26,15 +29,32 @@ describe("escalation tool", () => {
     expect(tool.description).toContain("reason")
   })
 
-  it("validates through the standard schema contract", () => {
-    const success = tool.input["~standard"].validate({ reason: "r", evidence: "e" })
-    expect(success).toEqual({ value: { reason: "r", evidence: "e" } })
-    const failure = tool.input["~standard"].validate({ reason: "" })
-    expect(failure).toEqual({
-      issues: [{ message: "reason and evidence are required non-empty strings" }],
+  it("exposes the input as a host-convertible JSON Schema", () => {
+    // The host converts the tool's input schema into the model-facing
+    // definition; anything it cannot convert silently removes the tool from
+    // the agent's tool list, so the JSON Schema shape is the load-bearing
+    // contract.
+    expect(tool.input).toEqual({
+      type: "object",
+      properties: {
+        reason: {
+          type: "string",
+          minLength: 1,
+          description: "Short reason why the current work unit needs stronger capability.",
+        },
+        evidence: {
+          type: "string",
+          minLength: 1,
+          description: "Concrete evidence of the capability gap: what failed or was blocked.",
+        },
+      },
+      required: ["reason", "evidence"],
+      additionalProperties: false,
     })
-    expect(tool.input["~standard"].version).toBe(1)
-    expect(tool.input["~standard"].vendor).toBe("coool.adaptive")
+    // Code-mode-bundled tools are only reachable through the host's
+    // `execute` tool; a direct call fails with "No tool named ... is
+    // currently available" (observed on 2.2.5).
+    expect(tool.options).toEqual({ codemode: false })
   })
 
   it("records a valid request against the session", async () => {

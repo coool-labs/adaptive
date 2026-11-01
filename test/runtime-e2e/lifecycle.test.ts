@@ -193,6 +193,133 @@ describe("runtime e2e: supervision lifecycle", () => {
   )
 
   it(
+    "records an agent escalation request through the adaptive_escalate tool and escalates on the unit's failure",
+    { timeout: 180_000 },
+    async () => {
+      const host = await startHost({
+        models: { "fake-model": { name: "Fake Model" }, "fake-model-2": { name: "Fake Model 2" } },
+      })
+      hosts.push(host)
+      await rpc(host).settings.set({
+        version: 1,
+        mode: "control",
+        tiers: {
+          quick: [],
+          standard: [{ providerID: "fake", id: "fake-model" }],
+          advanced: [{ providerID: "fake", id: "fake-model-2" }],
+        },
+      })
+
+      // The agent asks for stronger capability through the plugin's
+      // adaptive_escalate tool mid-unit, the post-tool model call fails with
+      // a definitive 413, and the recorded agent request joins the
+      // escalation evidence. Per-model queues: title success, the tool call,
+      // then the failing call (the last behavior repeats).
+      host.provider.setModelScripts({
+        "fake-model": {
+          behaviors: [
+            scenarioScript("success").behaviors[0],
+            {
+              body: JSON.stringify({
+                id: "chatcmpl-fake",
+                object: "chat.completion",
+                created: 1_700_000_000,
+                model: "fake-model",
+                choices: [
+                  {
+                    index: 0,
+                    message: {
+                      role: "assistant",
+                      content: null,
+                      tool_calls: [
+                        {
+                          id: "call-esc-1",
+                          type: "function",
+                          function: {
+                            name: "adaptive_escalate",
+                            arguments: JSON.stringify({
+                              reason: "The task needs stronger reasoning",
+                              evidence: "The current model cannot fit the requested corpus",
+                            }),
+                          },
+                        },
+                      ],
+                    },
+                    finish_reason: "tool_calls",
+                  },
+                ],
+                usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+              }),
+            },
+            {
+              status: 413,
+              body: JSON.stringify({ error: { message: "context length exceeded" } }),
+            },
+          ],
+        },
+        "fake-model-2": { behaviors: [scenarioScript("success").behaviors[0]] },
+      })
+
+      const run = await host.run({
+        script: overflow413,
+        text: "summarize a huge corpus",
+      })
+
+      const list = await pollReceipts(
+        host,
+        (all) =>
+          all.some(
+            (r) =>
+              r.decision.kind === "escalate" &&
+              r.decision.evidence.some((entry) => entry.kind === "agent-request"),
+          ),
+        60_000,
+      )
+      const escalate = list.find(
+        (r) =>
+          r.decision.kind === "escalate" &&
+          r.decision.evidence.some((entry) => entry.kind === "agent-request"),
+      )
+      expect(escalate).toBeDefined()
+      if (escalate?.decision.kind !== "escalate") return
+      expect(escalate.decision.step).toBe("tier")
+      expect(escalate.decision.tier).toBe("advanced")
+      expect(escalate.decision.target).toEqual({ providerID: "fake", id: "fake-model-2" })
+      expect(escalate.sessionID).toBe(run.sessionID)
+      // The tool's structured request reached the decision: the agent-request
+      // evidence carries the reason the agent gave (detail is
+      // `<reason>: <evidence>`, bounded).
+      const agentEvidence = escalate.decision.evidence.find(
+        (entry) => entry.kind === "agent-request",
+      )
+      expect(agentEvidence?.detail).toContain("stronger reasoning")
+
+      // The owned continuation runs on the escalated resource and succeeds;
+      // its outcome attaches to the (unit-less, adopted) escalate receipt.
+      const continued = await pollReceipts(
+        host,
+        (all) =>
+          all.some(
+            (r) =>
+              r.sessionID === run.sessionID &&
+              r.decision.kind === "escalate" &&
+              r.outcome?.status === "succeeded",
+          ),
+        60_000,
+      )
+      expect(
+        continued.some(
+          (r) =>
+            r.sessionID === run.sessionID &&
+            r.decision.kind === "escalate" &&
+            r.outcome?.status === "succeeded",
+        ),
+      ).toBe(true)
+      await stop(host, run.sessionID)
+    },
+  )
+
+  it(
     "classifies quota exhaustion and falls back within the tier",
     { timeout: 180_000 },
     async () => {
