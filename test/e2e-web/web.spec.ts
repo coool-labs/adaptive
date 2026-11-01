@@ -7,24 +7,9 @@
  * Semantic locators only (roles + accessible names); zero retries per
  * playwright.config.ts.
  */
-import { readFileSync } from "node:fs"
 import { expect, test, type Page } from "@playwright/test"
 import { HOST_PASSWORD } from "../runtime-e2e/helpers.js"
-import { HOST_STATE_PATH } from "./state.js"
-
-const hostUrl = (): string =>
-  (JSON.parse(readFileSync(HOST_STATE_PATH, "utf8")) as { url: string }).url
-
-/** Connect the SPA to the test host through its own password form. */
-const connect = async (page: Page, password: string): Promise<void> => {
-  await page.goto(hostUrl())
-  await page.getByRole("button", { name: "Use password" }).click()
-  await page.getByRole("textbox", { name: "Password" }).fill(password)
-  await page.getByRole("button", { name: "Connect" }).click()
-  // The success signal is viewport-neutral ("Nothing here yet" renders on
-  // desktop and narrow); the Projects sidebar is desktop-only.
-  await expect(page.getByText("Nothing here yet")).toBeVisible()
-}
+import { connect, hostUrl, rpc, rpcRaw } from "./app.js"
 
 /** Open the host settings from the home view, on either viewport layout. */
 const openSettings = async (page: Page): Promise<void> => {
@@ -177,31 +162,3 @@ test.describe("plugin RPC integration", () => {
     expect(status["receipts"]).toBe(0)
   })
 })
-
-/** POST the plugin RPC from inside the page (same origin, basic auth). */
-async function rpc(page: Page, method: string, input?: unknown): Promise<Record<string, unknown>> {
-  const response = await rpcRaw(page, method, input === undefined ? {} : { input })
-  expect(response.ok, `rpc ${method} failed`).toBe(true)
-  const payload = response.body as { output?: Record<string, unknown> }
-  return payload.output ?? {}
-}
-
-async function rpcRaw(
-  page: Page,
-  method: string,
-  body: unknown,
-): Promise<{ ok: boolean; body: unknown }> {
-  const basic = Buffer.from(`opencode:${HOST_PASSWORD}`).toString("base64")
-  return page.evaluate(
-    async ({ url, method, body, basic }) => {
-      const response = await fetch(`${url}/api/rpc/coool.adaptive/${method}`, {
-        method: "POST",
-        headers: { authorization: `Basic ${basic}`, "content-type": "application/json" },
-        body: JSON.stringify(body),
-      })
-      const parsed: unknown = await response.json()
-      return { ok: response.ok, body: parsed }
-    },
-    { url: hostUrl(), method, body, basic },
-  )
-}

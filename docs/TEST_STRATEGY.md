@@ -44,6 +44,15 @@ Real PTY (Termwright) against the real OpenCode TUI + fake-provider sidecar: boo
 
 Documented limitation (2.2.5, proven by the minimal reproducible canary in `test/e2e-tui/tui.spec.ts`): the interactive TUI does not load plugin `./tui` bundles from project-config or config-dir discovery — plugin TUI commands (`/adaptive`, and with them the Observe/Control switch, model search/selection/reorder/remove, save/persistence, status/health/validation and restart/reconnect dialog journeys) cannot surface. The canary asserts the plugin command is absent from the palette; a host that mounts plugin TUI bundles flips it and those journeys get implemented.
 
+## Cross-surface sync E2E (ADP-044)
+
+`test/e2e-web/sync.spec.ts` (part of `npm run e2e:web`, all three browser projects) proves the server is the single source of truth in both directions against one shared real host:
+
+- Web → other surface: a settings change made from the real web app arrives live on a second typed client — the `settings-changed` event is observed on the host event stream and the client's `settings.get`/`status.get` reflect the change.
+- Other surface → Web: a settings change made by the second typed client is observed live (`settings-changed`) and visible in a freshly loaded web app (`settings.get` and `status.get` mirror it) — no surface-local settings state anywhere.
+
+Surface fidelity (both limitations are proven by canaries, not assumed): the web side speaks the plugin RPC from inside the page because the plugin GUI does not mount in the browser-served app (Web E2E canary above); the second client is bound to the exact RPC definition `src/tui.ts` binds (`context.client.rpc(adaptiveRpc)`) because the TUI does not load plugin bundles (TUI E2E canary above). Subscription liveness is proven before each journey with a same-value probe patch (a valid no-op patch still succeeds and emits) — no fixed sleeps.
+
 ## Deterministic fake provider (ADP-039)
 
 Local OpenAI/OpenCode-compatible HTTP+SSE server scripting: success, streaming, tool calls, partial execution, 429 (+Retry-After), quota/reset headers, 503, timeout, disconnect, malformed response, context rejection, recovery after N calls. Real OpenCode talks to it in E2E; unit/integration layers use in-process fakes typed against the same shapes.
