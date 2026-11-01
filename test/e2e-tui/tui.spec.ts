@@ -8,7 +8,8 @@
  * Escape cancellation at every level), the tier editor (search-and-add,
  * reorder, remove with confirm/cancel, persistence within the session), the
  * pin flow with its status rendering, a full session turn through the fake
- * provider, and dimension runs.
+ * provider, the reconnect after the background service daemon dies, and
+ * dimension runs.
  *
  * Host facts (empirical, OpenCode 2.2.5):
  * - Plugin TUI bundles mount only from the HOME-based global config
@@ -230,6 +231,11 @@ async function submitTurn(app: TerminalApp, text: string): Promise<void> {
  */
 async function closeLaunched(launched: Launched): Promise<void> {
   await launched.sidecar.close()
+  killServiceDaemon(launched)
+}
+
+/** Kill the TUI's background service daemon by its configured port. */
+function killServiceDaemon(launched: Launched): void {
   const listener = spawnSync(
     "lsof",
     ["-t", `-iTCP:${String(launched.servicePort)}`, "-sTCP:LISTEN"],
@@ -687,6 +693,41 @@ test(
       await app.waitForText("Health of every configured resource", { timeout: 15_000 })
       await leaveMenuToBase(app)
     })
+    await app.close()
+    await closeLaunched(launched)
+  },
+)
+
+test(
+  "the tui reconnects after its background service restarts",
+  { timeout: 300_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal)
+    const app = launched.app
+    await bootTui(launched)
+    await step("killing the daemon loses the service connection", async () => {
+      killServiceDaemon(launched)
+      // The dead transport surfaces as a transient "ECONNREFUSED" banner
+      // with a "Restarting service…" toast instead of exiting — observed on
+      // live probes, but the banner is not guaranteed to still be up when
+      // the poller looks, so its absence is tolerated; the asserted behavior
+      // is the recovery below.
+      try {
+        await app.waitForText("ECONNREFUSED", { timeout: 8_000 })
+      } catch {
+        // The banner already flashed by; recovery is what matters.
+      }
+    })
+    await step("a turn runs again after the service restarts", async () => {
+      // The TUI restarts its background service on its own; the completed
+      // turn (the latency status marker) proves the fresh daemon serves
+      // model calls end to end. The settle gives the restart time to finish
+      // before the first submit, and submitTurn's Enter retries absorb a
+      // submit that lands while the service is still coming back.
+      await app.waitForQuiet({ quietMs: 10_000 })
+      await submitTurn(app, "say done")
+    })
+    await leaveMenuToBase(app)
     await app.close()
     await closeLaunched(launched)
   },
