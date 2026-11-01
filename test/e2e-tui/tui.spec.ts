@@ -167,6 +167,33 @@ async function bootTui(launched: Launched): Promise<void> {
 }
 
 /**
+ * Submit a prompt and wait until the turn has actually completed. The
+ * latency status line ("Build · <model> · <N>ms") only appears after a
+ * finished turn, so it is a real completion marker — unlike waiting for the
+ * reply text, which also matches the typed prompt itself. The host can drop
+ * the Enter keystroke right after per-key typing (the same drop the palette
+ * shows right after opening), so Enter is retried until the latency marker
+ * proves the turn ran; with the fake provider answering in well under a
+ * second, a completed turn always wins the race against the next retry.
+ * The one-time "Getting started" onboarding popup that appears over the
+ * home screen afterwards does not block dialog navigation, so it is left up.
+ */
+async function submitTurn(app: TerminalApp, text: string): Promise<void> {
+  await app.type(text)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await app.press("Enter")
+    try {
+      await app.waitForText(/· \d+ms/, { timeout: 4_000 })
+      break
+    } catch (error) {
+      if (attempt === 4) throw error
+      await app.waitForQuiet({ quietMs: 500 })
+    }
+  }
+  await app.waitForQuiet({ quietMs: 1_000 })
+}
+
+/**
  * Close the TUI and its sidecar, then kill the TUI's background service
  * daemon: it binds the configured managed service port and outlives the TUI
  * process, so a suite that spawns many TUIs would leak one daemon per test.
@@ -293,21 +320,20 @@ test("the command palette is keyboard-operable and escapable", async ({
   await closeLaunched(launched)
 })
 
-test("a session turn runs through the fake provider and answers", async ({
-  termwright: tw,
-  terminal,
-}) => {
-  const launched = await launchTui(tw, terminal)
-  await bootTui(launched)
-  await step("session turn", async () => {
-    await launched.app.type("say done")
-    await launched.app.press("Enter")
-    // The sidecar's success script answers "done".
-    await launched.app.waitForText("done", { timeout: 120_000 })
-  })
-  await launched.app.close()
-  await closeLaunched(launched)
-})
+test(
+  "a session turn runs through the fake provider and answers",
+  { timeout: 120_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal)
+    await bootTui(launched)
+    await step("session turn", async () => {
+      // The sidecar's success script answers "done".
+      await submitTurn(launched.app, "say done")
+    })
+    await launched.app.close()
+    await closeLaunched(launched)
+  },
+)
 
 test(
   "the adaptive command opens the first-run invitation and confirming lands in the main menu",
@@ -459,6 +485,45 @@ test(
       await app.waitForText("Health of every configured resource", { timeout: 15_000 })
       await app.press("Escape")
       await app.waitForText("Ask anything", { timeout: 15_000 })
+    })
+    await app.close()
+    await closeLaunched(launched)
+  },
+)
+
+test(
+  "the receipts flow shows the recorded decision after a session turn",
+  { timeout: 180_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal)
+    const app = launched.app
+    await bootTui(launched)
+    await step("session turn records a routing decision", async () => {
+      await submitTurn(app, "say done")
+    })
+    await step("the receipts dialog lists the real decision line", async () => {
+      await openAdaptiveMenu(app)
+      await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"])
+      await app.press("Enter")
+      // Observe mode with no tiers configured: the admission deferred with
+      // reason routing-defer / tier-not-configured — the dialog must show
+      // that recorded decision, not the empty state.
+      await app.waitForText(/defer: routing-defer/, { timeout: 30_000 })
+    })
+    await step("escape dismisses the alert and closes the menu", async () => {
+      await app.press("Escape")
+      await app.waitForText("Health of every configured resource", { timeout: 15_000 })
+      await app.press("Escape")
+      // After a completed turn the home screen carries the one-time
+      // "Getting started" onboarding popup, whose ✕ is mouse-only — Escape
+      // does not dismiss it — and the composer placeholder is no longer
+      // shown, so either popup text or the placeholder proves the alert and
+      // menu layers are closed.
+      try {
+        await app.waitForText("Getting started", { timeout: 5_000 })
+      } catch {
+        await app.waitForText("Ask anything", { timeout: 15_000 })
+      }
     })
     await app.close()
     await closeLaunched(launched)
