@@ -50,6 +50,9 @@ export default Plugin.define({
         onIdle: async (report) => {
           await supervisor.handleReport(report)
         },
+        onPrompt: async (report) => {
+          await supervisor.handleReport(report)
+        },
       },
       { capture: isCodexHeaderName },
     )

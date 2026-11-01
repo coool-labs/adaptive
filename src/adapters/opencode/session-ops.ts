@@ -23,6 +23,18 @@ export interface SessionOpsHooks {
    * can tag the switch as Adaptive's own (`noteOwnSwitch`).
    */
   readonly beforeSwitch?: (sessionID: string, model: ModelRef) => void
+  /**
+   * Called before the adapter prompts a continuation, so wiring can mark the
+   * upcoming prompt-hook admission as owned (the continuation belongs to the
+   * active unit and must not re-admit).
+   */
+  readonly beforePrompt?: (sessionID: string) => void
+  /**
+   * Called when the prompted call settles (success or failure), whether or
+   * not the prompt hook fired — the counterpart that bounds the ownership
+   * mark's lifetime.
+   */
+  readonly afterPrompt?: (sessionID: string) => void
 }
 
 /** Build the supervisor's continuation ops on top of the host session domain. */
@@ -41,7 +53,15 @@ export function sessionOps(session: SessionOpsSource, hooks?: SessionOpsHooks): 
       })
     },
     prompt: async (sessionID, text) => {
-      await session.prompt({ sessionID, text })
+      hooks?.beforePrompt?.(sessionID)
+      try {
+        await session.prompt({ sessionID, text })
+      } finally {
+        // The ownership mark is consumed by the prompt hook; if the prompt
+        // never reaches the hook (session gone, host error), the mark must
+        // not outlive the attempt and swallow a later user prompt.
+        hooks?.afterPrompt?.(sessionID)
+      }
     },
   }
 }

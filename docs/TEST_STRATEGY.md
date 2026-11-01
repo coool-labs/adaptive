@@ -17,7 +17,15 @@ Deterministic by construction: injected clocks everywhere; no sleeps; no paid mo
 
 ## Runtime E2E scenarios (ADP-041)
 
-Quick routing; Standard routing; Advanced routing; explicit tier override; Observe mode; Control mode; variant/effort escalation; tier escalation; same-tier fallback; preferred-resource recovery; compatibility rejection; context-window rejection; quota exhaustion; short throttling; provider outage; draining; Retry-After; circuit breaker; single half-open probe; multiple concurrent sessions; subagent behavior; partial tool side effects; clean continuation; parking before dispatch; restart while parked; resume after recovery; fail-open internal error; headless execution; native `/goal` through ≥1 model transition; native `/goal` through temporary capacity loss (if safely supported).
+Real-host coverage (`test/runtime-e2e/` against `opencode serve` + the fake provider; supervision, routing, lifecycle, rpc files):
+
+Quick routing, Standard routing, Advanced routing, agent-tier hint (warm-up + warm session) and explicit pin override (routing); Observe mode, Control mode, Observe≡Control decision parity (supervision); same-tier fallback, short throttling + Retry-After (supervision quota/rate-limit flows); provider outage, circuit breaker, single half-open probe, parking before dispatch (lifecycle breaker; supervision parks); tier escalation on context overflow (lifecycle 413 → escalate → owned continuation); quota exhaustion and its native-retry exemption (lifecycle); restart while parked, resume after recovery (lifecycle persisted-parked restart); durable tool side effects through owned recovery without replay (lifecycle marker file); multiple concurrent sessions (supervision); subagent children supervised as their own units (lifecycle subagent); user cancellation never fails over (supervision); fail-open on corrupted persisted settings (routing); headless execution (every scenario runs on bare `opencode serve` with no UI surface — ADP-045 by construction); RPC surface defaults/persistence/validation/receipts (rpc).
+
+Documented limitations (minimal proofs per GOAL):
+
+- **Draining** is unit-covered only: the drain health event has no runtime emitter in the host wiring (verified by source search); no runtime trigger exists.
+- **Variant/effort escalation** is unit-covered: escalating at runtime requires a model inventory entry with a variant ladder; the fake provider's host config exposes none, and strength is never guessed from variant names (ADP-004).
+- **Native `/goal` through a mid-goal model transition** is impossible on host 2.2.5: goal auto-continuation turns run inside one execution unit with no prompt hook and no execution boundary between them; the lifecycle /goal test instead proves the GOAL.md flow (goal starts → preferred fails → veto → owned recovery continues the goal on the fallback → completes → preferred again at the next boundary) and records the limitation.
 
 ## Web E2E journeys (ADP-042)
 

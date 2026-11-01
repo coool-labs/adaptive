@@ -1474,3 +1474,386 @@ describe("supervisor: state API for surfaces", () => {
     expect(list.map((receipt) => receipt.id)).toEqual([2, 1])
   })
 })
+
+describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
+  const PROMPT_S1 = { kind: "prompt", sessionID: "s1" } as const
+
+  function observeStorage(): KeyFailStorage {
+    const storage = new KeyFailStorage("unused")
+    seed(
+      storage,
+      SETTINGS_KEY,
+      settingsJSON("observe", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
+    )
+    return storage
+  }
+
+  /** One-candidate standard tier: the only tier shape where a due breaker's
+   * half-open probe is the admission's choice rather than a passed-over
+   * sibling (the scheduler prefers a ready candidate over a probe). */
+  function singleStorage(): KeyFailStorage {
+    const storage = new KeyFailStorage("unused")
+    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    return storage
+  }
+
+  function retryInput(): {
+    sessionID: string
+    model: { providerID: string; id: string }
+    error: { type: string; message: string; status: number; retryAfterMs?: number }
+    attempt: number
+    decision: { retry: boolean; delay: number }
+  } {
+    return {
+      sessionID: "s1",
+      model: ref("prov", "a"),
+      error: { type: "UnknownError", message: "", status: 429 },
+      attempt: 1,
+      decision: { retry: true, delay: 100 },
+    }
+  }
+
+  /** Five countable outage failures against the session's last model. */
+  async function trip(supervisor: Supervisor, now: number): Promise<void> {
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: now,
+      model: ref("prov", "a"),
+    })
+    for (let i = 0; i < 5; i += 1) {
+      await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
+    }
+  }
+
+  it("admits at prompt time: applies, records a unit-less receipt, and the opened unit adopts it", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = controlStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual(["switch:s1:prov/a"])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts).toHaveLength(1)
+    expect(receipts[0]?.unitID).toBeUndefined()
+    expect(receipts[0]?.decision).toMatchObject({
+      kind: "apply",
+      reason: "preferred",
+      model: ref("prov", "a"),
+    })
+    // The unit the prompt opened consumes the marker (no re-route) and
+    // adopts the prompt-time receipt, so outcomes attach to it.
+    await supervisor.handleReport(STARTED_S1)
+    const adopted = parseReceiptsPayload(storedReceipts(storage))
+    expect(adopted).toHaveLength(1)
+    expect(adopted[0]?.unitID).toBe("s1#1")
+    await supervisor.handleReport({ kind: "execution-succeeded", sessionID: "s1", at: 20 })
+    const done = parseReceiptsPayload(storedReceipts(storage))
+    expect(done[0]?.outcome).toEqual({ status: "succeeded" })
+  })
+
+  it("observe mode ignores the prompt report entirely", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = observeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual([])
+    expect(storedReceipts(storage)).toBeUndefined()
+  })
+
+  it("skips admission for an owned continuation prompt (no receipt, no switch)", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = controlStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    const input = retryInput()
+    await supervisor.handleRetry(input)
+    expect(input.decision).toEqual({ retry: false })
+    await flush()
+    // The owned recovery settled, switched to the sibling and prompted; the
+    // prompt hook that fires for that continuation must not re-admit.
+    const logAfterVeto = [...session.log]
+    expect(logAfterVeto).toContain("prompt:s1:" + CONTINUATION_PROMPT)
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual(logAfterVeto)
+    expect(storedReceipts(storage)).toBeUndefined()
+  })
+
+  it("fail-open: a failing prompt admission defers and execution-started still routes", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = singleStorage()
+    const model = {
+      transform: () => Promise.reject(new Error("inventory unavailable")),
+    } as unknown as ModelSource
+    const supervisor = new Supervisor({
+      session: session.source as unknown as SupervisorSessionSource,
+      model,
+      storage: storage.source,
+      clock: () => 1000,
+    })
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual([])
+    let receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts).toHaveLength(1)
+    expect(receipts[0]?.unitID).toBeUndefined()
+    expect(receipts[0]?.decision).toEqual({
+      kind: "defer",
+      reason: "routing-defer",
+      detail: "internal error",
+    })
+    // No marker was set, so the opened unit routes itself (and fails open
+    // the same way, with its own unit-scoped receipt).
+    await supervisor.handleReport(STARTED_S1)
+    receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts).toHaveLength(2)
+    expect(receipts[1]?.unitID).toBe("s1#1")
+  })
+
+  it("a prompt-admitted probe episode's failure reopens the breaker instead of wedging half-open", async () => {
+    let now = 0
+    const clock = (): number => now
+    const session = new FakeSupervisorSession()
+    const storage = singleStorage()
+    const supervisor = makeSupervisor({ storage, session, clock })
+    await trip(supervisor, now)
+    now = 40_000
+    await supervisor.handleReport(PROMPT_S1)
+    let receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts[0]?.decision).toMatchObject({ kind: "apply", reason: "probe" })
+    expect(
+      (receipts[0]?.decision as { evidence: { probeId?: string } }).evidence.probeId,
+    ).toBeDefined()
+    // The unit opens (marker consumed, ticket adopted), then the probe
+    // episode fails: the ticket reports the failure and the breaker
+    // reopens with the doubled window (due at 100_000).
+    await supervisor.handleReport(STARTED_S1)
+    await supervisor.handleReport({
+      kind: "execution-failed",
+      sessionID: "s1",
+      at: now,
+      error: { type: "UnknownError", message: "", status: 503 },
+    })
+    now = 50_000
+    await supervisor.handleReport(PROMPT_S1)
+    receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts.at(-1)?.decision).toEqual({
+      kind: "park",
+      reason: "all-blocked",
+      detail: "breaker-open",
+    })
+  })
+
+  it("an interrupted prompt-admitted probe re-arms the same window without doubling", async () => {
+    let now = 0
+    const clock = (): number => now
+    const session = new FakeSupervisorSession()
+    const storage = singleStorage()
+    const supervisor = makeSupervisor({ storage, session, clock })
+    await trip(supervisor, now)
+    now = 40_000
+    await supervisor.handleReport(PROMPT_S1)
+    await supervisor.handleReport(STARTED_S1)
+    await supervisor.handleReport({
+      kind: "execution-interrupted",
+      sessionID: "s1",
+      at: now,
+      reason: "user",
+    })
+    // Re-armed at 40_000 with the base 30s window (a cancelled probe is no
+    // health evidence): still blocked at 50_000, and the blocker names the
+    // breaker — not a probe in flight, which a wedged record would report.
+    now = 50_000
+    await supervisor.handleReport(PROMPT_S1)
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts.at(-1)?.decision).toEqual({
+      kind: "park",
+      reason: "all-blocked",
+      detail: "breaker-open",
+    })
+  })
+
+  it("a superseded probe unit reports its lost ticket at the close boundary", async () => {
+    let now = 0
+    const clock = (): number => now
+    const session = new FakeSupervisorSession()
+    const storage = singleStorage()
+    const supervisor = makeSupervisor({ storage, session, clock })
+    await trip(supervisor, now)
+    now = 40_000
+    await supervisor.handleReport(PROMPT_S1)
+    await supervisor.handleReport(STARTED_S1)
+    // A superseding start replaces the probe unit before it terminates; the
+    // close cleanup reports the lost ticket so the breaker re-arms.
+    await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: now })
+    now = 50_000
+    await supervisor.handleReport(PROMPT_S1)
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts.at(-1)?.decision).toEqual({
+      kind: "park",
+      reason: "all-blocked",
+      detail: "breaker-open",
+    })
+  })
+
+  it("a prompt with a pin admits the pinned model and carries no tier", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    seed(
+      storage,
+      SETTINGS_KEY,
+      settingsJSON("control", { standard: [wireRef("prov", "a")] }, wireRef("prov", "b")),
+    )
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual(["switch:s1:prov/b"])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts[0]?.tier).toBeUndefined()
+    expect(receipts[0]?.decision).toMatchObject({
+      kind: "apply",
+      reason: "pin",
+      model: ref("prov", "b"),
+    })
+    // The unit opens: adopted, and the marker carried no tier to record.
+    await supervisor.handleReport(STARTED_S1)
+    const adopted = parseReceiptsPayload(storedReceipts(storage))
+    expect(adopted).toHaveLength(1)
+    expect(adopted[0]?.unitID).toBe("s1#1")
+  })
+
+  it("a prompt-admitted probe episode's success closes the breaker", async () => {
+    let now = 0
+    const clock = (): number => now
+    const session = new FakeSupervisorSession()
+    const storage = singleStorage()
+    const supervisor = makeSupervisor({ storage, session, clock })
+    await trip(supervisor, now)
+    now = 40_000
+    await supervisor.handleReport(PROMPT_S1)
+    await supervisor.handleReport(STARTED_S1)
+    await supervisor.handleReport({ kind: "execution-succeeded", sessionID: "s1", at: now })
+    // The probe succeeded: the breaker closed and the preferred resource is
+    // applied again on the next admission.
+    now = 41_000
+    await supervisor.handleReport(PROMPT_S1)
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts.at(-1)?.decision).toMatchObject({
+      kind: "apply",
+      reason: "preferred",
+      model: ref("prov", "a"),
+    })
+  })
+
+  it("a variant-'default' failure observation lands on the bare model key", async () => {
+    const now = 0
+    const clock = (): number => now
+    const session = new FakeSupervisorSession()
+    const storage = singleStorage()
+    const supervisor = makeSupervisor({ storage, session, clock })
+    // The host reports base-model calls with variant "default" (2.2.5); the
+    // observation must count against the bare model the inventory offers.
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: now,
+      model: { providerID: "prov", id: "a", variant: "default" },
+    })
+    for (let i = 0; i < 5; i += 1) {
+      await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
+    }
+    await supervisor.handleReport(PROMPT_S1)
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts.at(-1)?.decision).toEqual({
+      kind: "park",
+      reason: "all-blocked",
+      detail: "breaker-open",
+    })
+  })
+
+  it("keeps the ownership mark across nested owned prompts until each settles", async () => {
+    const log: string[] = []
+    const gates: (() => void)[] = []
+    const source = {
+      get: () => Promise.resolve({ sessionID: "s1" }),
+      wait: () => Promise.resolve(),
+      switchModel: (input: { sessionID: string; model: { providerID: string; id: string } }) => {
+        log.push(`switch:${input.model.id}`)
+        return Promise.resolve()
+      },
+      prompt: (input: { sessionID: string; text: string }) => {
+        log.push(`prompt:${input.text}`)
+        return new Promise((resolve) => {
+          gates.push(() => {
+            resolve({ sessionID: "s1" })
+          })
+        })
+      },
+    }
+    const session = { source } as unknown as FakeSupervisorSession
+    const storage = controlStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    // Two overlapping owned recoveries: each marks the session before its
+    // prompt and only the last settle releases the in-flight window.
+    await supervisor.handleRetry(retryInput())
+    await flush()
+    await supervisor.handleRetry(retryInput())
+    await flush()
+    expect(log).toEqual([
+      "switch:b",
+      "prompt:" + CONTINUATION_PROMPT,
+      "switch:b",
+      "prompt:" + CONTINUATION_PROMPT,
+    ])
+    gates[0]?.()
+    gates[1]?.()
+    await flush()
+    // The prompt hooks for those owned prompts never fired in this fake; the
+    // mark survives them and skips the next prompt report's admission.
+    await supervisor.handleReport(PROMPT_S1)
+    expect(log).toHaveLength(4)
+    expect(storedReceipts(storage)).toBeUndefined()
+  })
+
+  it("the prompt admission survives a receipts write failure at adoption", async () => {
+    const errors = spyErrors()
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage(RECEIPTS_KEY)
+    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.handleReport(PROMPT_S1)
+    await supervisor.handleReport(STARTED_S1)
+    expect(errors.lines.join("\n")).toContain("[coool.adaptive] receipts:")
+    errors.restore()
+  })
+
+  it("a veto-consumed probe reports through the continuation episode it starts", async () => {
+    let now = 0
+    const clock = (): number => now
+    const session = new FakeSupervisorSession()
+    const storage = singleStorage()
+    const supervisor = makeSupervisor({ storage, session, clock })
+    await trip(supervisor, now)
+    now = 40_000
+    const input = retryInput()
+    input.error = { type: "UnknownError", message: "", status: 503 }
+    await supervisor.handleRetry(input)
+    expect(input.decision).toEqual({ retry: false })
+    await flush()
+    // The continuation's own prompt hook is skipped (owned prompt), the
+    // opened unit carries the probe ticket, and its failure reports the
+    // probe — reopening with the doubled window instead of wedging.
+    await supervisor.handleReport(PROMPT_S1)
+    await supervisor.handleReport(STARTED_S1)
+    await supervisor.handleReport({
+      kind: "execution-failed",
+      sessionID: "s1",
+      at: now,
+      error: { type: "UnknownError", message: "", status: 503 },
+    })
+    now = 50_000
+    await supervisor.handleReport(PROMPT_S1)
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts.at(-1)?.decision).toEqual({
+      kind: "park",
+      reason: "all-blocked",
+      detail: "breaker-open",
+    })
+  })
+})

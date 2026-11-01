@@ -61,3 +61,41 @@ describe("sessionOps", () => {
     expect(log).toEqual(["switch:s1:p1/m1"])
   })
 })
+
+describe("sessionOps prompt ownership marks", () => {
+  it("marks before the prompt and clears after it settles", async () => {
+    const log: string[] = []
+    const ops = sessionOps(fakeSessionOps(log), {
+      beforePrompt: (sessionID) => log.push(`beforePrompt:${sessionID}`),
+      afterPrompt: (sessionID) => log.push(`afterPrompt:${sessionID}`),
+    })
+    await ops.prompt("s1", "continue from current state")
+    expect(log).toEqual([
+      "beforePrompt:s1",
+      "prompt:s1:continue from current state",
+      "afterPrompt:s1",
+    ])
+  })
+
+  it("clears the mark even when the host prompt fails", async () => {
+    const log: string[] = []
+    const source = fakeSessionOps(log)
+    const failing = {
+      ...source,
+      prompt: (input: { sessionID: string; text: string }) => {
+        log.push(`prompt:${input.sessionID}:${input.text}`)
+        return Promise.reject(new Error("host gone"))
+      },
+    }
+    const ops = sessionOps(failing, {
+      beforePrompt: (sessionID) => log.push(`beforePrompt:${sessionID}`),
+      afterPrompt: (sessionID) => log.push(`afterPrompt:${sessionID}`),
+    })
+    await expect(ops.prompt("s1", "continue from current state")).rejects.toThrow("host gone")
+    expect(log).toEqual([
+      "beforePrompt:s1",
+      "prompt:s1:continue from current state",
+      "afterPrompt:s1",
+    ])
+  })
+})

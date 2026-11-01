@@ -21,7 +21,14 @@ import {
   storedSettings,
 } from "./supervisor/helpers.js"
 
-const HOOK_NAMES = ["retry", "context", "model.request", "http.response", "experimental.idle"]
+const HOOK_NAMES = [
+  "retry",
+  "context",
+  "model.request",
+  "http.response",
+  "experimental.idle",
+  "prompt",
+]
 
 /** A structural host context over the fake session/model/storage/event. */
 function fakeContext(options: {
@@ -81,7 +88,7 @@ describe("plugin entry", () => {
     expect(adaptivePlugin.id).toBe(PLUGIN_ID)
   })
 
-  it("registers the five session hooks and the event subscription", async () => {
+  it("registers the six session hooks and the event subscription", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
     seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
@@ -137,7 +144,7 @@ describe("plugin entry", () => {
     await new Promise((resolve) => {
       setTimeout(resolve, 0)
     })
-    // Five hook registrations were disposed (tags 1..5 after their pending
+    // Six hook registrations were disposed (tags 1..6 after their pending
     // markers) and the event pump aborted quietly.
     const disposedTags = session.disposed.filter(
       (entry) =>
@@ -145,9 +152,10 @@ describe("plugin entry", () => {
         entry !== "pending:2" &&
         entry !== "pending:3" &&
         entry !== "pending:4" &&
-        entry !== "pending:5",
+        entry !== "pending:5" &&
+        entry !== "pending:6",
     )
-    expect(disposedTags.sort()).toEqual(["1", "2", "3", "4", "5"])
+    expect(disposedTags.sort()).toEqual(["1", "2", "3", "4", "5", "6"])
     expect(events.signal()?.aborted).toBe(true)
   })
 
@@ -354,5 +362,23 @@ describe("plugin entry: rpc surface", () => {
     const result = (await handlers["settings.set"]?.({ mode: "observe" })) as { ok: boolean }
     expect(result.ok).toBe(true)
     expect(storedSettings(storage).mode).toBe("observe")
+  })
+})
+
+describe("prompt hook through the entry", () => {
+  it("routes the prompt report into admission (switch + receipt at prompt time)", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    seed(storage, SETTINGS_KEY, settingsJSON("control", { standard: [wireRef("prov", "a")] }))
+    const events = fakeEvents()
+    const cleanup = (await adaptivePlugin.setup(
+      fakeContext({ storage, session, events }),
+    )) as () => void
+    await session.call("prompt", { sessionID: "s1" })
+    expect(session.log).toContain("switch:s1:prov/a")
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts).toHaveLength(1)
+    expect(receipts[0]?.unitID).toBeUndefined()
+    cleanup()
   })
 })

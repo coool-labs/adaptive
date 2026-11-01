@@ -750,3 +750,46 @@ describe("receipt properties", () => {
     )
   })
 })
+
+describe("ReceiptStore.adoptUnit", () => {
+  test("stamps the opened unit onto the session's pending unit-less receipts", async () => {
+    const storage = new FakeReceiptsStorage()
+    const store = new ReceiptStore(storage)
+    await store.record(input({ unitID: undefined, decision: applyDecision() }))
+    await store.record(input({ unitID: "s#9" }))
+    const updated = await store.adoptUnit("s", "s#1")
+    expect(updated).toBe(1)
+    const snapshot = store.snapshot()
+    expect(snapshot[0]?.unitID).toBe("s#1")
+    expect(snapshot[1]?.unitID).toBe("s#9")
+    expect(storage.writes).toBe(3)
+  })
+
+  test("leaves receipts that already carry a unit or an outcome alone", async () => {
+    const storage = new FakeReceiptsStorage()
+    const store = new ReceiptStore(storage)
+    const withOutcome = await store.record(input({ unitID: undefined, decision: applyDecision() }))
+    await store.attachOutcome({ sessionID: "s" }, { status: "succeeded" })
+    await store.record(input({ unitID: "s#1" }))
+    await store.record(input({ sessionID: "other" }))
+    const pending = await store.record(input({ unitID: undefined, decision: applyDecision() }))
+    const updated = await store.adoptUnit("s", "s#2")
+    expect(updated).toBe(1)
+    const snapshot = store.snapshot()
+    expect(snapshot.find((r) => r.id === withOutcome.id)?.unitID).toBeUndefined()
+    expect(snapshot.find((r) => r.id === withOutcome.id)?.outcome).toEqual({ status: "succeeded" })
+    expect(snapshot.find((r) => r.id === pending.id)?.unitID).toBe("s#2")
+    expect(storage.writes).toBe(6)
+  })
+})
+
+describe("ReceiptStore.adoptUnit (no match)", () => {
+  test("stamps nothing and writes nothing when the session has no pending receipts", async () => {
+    const storage = new FakeReceiptsStorage()
+    const store = new ReceiptStore(storage)
+    await store.record(input({ unitID: undefined }))
+    const updated = await store.adoptUnit("other", "other#1")
+    expect(updated).toBe(0)
+    expect(storage.writes).toBe(1)
+  })
+})

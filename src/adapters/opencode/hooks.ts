@@ -14,7 +14,7 @@ import type { SessionDomain, SessionRetry } from "@opencode/plugin/promise/sessi
 /** The session surface the hooks actually use (structural — fixture-friendly). */
 export type SessionHookSource = Pick<SessionDomain, "hook">
 import { contextModelRequest, hookModelRequest, mapHttpResponse } from "./report.js"
-import type { HttpResponseReport, IdleReport, ModelRequestReport } from "./types.js"
+import type { HttpResponseReport, IdleReport, ModelRequestReport, PromptReport } from "./types.js"
 
 export interface SessionHookHandlers {
   /** Raw retry hook input; wiring decides and mutates `input.decision`. */
@@ -22,6 +22,8 @@ export interface SessionHookHandlers {
   readonly onModelRequest: (report: ModelRequestReport) => Promise<void> | void
   readonly onHttpResponse: (report: HttpResponseReport) => Promise<void> | void
   readonly onIdle: (report: IdleReport) => Promise<void> | void
+  /** Awaited before the turn's model resolution — the admission boundary. */
+  readonly onPrompt: (report: PromptReport) => Promise<void> | void
 }
 
 /** Optional hook behavior supplied by the wiring. */
@@ -52,5 +54,8 @@ export async function registerSessionHooks(
   const idle = await session.hook("experimental.idle", (input) =>
     handlers.onIdle({ kind: "idle", sessionID: input.sessionID }),
   )
-  return [retry, context, modelRequest, httpResponse, idle]
+  const prompt = await session.hook("prompt", (input) =>
+    handlers.onPrompt({ kind: "prompt", sessionID: input.sessionID }),
+  )
+  return [retry, context, modelRequest, httpResponse, idle, prompt]
 }

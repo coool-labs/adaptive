@@ -86,6 +86,25 @@ export class ReceiptStore {
     return updated
   }
 
+  /**
+   * Stamps the unit that just opened onto the session's pending unit-less
+   * admission receipts (recorded in the awaited prompt hook, before the unit
+   * existed). After adoption the receipts carry the unitID, so outcomes
+   * attach to them like any unit-scoped receipt. Receipts that already carry
+   * an outcome are left alone.
+   */
+  async adoptUnit(sessionID: string, unitID: string): Promise<number> {
+    let updated = 0
+    this.#receipts = this.#receipts.map((receipt) => {
+      if (receipt.unitID !== undefined || receipt.outcome !== undefined) return receipt
+      if (receipt.sessionID !== sessionID) return receipt
+      updated++
+      return { ...receipt, unitID }
+    })
+    if (updated > 0) await this.#persist()
+    return updated
+  }
+
   async #persist(): Promise<void> {
     const payload: ReceiptsPayload = {
       version: RECEIPTS_VERSION,

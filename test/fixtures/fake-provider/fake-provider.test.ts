@@ -130,6 +130,60 @@ describe("fake provider scenarios", () => {
     expect(text.endsWith("data: [DONE]\n\n")).toBe(true)
   })
 
+  it("synthesizes SSE chunks from a JSON success body when the request streams", async () => {
+    const provider = await start("success")
+    const response = await fetch(`${provider.url}${CHAT_PATH}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: FAKE_MODEL_ID,
+        messages: [{ role: "user", content: "hi" }],
+        stream: true,
+      }),
+    })
+    expect(response.status).toBe(200)
+    expect(response.headers.get("content-type")).toBe("text/event-stream")
+    const text = await response.text()
+    expect(text).toContain('"object":"chat.completion.chunk"')
+    expect(text).toContain('"content":"done"')
+    expect(text).toContain('"finish_reason":"stop"')
+    expect(text.endsWith("data: [DONE]\n\n")).toBe(true)
+  })
+
+  it("synthesizes tool-call chunks from a JSON tool-call body when the request streams", async () => {
+    const provider = await start("tool-calls")
+    const response = await fetch(`${provider.url}${CHAT_PATH}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: FAKE_MODEL_ID,
+        messages: [{ role: "user", content: "hi" }],
+        stream: true,
+      }),
+    })
+    const text = await response.text()
+    expect(text).toContain('"tool_calls"')
+    expect(text).toContain('"finish_reason":"tool_calls"')
+    expect(text.endsWith("data: [DONE]\n\n")).toBe(true)
+  })
+
+  it("keeps error statuses as plain JSON even when the request streams", async () => {
+    const provider = await start("rate-limited")
+    const response = await fetch(`${provider.url}${CHAT_PATH}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: FAKE_MODEL_ID,
+        messages: [{ role: "user", content: "hi" }],
+        stream: true,
+      }),
+    })
+    expect(response.status).toBe(429)
+    expect(response.headers.get("content-type")).toBe("application/json")
+    const payload = (await response.json()) as { error: { message: string } }
+    expect(payload.error.message).toContain("rate limit")
+  })
+
   it("scenario tool-calls: returns a function tool call", async () => {
     const provider = await start("tool-calls")
     const response = await post(provider.url)

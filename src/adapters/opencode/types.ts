@@ -72,5 +72,18 @@ export interface IdleReport {
   sessionID: string
 }
 
+/**
+ * User-prompt report from the `session.hook("prompt")` hook. The hook is
+ * awaited BEFORE the turn's model resolution, so admission performed here
+ * lands on the very turn that triggered it — the event pump's
+ * execution-started report is asynchronous and races the turn (empirically
+ * verified on opencode 2.2.5).
+ */
+export interface PromptReport {
+  kind: "prompt"
+  sessionID: string
+}
+
 /** Everything the adapter forwards to the supervisor. */
-export type EventReport = ExecutionReport | ModelRequestReport | HttpResponseReport | IdleReport
+export type EventReport =
+  ExecutionReport | ModelRequestReport | HttpResponseReport | IdleReport | PromptReport

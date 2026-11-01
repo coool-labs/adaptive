@@ -36,14 +36,14 @@ Requirements with stable IDs: `docs/REQUIREMENTS.md` (`ADP-xxx`).
   layers — every abstraction must name the concrete duplication, boundary,
   lifecycle, or testability problem it solves.
 - **No dead code**: no TODO/FIXME placeholders, no commented-out code, no
-  meaningless comments. Comments explain *why* (invariants, empirical
+  meaningless comments. Comments explain _why_ (invariants, empirical
   findings), never restate the code.
 
 ## Product invariants (violating any of these is a bug, not a feature)
 
 - **Capability and availability are separate.** Infra failure (429, quota,
-  timeout, 503, outage) triggers horizontal recovery *within the required
-  tier*, never capability escalation. Escalation happens only on structured
+  timeout, 503, outage) triggers horizontal recovery _within the required
+  tier_, never capability escalation. Escalation happens only on structured
   capability evidence (explicit request, reviewer rejection, deterministic
   verification failure, repeated structured failure, explicit blocker) with
   the schema requiring reason + evidence.

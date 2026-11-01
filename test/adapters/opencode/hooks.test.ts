@@ -9,6 +9,7 @@ const HOOK_NAMES = [
   "model.request",
   "http.response",
   "experimental.idle",
+  "prompt",
 ] as const
 
 describe("registerSessionHooks", () => {
@@ -19,6 +20,7 @@ describe("registerSessionHooks", () => {
       onModelRequest: () => undefined,
       onHttpResponse: () => undefined,
       onIdle: () => undefined,
+      onPrompt: () => undefined,
     })
     expect([...session.registered.keys()].sort()).toEqual([...HOOK_NAMES].sort())
     expect(registrations).toHaveLength(HOOK_NAMES.length)
@@ -31,6 +33,7 @@ describe("registerSessionHooks", () => {
       onModelRequest: () => undefined,
       onHttpResponse: () => undefined,
       onIdle: () => undefined,
+      onPrompt: () => undefined,
     })
     for (const registration of registrations) {
       await registration.dispose()
@@ -49,6 +52,7 @@ describe("registerSessionHooks", () => {
       onModelRequest: () => undefined,
       onHttpResponse: () => undefined,
       onIdle: () => undefined,
+      onPrompt: () => undefined,
     })
     const input = {
       sessionID: "s1",
@@ -73,6 +77,7 @@ describe("registerSessionHooks", () => {
       },
       onHttpResponse: () => undefined,
       onIdle: () => undefined,
+      onPrompt: () => undefined,
     })
     await session.call("context", { sessionID: "s1", model: wireRef("p1", "m1") })
     expect(reports).toEqual([
@@ -95,6 +100,7 @@ describe("registerSessionHooks", () => {
       },
       onHttpResponse: () => undefined,
       onIdle: () => undefined,
+      onPrompt: () => undefined,
     })
     await session.call("model.request", {
       sessionID: "s1",
@@ -114,6 +120,7 @@ describe("registerSessionHooks", () => {
         reports.push(report)
       },
       onIdle: () => undefined,
+      onPrompt: () => undefined,
     })
     await session.call("http.response", {
       sessionID: "s1",
@@ -140,8 +147,27 @@ describe("registerSessionHooks", () => {
       onIdle: (report) => {
         reports.push(report)
       },
+      onPrompt: () => undefined,
     })
     await session.call("experimental.idle", { sessionID: "s1", background: [] })
     expect(reports).toEqual([{ kind: "idle", sessionID: "s1" }])
+  })
+})
+
+describe("prompt hook", () => {
+  it("reports the prompt as the awaited admission boundary report", async () => {
+    const session = new FakeHookSession()
+    const reports: unknown[] = []
+    await registerSessionHooks(session.source, {
+      onRetry: () => undefined,
+      onModelRequest: () => undefined,
+      onHttpResponse: () => undefined,
+      onIdle: () => undefined,
+      onPrompt: (report) => {
+        reports.push(report)
+      },
+    })
+    await session.call("prompt", { sessionID: "s1" })
+    expect(reports).toEqual([{ kind: "prompt", sessionID: "s1" }])
   })
 })

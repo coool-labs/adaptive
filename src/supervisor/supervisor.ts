@@ -44,6 +44,8 @@ import type {
   FailureCategory,
   FailureClassification,
   HealthEvent,
+  ProbeOutcome,
+  ProbeTicket,
   ResourceKey,
 } from "../health/index.js"
 import { SettingsStore, SETTINGS_KEY } from "../state/settings/index.js"
@@ -115,6 +117,40 @@ export class Supervisor {
   readonly #escalationEvidence = new Map<string, EscalationEvidence[]>()
   /** Last agent observed per session (role-hint routing evidence, ADP-002). */
   readonly #agents = new Map<string, string>()
+  /**
+   * Sessions with an owned continuation prompt in flight: the prompt hook
+   * will fire for it, but that prompt belongs to the active unit — it must
+   * not re-admit (prevents an admission ping-pong).
+   */
+  readonly #continuationPending = new Set<string>()
+  /**
+   * Depth of continuation prompts whose prompt hook has not run yet (or whose
+   * host call is still in flight). While a session is inside this window, a
+   * unit close must not clear the ownership mark: the close event of the
+   * failed unit is pumped concurrently with the continuation's own
+   * beforePrompt → prompt-hook sequence, and clearing the mark there would
+   * make the continuation re-admit (admission ping-pong).
+   */
+  readonly #continuationsInFlight = new Map<string, number>()
+  /**
+   * Half-open probe tickets by session: a probe admitted while computing the
+   * recovery for a veto belongs to the continuation episode that follows, so
+   * the ticket is parked here until that unit opens and takes it.
+   */
+  readonly #sessionProbeTickets = new Map<string, ProbeTicket>()
+  /**
+   * Half-open probe tickets by unit: the unit admitted as (or carrying) the
+   * breaker's single probe. Its termination reports the probe outcome — a
+   * success closes the breaker, a failure reopens it, an interruption re-arms
+   * it — otherwise a lost probe would wedge the resource in half_open.
+   */
+  readonly #probeTickets = new Map<string, ProbeTicket>()
+  /**
+   * Session → tier admitted by the prompt hook for the unit that is about to
+   * open. Consumed by execution-started, which then skips re-routing (the
+   * model is already applied to the very turn that triggered admission).
+   */
+  readonly #promptAdmission = new Map<string, { tier?: TierName }>()
   readonly #ready: Promise<SettingsV1>
   readonly #ops: ReturnType<typeof sessionOps>
 
@@ -130,6 +166,22 @@ export class Supervisor {
     this.#ops = sessionOps(options.session, {
       beforeSwitch: (sessionID, model) => {
         this.#tracker.noteOwnSwitch(sessionID, model)
+      },
+      beforePrompt: (sessionID) => {
+        this.#continuationPending.add(sessionID)
+        this.#continuationsInFlight.set(
+          sessionID,
+          (this.#continuationsInFlight.get(sessionID) ?? 0) + 1,
+        )
+      },
+      afterPrompt: (sessionID) => {
+        // sessionOps.prompt calls this only after its own beforePrompt, so
+        // the entry is always present; the assertion avoids a default branch
+        // no caller can reach.
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        const depth = this.#continuationsInFlight.get(sessionID)!
+        if (depth <= 1) this.#continuationsInFlight.delete(sessionID)
+        else this.#continuationsInFlight.set(sessionID, depth - 1)
       },
     })
     // Durable state loads before the first report is handled: a later load
@@ -264,10 +316,52 @@ export class Supervisor {
       case "idle":
         await this.#onIdle(settings)
         return
+      case "prompt":
+        await this.#onPrompt(report.sessionID, settings)
+        return
     }
   }
 
   // ---------- admission ----------
+
+  /**
+   * CONTROL-mode admission in the awaited prompt hook. The hook runs before
+   * the turn's model resolution, so the applied model governs the very turn
+   * that triggered admission (the event-pump execution-started report is
+   * asynchronous and would only affect the next turn — verified on host
+   * 2.2.5). OBSERVE never switches, so it needs no prompt-time decision and
+   * stays on the pump entirely.
+   */
+  async #onPrompt(sessionID: string, settings: SettingsV1): Promise<void> {
+    if (settings.mode !== "control") return
+    if (this.#continuationPending.delete(sessionID)) return
+    try {
+      const { routing, decision, probeTicket } = await this.#admit(settings, sessionID)
+      const wrapped = schedulerForMode(decision, settings.mode)
+      if (wrapped.kind === "apply") {
+        await this.#ops.switchModel(sessionID, wrapped.model)
+      }
+      // A pin is not a tier — receipts only carry a tier for tiered routing.
+      const tier = routing.kind === "pin" ? undefined : routing.tier
+      await this.#recordReceipt({
+        sessionID,
+        ...(tier !== undefined ? { tier } : {}),
+        decision: wrapped,
+      })
+      this.#promptAdmission.set(sessionID, { ...(tier !== undefined ? { tier } : {}) })
+      // The prompt-admitted probe episode is the turn that follows.
+      if (wrapped.kind === "apply" && probeTicket !== undefined) {
+        this.#sessionProbeTickets.set(sessionID, probeTicket)
+      }
+    } catch (error) {
+      // Fail-open: no marker → execution-started re-routes the unit itself.
+      logFailOpen("admission", error)
+      await this.#recordReceipt({
+        sessionID,
+        decision: { kind: "defer", reason: "routing-defer", detail: "internal error" },
+      })
+    }
+  }
 
   async #onExecutionStarted(
     report: EventReport & { kind: "execution-started" },
@@ -279,9 +373,40 @@ export class Supervisor {
       at: report.at,
     })
     const unit = opened.unit
+    // The prompt-hook marker belongs to the unit this report OPENS, so read
+    // it before the close cleanup: a superseding start would otherwise
+    // discard it and re-route an already-admitted turn.
+    const admitted = this.#promptAdmission.get(report.sessionID)
     // A superseding start closes the previous episode — release its
     // per-unit bookkeeping (ledger marks, veto budget) too.
     this.#afterUnitClose(opened)
+    // The prompt hook already admitted and applied for this unit — carry the
+    // tier into escalation context and skip re-routing.
+    if (admitted !== undefined) {
+      this.#promptAdmission.delete(report.sessionID)
+      if (admitted.tier !== undefined) this.#admissionTiers.set(unit.id, admitted.tier)
+      // The prompt-time admission receipt was recorded before this unit
+      // existed; adopt it so outcomes attach to it like any unit receipt.
+      try {
+        await this.#receipts.adoptUnit(report.sessionID, unit.id)
+      } catch (error) {
+        logFailOpen("receipts", error)
+      }
+      const sessionTicket = this.#sessionProbeTickets.get(report.sessionID)
+      if (sessionTicket !== undefined) {
+        this.#sessionProbeTickets.delete(report.sessionID)
+        this.#probeTickets.set(unit.id, sessionTicket)
+      }
+      return
+    }
+    // A probe admitted while computing a veto's recovery belongs to the
+    // continuation episode that follows — the first start on the session
+    // after the veto.
+    const carriedTicket = this.#sessionProbeTickets.get(report.sessionID)
+    if (carriedTicket !== undefined) {
+      this.#sessionProbeTickets.delete(report.sessionID)
+      this.#probeTickets.set(unit.id, carriedTicket)
+    }
     try {
       await this.#routeAdmission(unit, settings)
     } catch (error) {
@@ -298,7 +423,11 @@ export class Supervisor {
   async #admit(
     settings: SettingsV1,
     sessionID: string,
-  ): Promise<{ routing: RoutingDecision; decision: ReturnType<typeof admit> }> {
+  ): Promise<{
+    routing: RoutingDecision
+    decision: ReturnType<typeof admit>
+    probeTicket?: ProbeTicket
+  }> {
     const routing = resolveRouting({
       ...(settings.pin !== null ? { pin: settings.pin } : {}),
       // The agent-role hint is the session's last observed agent — the host
@@ -329,11 +458,23 @@ export class Supervisor {
       health,
       capacity,
     }
-    return { routing, decision: admit(input) }
+    const decision = admit(input)
+    // The half-open probe's ticket comes from the assessment that admitted
+    // it; the decision only carries the id.
+    let probeTicket: ProbeTicket | undefined
+    if (decision.kind === "apply" && decision.evidence.probeId !== undefined) {
+      for (const assessment of Object.values(health)) {
+        if (assessment.kind === "probe" && assessment.ticket.id === decision.evidence.probeId) {
+          probeTicket = assessment.ticket
+          break
+        }
+      }
+    }
+    return { routing, decision, ...(probeTicket !== undefined ? { probeTicket } : {}) }
   }
 
   async #routeAdmission(unit: ActiveUnit, settings: SettingsV1): Promise<void> {
-    const { routing, decision } = await this.#admit(settings, unit.sessionID)
+    const { routing, decision, probeTicket } = await this.#admit(settings, unit.sessionID)
     // The tier the unit was admitted under is escalation context (ADP-015);
     // recorded for every tiered routing outcome (including a defer, which
     // still names the tier it could not honor).
@@ -342,6 +483,7 @@ export class Supervisor {
     }
     const wrapped = schedulerForMode(decision, settings.mode)
     if (wrapped.kind === "apply") {
+      if (probeTicket !== undefined) this.#probeTickets.set(unit.id, probeTicket)
       await this.#applyModel(unit, wrapped)
       return
     }
@@ -374,6 +516,7 @@ export class Supervisor {
   ): Promise<void> {
     const unit = this.#tracker.active(report.sessionID)
     const model = unit?.model ?? this.#tracker.lastModel(report.sessionID)?.model
+    const probeTicket = unit !== undefined ? this.#probeTickets.get(unit.id) : undefined
     const closed = this.#tracker.apply({
       kind: "execution-succeeded",
       sessionID: report.sessionID,
@@ -384,6 +527,10 @@ export class Supervisor {
       this.#observeHealth({ kind: "success", key: refKey(model) })
     }
     if (unit !== undefined) {
+      if (probeTicket !== undefined) {
+        this.#probeTickets.delete(unit.id)
+        this.#reportProbeOutcome(probeTicket, { success: true })
+      }
       await this.#attachOutcome(unit, { status: "succeeded" })
     }
   }
@@ -400,6 +547,7 @@ export class Supervisor {
     const escalationUsed = unitID !== undefined ? (this.#escalations.get(unitID) ?? 0) : 0
     // Tool evidence is captured pre-close like the other per-unit maps.
     const toolEvidence = unitID !== undefined ? (this.#escalationEvidence.get(unitID) ?? []) : []
+    const probeTicket = unitID !== undefined ? this.#probeTickets.get(unitID) : undefined
     const closed = this.#tracker.apply({
       kind: "execution-failed",
       sessionID: report.sessionID,
@@ -425,6 +573,10 @@ export class Supervisor {
     }
     if (unit !== undefined) {
       await this.#attachOutcome(unit, { status: "failed", category: classification.category })
+      if (probeTicket !== undefined) {
+        this.#probeTickets.delete(unit.id)
+        this.#reportProbeOutcome(probeTicket, { success: false, category: classification.category })
+      }
     }
     await this.#escalateOnFailure(
       report,
@@ -511,6 +663,7 @@ export class Supervisor {
       return
     }
     const unit = this.#tracker.active(report.sessionID)
+    const probeTicket = unit !== undefined ? this.#probeTickets.get(unit.id) : undefined
     const closed = this.#tracker.apply({
       kind: "execution-interrupted",
       sessionID: report.sessionID,
@@ -521,8 +674,26 @@ export class Supervisor {
     // User and host interruptions never produce health evidence (the
     // classifier maps them outside the infrastructure vocabulary).
     if (unit !== undefined) {
+      // An interrupted probe is no evidence about resource health: re-arm the
+      // breaker's same window rather than doubling it.
+      if (probeTicket !== undefined) {
+        this.#probeTickets.delete(unit.id)
+        this.#reportProbeOutcome(probeTicket, { success: false, category: "user_cancelled" })
+      }
       await this.#attachOutcome(unit, { status: "interrupted", reason })
     }
+  }
+
+  /**
+   * One probe ticket's resolution at its episode's termination. A probe that
+   * ends without a reported outcome (superseded, lost) would wedge the
+   * resource in half_open, so the close cleanup reports those as
+   * interruptions — re-arming the same backoff window, never doubling it.
+   */
+  #reportProbeOutcome(ticket: ProbeTicket, outcome: ProbeOutcome): void {
+    // reportProbe is total and synchronous; validation failures (stale or
+    // unknown ticket) are reported by its boolean return, not by throwing.
+    this.#health.reportProbe(ticket, outcome)
   }
 
   /** Bounded per-unit bookkeeping once the tracker closed the unit. */
@@ -539,6 +710,25 @@ export class Supervisor {
       this.#escalations.delete(unitID)
       this.#admissionTiers.delete(unitID)
       this.#escalationEvidence.delete(unitID)
+      const leftover = this.#probeTickets.get(unitID)
+      if (leftover !== undefined) {
+        // The explicit outcome reporters run before this cleanup; reaching
+        // here means the unit ended without one (superseded or lost).
+        this.#reportProbeOutcome(leftover, { success: false, category: "user_cancelled" })
+        this.#probeTickets.delete(unitID)
+      }
+    }
+    if (closed.kind === "opened" || closed.kind === "closed") {
+      // Per-session flags for a unit that will never open again must not
+      // leak: a stale continuation mark would swallow a real user prompt's
+      // admission; a stale admission marker would skip routing. The guard
+      // keeps the wipe out of an in-flight continuation's mark window (its
+      // own close events are pumped concurrently with the mark).
+      const sid = closed.unit.sessionID
+      if ((this.#continuationsInFlight.get(sid) ?? 0) === 0) {
+        this.#continuationPending.delete(sid)
+        this.#promptAdmission.delete(sid)
+      }
     }
   }
 
@@ -578,8 +768,13 @@ export class Supervisor {
     // Recovery = fresh admission; the failed resource is already health-blocked.
     let recovery: RecoveryOption = { kind: "none" }
     let routingTier: TierName | undefined
+    let probeTicket: ProbeTicket | undefined
     try {
-      const { routing, decision } = await this.#admit(settings, input.sessionID)
+      const {
+        routing,
+        decision,
+        probeTicket: ticket,
+      } = await this.#admit(settings, input.sessionID)
       routingTier = routing.kind === "pin" ? undefined : routing.tier
       if (decision.kind === "apply") {
         recovery = {
@@ -589,6 +784,7 @@ export class Supervisor {
             ? { probeId: decision.evidence.probeId }
             : {}),
         }
+        probeTicket = ticket
       }
     } catch (error) {
       logFailOpen("recovery", error)
@@ -607,6 +803,11 @@ export class Supervisor {
     input.decision = { retry: false }
     if (unitID !== undefined) {
       this.#vetoes.set(unitID, vetoesUsed + 1)
+    }
+    // A probe admitted by this recovery belongs to the continuation episode
+    // that ownRecovery is about to start; its termination reports the probe.
+    if (probeTicket !== undefined) {
+      this.#sessionProbeTickets.set(input.sessionID, probeTicket)
     }
     void this.#ownRecovery(input.sessionID, wrapped.model)
       .then(() => undefined)
@@ -772,10 +973,16 @@ function candidateRef(candidate: {
 
 /** ResourceKey for a model ref (no account level is observable in v1). */
 function refKey(ref: ModelRef): ResourceKey {
+  // The host reports base-model calls with variant "default" (verified on
+  // 2.2.5), while the inventory enumerates the bare model plus its named
+  // variants. Taken literally, a "default" key would orphan every
+  // unvarianted failure record on a key no admission ever assesses — health
+  // and breaker state would be invisible to routing.
+  const variant = ref.variant === "default" ? undefined : ref.variant
   return {
     providerID: ref.providerID,
     modelID: ref.id,
-    ...(ref.variant !== undefined ? { variantID: ref.variant } : {}),
+    ...(variant !== undefined ? { variantID: variant } : {}),
   }
 }
 

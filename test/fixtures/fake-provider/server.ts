@@ -20,6 +20,9 @@ export interface FakeProvider {
   url: string
   calls: readonly CapturedCall[]
   requestCount(): number
+  setScript(next: FakeProviderScript): void
+  /** Installs per-model behavior queues (model-keyed scenario control). */
+  setModelScripts(next: Record<string, FakeProviderScript>): void
   close(): Promise<void>
 }
 
@@ -38,22 +41,122 @@ const sleep = (ms: number, timers: Set<NodeJS.Timeout>): Promise<void> =>
 
 const modelsBody = (models: unknown): string => JSON.stringify({ object: "list", data: models })
 
+/** The requested model id from a chat-completions request body, if parseable. */
+const bodyModel = (body: string): string | undefined => {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    if (typeof parsed === "object" && parsed !== null && "model" in parsed) {
+      const model = (parsed as Record<string, unknown>)["model"]
+      if (typeof model === "string") return model
+    }
+  } catch {
+    // unparseable bodies have no model
+  }
+  return undefined
+}
+
+const wantsStream = (body: string): boolean => {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      (parsed as { stream?: unknown }).stream === true
+    )
+  } catch {
+    return false
+  }
+}
+
+// The AI SDK (used by @ai-sdk/openai-compatible providers) requests streaming
+// completions; a non-streaming JSON body parsed as a stream reports
+// "OpenAI Chat stream ended without finish_reason". Synthesize the chunk form
+// the SDK expects from a plain completion body so JSON scenarios work against
+// the real host too.
+const streamPayloads = (body: string): string[] => {
+  let completion: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = JSON.parse(body)
+    if (typeof parsed === "object" && parsed !== null)
+      completion = parsed as Record<string, unknown>
+  } catch {
+    // unparseable bodies fall through as an empty completion
+  }
+  const choices = Array.isArray(completion["choices"]) ? (completion["choices"] as unknown[]) : []
+  const first =
+    typeof choices[0] === "object" && choices[0] !== null
+      ? (choices[0] as Record<string, unknown>)
+      : {}
+  const message =
+    typeof first["message"] === "object" && first["message"] !== null
+      ? (first["message"] as Record<string, unknown>)
+      : {}
+  const finish = typeof first["finish_reason"] === "string" ? first["finish_reason"] : "stop"
+  const chunk = (delta: Record<string, unknown>, reason: string | null): string =>
+    JSON.stringify({
+      id: typeof completion["id"] === "string" ? completion["id"] : "cmpl-fake",
+      object: "chat.completion.chunk",
+      choices: [{ index: 0, delta, finish_reason: reason }],
+    })
+  const payloads: string[] = []
+  const role = typeof message["role"] === "string" ? message["role"] : "assistant"
+  if (typeof message["content"] === "string" && message["content"].length > 0) {
+    payloads.push(chunk({ role, content: message["content"] }, null))
+  }
+  if (Array.isArray(message["tool_calls"])) {
+    payloads.push(chunk({ tool_calls: message["tool_calls"] }, null))
+  }
+  payloads.push(chunk({}, finish))
+  return payloads
+}
+
 export async function createFakeProvider(
-  script: FakeProviderScript,
+  initialScript: FakeProviderScript,
   options?: FakeProviderOptions,
 ): Promise<FakeProvider> {
+  let script = initialScript
+  // Per-model behavior queues: a request whose body names a model with an
+  // entry here consumes THAT queue instead of the global script. Model-aware
+  // scenarios (escalation, failover to a different resource) need different
+  // answers per model, which one sequential script cannot express.
+  let modelScripts: Record<string, FakeProviderScript> = {}
+  const modelIndexes = new Map<string, number>()
   const calls: CapturedCall[] = []
   const timers = new Set<NodeJS.Timeout>()
   const sockets = new Set<Socket>()
   let behaviorIndex = 0
 
-  const nextBehavior = (): FakeProviderBehavior => {
+  const nextBehavior = (model: string | undefined): FakeProviderBehavior => {
+    if (model !== undefined && model !== "" && Object.hasOwn(modelScripts, model)) {
+      const queue: FakeProviderScript | undefined = modelScripts[model]
+      if (queue === undefined) {
+        throw new Error(`fake provider script for ${model} is empty`)
+      }
+      const index = modelIndexes.get(model) ?? 0
+      const behavior = queue.behaviors[Math.min(index, queue.behaviors.length - 1)]
+      modelIndexes.set(model, index + 1)
+      if (behavior === undefined) {
+        throw new Error(`fake provider script for ${model} is empty`)
+      }
+      return behavior
+    }
     const behavior = script.behaviors[Math.min(behaviorIndex, script.behaviors.length - 1)]
     behaviorIndex += 1
     if (behavior === undefined) {
       throw new Error("fake provider script is empty")
     }
     return behavior
+  }
+
+  const setScript = (next: FakeProviderScript): void => {
+    script = next
+    behaviorIndex = 0
+  }
+
+  /** Installs per-model queues and resets every per-model cursor. */
+  const setModelScripts = (next: Record<string, FakeProviderScript>): void => {
+    modelScripts = next
+    modelIndexes.clear()
   }
 
   const handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
@@ -91,7 +194,7 @@ export async function createFakeProvider(
       return
     }
 
-    const behavior = nextBehavior()
+    const behavior = nextBehavior(bodyModel(body))
 
     if (behavior.delayMs !== undefined && behavior.delayMs > 0) {
       await sleep(behavior.delayMs, timers)
@@ -116,6 +219,24 @@ export async function createFakeProvider(
       if (behavior.sseEnd === "close") {
         response.socket?.destroy()
         return
+      }
+      response.write("data: [DONE]\n\n")
+      response.end()
+      return
+    }
+
+    const status = behavior.status ?? 200
+    const success = status >= 200 && status <= 299
+    if (wantsStream(body) && success) {
+      response.writeHead(status, {
+        "content-type": "text/event-stream",
+        ...behavior.headers,
+      })
+      for (const payload of streamPayloads(behavior.body ?? "")) {
+        response.write(`data: ${payload}\n\n`)
+        if (behavior.chunkDelayMs !== undefined && behavior.chunkDelayMs > 0) {
+          await sleep(behavior.chunkDelayMs, timers)
+        }
       }
       response.write("data: [DONE]\n\n")
       response.end()
@@ -156,6 +277,8 @@ export async function createFakeProvider(
     url: `http://${host}:${String(port)}`,
     calls,
     requestCount: () => calls.length,
+    setScript,
+    setModelScripts,
     close: async () => {
       for (const timer of timers) {
         clearTimeout(timer)

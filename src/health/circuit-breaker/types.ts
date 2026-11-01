@@ -33,13 +33,19 @@ export const DEFAULT_BREAKER_CONFIG: BreakerConfig = {
 export const BREAKER_EXEMPT_CATEGORIES: readonly FailureCategory[] = [
   "rate_limited",
   "quota_exhausted",
+  "user_cancelled",
 ]
 
 /**
  * Persistent breaker record for one resource. `openCount` drives the doubling
  * backoff and resets only when the breaker closes (a probe or an observed
- * success). `probeId` identifies the single admitted probe while half-open so
- * stale or forged probe reports can be rejected.
+ * success). Rate limiting, quota exhaustion and user cancellation are
+ * deliberately exempt from breaker counting: the first two own their own
+ * windowed resource states (counting them would double-punish a resource
+ * already known to need a cooldown), and a user-interrupted probe says
+ * nothing about resource health, so an interrupted probe re-arms the same
+ * window rather than doubling it. `probeId` identifies the single admitted
+ * probe while half-open so stale or forged probe reports can be rejected.
  */
 export interface BreakerRecord {
   readonly state: BreakerState
