@@ -13,6 +13,7 @@
  */
 import { define } from "@opencode/plugin/tui/plugin"
 import type { Context } from "@opencode/plugin/tui/plugin"
+import { TextAttributes } from "@opentui/core"
 import { createStore } from "solid-js/store"
 import { PLUGIN_ID } from "./plugin-id.js"
 import { adaptiveRpc } from "./rpc/definition.js"
@@ -74,10 +75,20 @@ export default define({
         new Promise<void>((resolve) => {
           context.ui.dialog.show(
             () => (
-              <box style={{ flexDirection: "column", padding: 2 }}>
+              // Styled to match the host's own dialogs (bold title, dim esc
+              // hint, one-row top inset — probed against the receipts
+              // dialog's rendering).
+              <box
+                style={{
+                  flexDirection: "column",
+                  paddingTop: 1,
+                  paddingBottom: 1,
+                  paddingX: 2,
+                }}
+              >
                 <box style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                  <text>{spec.title}</text>
-                  <text>esc</text>
+                  <text style={{ attributes: TextAttributes.BOLD }}>{spec.title}</text>
+                  <text style={{ attributes: TextAttributes.DIM }}>esc</text>
                 </box>
                 {spec.lines.map((line) => (
                   <text>{line}</text>
