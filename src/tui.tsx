@@ -64,44 +64,7 @@ export default define({
       setSessionMode: (sessionID, mode) => client["session-mode.set"]({ sessionID, mode }),
     }
     const view: AdaptiveView = {
-      select: <Value,>(options: Parameters<typeof context.ui.dialog.select<Value>>[0]) => {
-        // Backspace acts as Escape on every select that has no search
-        // callback: the host binds footer actions to keys, so a synthetic
-        // "Back" action clears the dialog — the host then resolves its select
-        // promise undefined, which every controller loop treats as "go back
-        // one level". Selects WITH a search callback (the model picker) are
-        // excluded: the host dispatches the bound action before the query
-        // input, so there the bind would steal Backspace from text editing
-        // (probed: one Backspace with the query "fa" closed the dialog
-        // instead of deleting a char) — there Backspace edits and Escape
-        // still goes back.
-        if (options.search !== undefined) return context.ui.dialog.select(options)
-        return new Promise<Value | undefined>((resolve, reject) => {
-          void context.ui.dialog
-            .select({
-              ...options,
-              actions: [
-                {
-                  bind: "backspace",
-                  title: "Back",
-                  selection: "none" as const,
-                  onTrigger: () => {
-                    context.ui.dialog.clear()
-                  },
-                },
-              ],
-            })
-            .then((picked) => {
-              resolve(picked)
-            })
-            .catch((error: unknown) => {
-              // The host may reject with any reason; the flow's errorText
-              // renders both Errors and raw values.
-              // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
-              reject(error)
-            })
-        })
-      },
+      select: (options) => context.ui.dialog.select(options),
       selectPaged: <Value,>(spec: {
         title: string
         options: readonly SelectOption<Value>[]
