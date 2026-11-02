@@ -230,5 +230,8 @@ describe("the prompt chip's session mode (ADP-054)", () => {
     // promise through the onClose handoff.
     shown.onClose?.()
     dispose()
+    // The default dialog column is too narrow for the column grid — the
+    // table dialog is widened to xlarge right after it opens.
+    expect(dialogs.sets).toEqual([{ size: "xlarge" }])
   })
 })

@@ -67,9 +67,10 @@ export default define({
       alert: (options) => context.ui.dialog.alert(options),
       table: (spec) =>
         // The host has no table dialog; a custom dialog render gives the
-        // column grid full terminal width (an alert message wraps at the
-        // dialog's narrow column). Escape closes the dialog and fires
-        // onClose, which resolves the view promise.
+        // column grid its own layout. The default dialog size is too narrow
+        // for the column grid (rows wrap mid-token), so the dialog is
+        // widened to xlarge right after it opens. Escape closes the dialog
+        // and fires onClose, which resolves the view promise.
         new Promise<void>((resolve) => {
           context.ui.dialog.show(
             () => (
@@ -84,6 +85,7 @@ export default define({
               resolve()
             },
           )
+          context.ui.dialog.set({ size: "xlarge" })
         }),
       toast: (message, variant) => {
         context.ui.toast.show({ message, variant })

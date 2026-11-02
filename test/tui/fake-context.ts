@@ -13,6 +13,8 @@ export interface DialogRecord {
   toasts: { message: string; variant?: string }[]
   /** Custom dialog renders (the status table), newest last. */
   shows: { render: () => unknown; onClose: (() => void) | undefined }[]
+  /** Dialog presentation options set via dialog.set, in call order. */
+  sets: unknown[]
 }
 
 export interface SlotRecord {
@@ -55,6 +57,7 @@ export function fakeTuiContext(options: {
     alerts: [],
     toasts: [],
     shows: [],
+    sets: [],
   }
   const shows = dialogs.shows
   const layers: unknown[] = []
@@ -146,6 +149,9 @@ export function fakeTuiContext(options: {
         },
         show: (render: () => unknown, onClose?: () => void) => {
           shows.push({ render, onClose })
+        },
+        set: (options: unknown) => {
+          dialogs.sets.push(options)
         },
       },
       toast: {

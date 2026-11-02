@@ -864,19 +864,10 @@ test(
           // Status is the highlighted first menu option; it opens with the
           // WHOLE inventory as one column-aligned table — a header row, then
           // one row per model (tier order, priority order within tiers).
-          // The table dialog is ~58 columns: long rows wrap mid-token, so
-          // the anchor stays within one wrapped line and the recovery
-          // deadline (which can split across the wrap) is asserted on the
-          // flattened screen text afterwards.
-          await openStatusPage(app, /rate_limited\s+windowed\s+until/)
-          await app.waitForQuiet({ quietMs: 300 })
-          // screen().text() is a synchronous read; the waitForQuiet above
-          // covers the render race (raw reads right after a match are racy).
-          const flat = app.screen().text().replace(/\n/g, "")
-          // The wrapped continuation line is padded inside the dialog, so
-          // even flattened text carries spaces where the wrap split the
-          // clock time — allow them.
-          expect(flat).toMatch(/windowed until\s*\d{1,2}:\s*\d{2}/)
+          // The dialog is widened to xlarge precisely so the row fits on
+          // one line: the full row (health, windowed state, clock deadline)
+          // must render without wrapping.
+          await openStatusPage(app, /rate_limited\s+windowed until \d{2}:\d{2}/)
           return
         } catch (error) {
           if (attempt === 4) throw error
