@@ -366,9 +366,9 @@ describe("controller: session-mode branch (ADP-054)", () => {
       sessionID: "ses_1",
       api: fakeApi({ sessionMode: () => Promise.resolve("active") }),
     })
-    e.view.selectQueue.push("mode", undefined, undefined)
+    e.view.selectQueue.push("mode", "session", undefined, undefined)
     await runAdaptive(e)
-    const options = e.view.selectOptions[1]
+    const options = e.view.selectOptions[2]
     if (options === undefined) throw new Error("mode menu was not shown")
     expect(options.map((option) => option.title)).toEqual([
       "Follow global (observe)",
@@ -381,9 +381,9 @@ describe("controller: session-mode branch (ADP-054)", () => {
 
   it("marks the inherited global mode as current when no override is set", async () => {
     const e = env({ sessionID: "ses_1" })
-    e.view.selectQueue.push("mode", undefined, undefined)
+    e.view.selectQueue.push("mode", "session", undefined, undefined)
     await runAdaptive(e)
-    expect(e.view.selectOptions[1]?.map((option) => option.title)).toEqual([
+    expect(e.view.selectOptions[2]?.map((option) => option.title)).toEqual([
       "Follow global (observe)",
       "off",
       "observe (current)",
@@ -406,7 +406,7 @@ describe("controller: session-mode branch (ADP-054)", () => {
         sets,
       ),
     })
-    e.view.selectQueue.push("mode", { kind: "mode", mode: "active" }, undefined)
+    e.view.selectQueue.push("mode", "session", { kind: "mode", mode: "active" }, undefined)
     await runAdaptive(e)
     expect(sets).toEqual([{ sessionID: "ses_1", mode: "active" }])
     expect(patches).toEqual([])
@@ -420,12 +420,109 @@ describe("controller: session-mode branch (ADP-054)", () => {
       sessionID: "ses_1",
       api: sessionApi({ sessionMode: () => Promise.resolve("off") }, sets),
     })
-    e.view.selectQueue.push("mode", { kind: "global" }, undefined)
+    e.view.selectQueue.push("mode", "session", { kind: "global" }, undefined)
     await runAdaptive(e)
     expect(sets).toEqual([{ sessionID: "ses_1", mode: null }])
     expect(e.view.selects[0]).toBe("Adaptive (off)")
     // Back to following global: the menu retitles to the global mode.
-    expect(e.view.selects[2]).toBe("Adaptive (observe)")
+    expect(e.view.selects[3]).toBe("Adaptive (observe)")
+  })
+
+  it("picking Global mode… patches the global settings and keeps the override", async () => {
+    const sets: unknown[] = []
+    const patches: SettingsPatch[] = []
+    const e = env({
+      sessionID: "ses_1",
+      api: sessionApi(
+        {
+          // No override: the session follows the global mode, so the
+          // retitled menu shows the patched global mode.
+          sessionMode: () => Promise.resolve(null),
+          setSettings: (patch) => {
+            patches.push(patch)
+            return Promise.resolve({
+              ok: true,
+              settings: settings({ mode: "active" }),
+            } satisfies PatchResult)
+          },
+        },
+        sets,
+      ),
+    })
+    e.view.selectQueue.push("mode", "global", "active", undefined)
+    await runAdaptive(e)
+    expect(patches).toEqual([{ mode: "active" }])
+    // The override state was deliberately untouched by the global change.
+    expect(sets).toEqual([])
+    // The menu retitles to the session's effective mode, which still
+    // follows the (now active) global mode.
+    expect(e.view.selects).toContain("Adaptive (active)")
+  })
+
+  it("a global pick equal to the current global mode is a no-op", async () => {
+    const sets: unknown[] = []
+    const patches: SettingsPatch[] = []
+    const e = env({
+      sessionID: "ses_1",
+      api: fakeApi({}, patches),
+    })
+    e.api.setSessionMode = (sessionID, mode) => {
+      sets.push({ sessionID, mode })
+      return Promise.resolve({ ok: true })
+    }
+    e.view.selectQueue.push("mode", "global", "observe", undefined)
+    await runAdaptive(e)
+    expect(patches).toEqual([])
+    expect(sets).toEqual([])
+  })
+
+  it("escape on the global mode list leaves everything untouched", async () => {
+    const sets: unknown[] = []
+    const patches: SettingsPatch[] = []
+    const e = env({ sessionID: "ses_1", api: fakeApi({}, patches) })
+    e.api.setSessionMode = (sessionID, mode) => {
+      sets.push({ sessionID, mode })
+      return Promise.resolve({ ok: true })
+    }
+    e.view.selectQueue.push("mode", "global", undefined, ...EXIT)
+    await runAdaptive(e)
+    expect(patches).toEqual([])
+    expect(sets).toEqual([])
+  })
+
+  it("a rejected global patch alerts and keeps the session state", async () => {
+    const sets: unknown[] = []
+    const e = env({
+      sessionID: "ses_1",
+      api: sessionApi(
+        {
+          sessionMode: () => Promise.resolve(null),
+          setSettings: () =>
+            Promise.resolve({ ok: false, errors: ["mode refused"] } satisfies PatchResult),
+        },
+        sets,
+      ),
+    })
+    e.view.selectQueue.push("mode", "global", "active", undefined)
+    await runAdaptive(e)
+    expect(e.view.alerts).toContainEqual({ title: "Invalid settings", message: "mode refused" })
+    expect(sets).toEqual([])
+  })
+
+  it("escape on the target select reopens the menu without a mode list", async () => {
+    const sets: unknown[] = []
+    const patches: SettingsPatch[] = []
+    const e = env({ sessionID: "ses_1", api: fakeApi({}, patches) })
+    e.api.setSessionMode = (sessionID, mode) => {
+      sets.push({ sessionID, mode })
+      return Promise.resolve({ ok: true })
+    }
+    e.view.selectQueue.push("mode", undefined, ...EXIT)
+    await runAdaptive(e)
+    expect(patches).toEqual([])
+    expect(sets).toEqual([])
+    // Only the menu, the target select, and the re-shown menu were shown.
+    expect(e.view.selects).toEqual(["Adaptive (observe)", "Operating mode", "Adaptive (observe)"])
   })
 
   it("does not re-patch when the pick changes nothing", async () => {
@@ -435,8 +532,10 @@ describe("controller: session-mode branch (ADP-054)", () => {
     // mode again is also a no-op.
     e.view.selectQueue.push(
       "mode",
+      "session",
       { kind: "global" },
       "mode",
+      "session",
       { kind: "mode", mode: "observe" },
       undefined,
     )
@@ -455,7 +554,7 @@ describe("controller: session-mode branch (ADP-054)", () => {
           }),
       }),
     })
-    e.view.selectQueue.push("mode", { kind: "mode", mode: "active" }, undefined)
+    e.view.selectQueue.push("mode", "session", { kind: "mode", mode: "active" }, undefined)
     await runAdaptive(e)
     expect(e.view.alerts).toContainEqual({
       title: "Invalid settings",
@@ -468,7 +567,7 @@ describe("controller: session-mode branch (ADP-054)", () => {
       sessionID: "ses_1",
       api: sessionApi({ setSessionMode: () => Promise.reject(new Error("storage down")) }),
     })
-    e.view.selectQueue.push("mode", { kind: "mode", mode: "active" }, undefined)
+    e.view.selectQueue.push("mode", "session", { kind: "mode", mode: "active" }, undefined)
     await runAdaptive(e)
     expect(e.view.toasts.map((t) => t.message)).toEqual(["storage down"])
   })
@@ -502,7 +601,7 @@ describe("controller: session-mode branch (ADP-054)", () => {
       }),
     })
     e.view.confirmQueue.push(true)
-    e.view.selectQueue.push(true, "mode", { kind: "global" }, undefined)
+    e.view.selectQueue.push(true, "mode", "session", { kind: "global" }, undefined)
     await runAdaptive(e)
     expect(sets).toEqual([{ sessionID: "ses_1", mode: null }])
     expect(e.view.toasts).toEqual([{ message: "Settings saved", variant: "success" }])
@@ -516,7 +615,7 @@ describe("controller: session-mode branch (ADP-054)", () => {
         setSessionMode: () => Promise.reject(new Error("storage down")),
       }),
     })
-    e.view.selectQueue.push("mode", { kind: "global" }, undefined)
+    e.view.selectQueue.push("mode", "session", { kind: "global" }, undefined)
     await runAdaptive(e)
     // The menu stays titled after the (still set) override.
     expect(e.view.selects[0]).toBe("Adaptive (off)")

@@ -309,7 +309,7 @@ describe("tui entry: session-scoped flows (ADP-054)", () => {
     if (run === undefined) throw new Error("slash command was not registered")
     // The menu is titled after the session's EFFECTIVE mode (override active),
     // and the mode menu steers the session, not the global settings.
-    dialogs.selectQueue.push("mode", { kind: "mode", mode: "observe" }, undefined)
+    dialogs.selectQueue.push("mode", "session", { kind: "mode", mode: "observe" }, undefined)
     run()
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(dialogs.selects[0]?.title).toBe("Adaptive (active)")

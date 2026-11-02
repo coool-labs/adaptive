@@ -18,7 +18,13 @@ import type { SessionModeSetResult } from "../../state/session-modes/index.js"
 import type { Receipt } from "../../state/receipts/types.js"
 import type { StatusSnapshot } from "../../rpc/status.js"
 import { STATUS_EMPTY_MESSAGE, statusTable } from "./status.js"
-import { mainMenuOptions, modeOptions, sessionModeOptions, type MainMenuChoice } from "./menu.js"
+import {
+  mainMenuOptions,
+  modeOptions,
+  modeTargetOptions,
+  sessionModeOptions,
+  type MainMenuChoice,
+} from "./menu.js"
 import {
   modelPickerOptions,
   moveResource,
@@ -236,9 +242,27 @@ async function runModeMenu(
     const applied = await applySettings(env, { mode: pick }, feedback)
     return applied === undefined ? undefined : { settings: applied, override: null }
   }
-  // Inside a session the menu steers the session's override (ADP-054).
-  const pick = await env.view.select({
+  // Inside a session the menu first asks which mode to steer: the global
+  // default (patches settings for every session without an override) or the
+  // session's own override (ADP-054).
+  const target = await env.view.select({
     title: "Operating mode",
+    options: modeTargetOptions(settings.mode, override ?? settings.mode),
+  })
+  if (target === undefined) return undefined
+  if (target === "global") {
+    const pick = await env.view.select({
+      title: "Global mode",
+      options: modeOptions(settings.mode),
+    })
+    if (pick === undefined || pick === settings.mode) return undefined
+    const applied = await applySettings(env, { mode: pick }, feedback)
+    // The session override is deliberately untouched: changing the global
+    // default must not rewrite what this session was pinned to.
+    return applied === undefined ? undefined : { settings: applied, override }
+  }
+  const pick = await env.view.select({
+    title: "This session's mode",
     options: sessionModeOptions({
       global: settings.mode,
       override,

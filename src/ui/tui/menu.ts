@@ -96,6 +96,33 @@ function modeDescription(mode: OperatingMode): string {
 /** One per-session mode-menu pick: follow the global mode, or set an override. */
 export type SessionModeChoice = { kind: "global" } | { kind: "mode"; mode: OperatingMode }
 
+/** Which mode the user steers inside a session: the global default or the session override. */
+export type ModeTarget = "global" | "session"
+
+/**
+ * The first select of the in-session mode flow (ADP-054): ask which mode to
+ * steer before showing any mode list — the global default or this session's
+ * override. Each row names the current value so the user can tell at a
+ * glance which side needs changing.
+ */
+export function modeTargetOptions(
+  global: OperatingMode,
+  effective: OperatingMode,
+): SelectOption<ModeTarget>[] {
+  return [
+    {
+      title: "Global mode…",
+      description: `applies to every session without an override (now ${global})`,
+      value: "global",
+    },
+    {
+      title: "This session…",
+      description: `override for this session only (now ${effective})`,
+      value: "session",
+    },
+  ]
+}
+
 /**
  * The per-session mode menu (ADP-054): first "Follow global" (clearing the
  * override), then every mode. An existing override is marked "(override)" —

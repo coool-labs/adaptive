@@ -1221,10 +1221,17 @@ test(
     // popup appears over the base screen afterwards; the palette still works
     // over it, so it is left up.
     await submitTurn(app, "say done")
-    await step("the session's mode menu offers Follow global first", async () => {
+    await step("the session's mode menu offers global and session targets", async () => {
       await openAdaptiveMenu(app)
       await app.waitForText("Adaptive (observe)", { timeout: 30_000 })
       await chooseMainMenuItem(app, 2)
+      // The first select asks which mode to steer: the global default or
+      // this session's override.
+      await app.waitForText("Global mode…", { timeout: 30_000 })
+      await app.waitForText("This session…", { timeout: 15_000 })
+      // Enter the session target: highlight starts on "Global mode…".
+      await pressAll(app, ["ArrowDown"])
+      await app.press("Enter")
       // The session override select lists Follow global first, then the
       // modes; the inherited global mode carries the current marker.
       await app.waitForText("Follow global (observe)", { timeout: 30_000 })
@@ -1246,6 +1253,9 @@ test(
     })
     await step("the global mode stayed observe", async () => {
       await chooseMainMenuItem(app, 2)
+      await app.waitForText("Global mode…", { timeout: 30_000 })
+      await pressAll(app, ["ArrowDown"])
+      await app.press("Enter")
       // The Follow global row still names the untouched global mode; the
       // override row is now marked instead of the inherited mode.
       await app.waitForText("Follow global (observe)", { timeout: 30_000 })
