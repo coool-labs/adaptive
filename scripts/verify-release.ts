@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process"
 const STEPS = [
   "format:check",
   "lint",
+  "lint:biome",
   "typecheck",
   "test",
   "coverage",

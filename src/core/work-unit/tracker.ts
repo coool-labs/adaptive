@@ -93,13 +93,13 @@ export class WorkUnitTracker {
           return { kind: "ignored", reason: "terminal-without-active-unit" }
         this.#active.delete(event.sessionID)
         const base = { ...current, closedAt: event.at }
-        const unit: ClosedUnit =
-          event.kind === "execution-succeeded"
-            ? { ...base, kind: "succeeded" }
-            : event.kind === "execution-failed"
-              ? { ...base, kind: "failed", error: event.error }
-              : { ...base, kind: "interrupted", reason: event.reason }
-        return { kind: "closed", unit }
+        if (event.kind === "execution-succeeded") {
+          return { kind: "closed", unit: { ...base, kind: "succeeded" } }
+        }
+        if (event.kind === "execution-failed") {
+          return { kind: "closed", unit: { ...base, kind: "failed", error: event.error } }
+        }
+        return { kind: "closed", unit: { ...base, kind: "interrupted", reason: event.reason } }
       }
       case "model-selected": {
         const adaptive = this.#consumePendingOwn(event.sessionID, event.model)

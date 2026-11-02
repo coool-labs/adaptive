@@ -68,7 +68,7 @@ function parseBreaker(raw: unknown): BreakerRecord | undefined {
   const failures = raw["failures"]
   const openCount = raw["openCount"]
   if (state === undefined) return undefined
-  if (!isNonNegativeInt(failures) || !isNonNegativeInt(openCount)) return undefined
+  if (!(isNonNegativeInt(failures) && isNonNegativeInt(openCount))) return undefined
   const reopenAt = raw["reopenAt"]
   const probeId = parseIdentifier(raw["probeId"])
   const probeAt = raw["probeAt"]

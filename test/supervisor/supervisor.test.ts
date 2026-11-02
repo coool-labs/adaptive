@@ -1222,7 +1222,7 @@ describe("supervisor", () => {
       await supervisor.handleRetry(input)
       expect(input.decision).toEqual({ retry: false })
       await flush()
-      expect(session.log).toContain("prompt:s1:" + CONTINUATION_PROMPT)
+      expect(session.log).toContain(`prompt:s1:${CONTINUATION_PROMPT}`)
     })
 
     it("vetoes even without an active unit and parks nothing", async () => {
@@ -1997,7 +1997,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     // The owned recovery settled, switched to the sibling and prompted; the
     // prompt hook that fires for that continuation must not re-admit.
     const logAfterVeto = [...session.log]
-    expect(logAfterVeto).toContain("prompt:s1:" + CONTINUATION_PROMPT)
+    expect(logAfterVeto).toContain(`prompt:s1:${CONTINUATION_PROMPT}`)
     // The veto recorded the recovery admission itself (unit-less; the
     // continuation unit adopts it), and the continuation prompt adds none.
     const vetoReceipts = parseReceiptsPayload(storedReceipts(storage))
@@ -2050,9 +2050,8 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     await supervisor.handleReport(PROMPT_S1)
     let receipts = parseReceiptsPayload(storedReceipts(storage))
     expect(receipts[0]?.decision).toMatchObject({ kind: "apply", reason: "probe" })
-    expect(
-      (receipts[0]?.decision as { evidence: { probeId?: string } }).evidence.probeId,
-    ).toBeDefined()
+    const probeDecision = receipts[0]?.decision as { evidence: { probeId?: string } } | undefined
+    expect(probeDecision?.evidence.probeId).toBeDefined()
     // The unit opens (marker consumed, ticket adopted), then the probe
     // episode fails: the ticket reports the failure and the breaker
     // reopens with the doubled window (due at 100_000).
@@ -2229,9 +2228,9 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     await flush()
     expect(log).toEqual([
       "switch:b",
-      "prompt:" + CONTINUATION_PROMPT,
+      `prompt:${CONTINUATION_PROMPT}`,
       "switch:b",
-      "prompt:" + CONTINUATION_PROMPT,
+      `prompt:${CONTINUATION_PROMPT}`,
     ])
     gates[0]?.()
     gates[1]?.()

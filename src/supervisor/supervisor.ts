@@ -1003,12 +1003,7 @@ export class Supervisor {
 
   /** Bounded per-unit bookkeeping once the tracker closed the unit. */
   #afterUnitClose(closed: ApplyResult): void {
-    const unitID =
-      closed.kind === "closed"
-        ? closed.unit.id
-        : closed.kind === "opened"
-          ? closed.superseded?.id
-          : undefined
+    const unitID = closedUnitID(closed)
     if (unitID !== undefined) {
       this.#vetoes.delete(unitID)
       this.#escalations.delete(unitID)
@@ -1412,6 +1407,18 @@ export class Supervisor {
 /** A pin is not a tier — receipts only carry a tier for tiered routing. */
 function routingTier(routing: RoutingDecision): TierName | undefined {
   return routing.kind === "pin" ? undefined : routing.tier
+}
+
+/** The unit a tracker result closed or superseded, if any. */
+function closedUnitID(result: ApplyResult): string | undefined {
+  switch (result.kind) {
+    case "closed":
+      return result.unit.id
+    case "opened":
+      return result.superseded?.id
+    default:
+      return undefined
+  }
 }
 
 /** ModelRef for a normalized candidate. */

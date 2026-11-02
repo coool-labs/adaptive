@@ -17,6 +17,7 @@ Every change must pass all of these before it is done — not merely compile:
 ```sh
 npm run format:check   # prettier
 npm run lint           # eslint
+npm run lint:biome     # biome (style anti-patterns; biome.json)
 npm run typecheck      # tsc --noEmit (strictest sensible config)
 npm test               # vitest
 npm run coverage       # vitest + 100% statement/branch/function/line gate on src/**

@@ -67,7 +67,7 @@ Every requirement is objectively testable. IDs are stable; tests declare `covers
 - **ADP-046** — Regression policy: every behavioral bug gets a failing-first regression test; documented in CONTRIBUTING.md and followed for the whole project.
 - **ADP-047** — Machine-checkable requirements traceability: tests declare covered requirement IDs; an automated gate fails if any E2E-applicable requirement lacks E2E coverage.
 - **ADP-048** — Package publishes correctly: exports `.`, `./tui`, `./rpc`, `./gui-experimental`; `npm pack` and `npm publish --dry-run` pass; tarball inspected; minimal runtime dependencies; MIT license.
-- **ADP-049** — CI gates format, lint, strict typecheck, unit/integration tests, 100% coverage, property tests, packed-plugin tests, Playwright, Termwright, traceability, build, pack, dry-run; no paid credentials required.
+- **ADP-049** — CI gates format, lint (ESLint and Biome), strict typecheck, unit/integration tests, 100% coverage, property tests, packed-plugin tests, Playwright, Termwright, traceability, build, pack, dry-run; no paid credentials required.
 - **ADP-050** — `npm run verify:release` runs the complete publish-readiness gate in one command.
 - **ADP-051** — Security/privacy: no telemetry, no user content to unconfigured providers, no credentials exposed to TUI/browser, capacity adapters run server-side, no secrets persisted, RPC inputs validated, persisted data bounded, threat model documented.
 - **ADP-052** — Prompt overhead: no LLM classification call, no repeated large routing prompts, operational metadata kept out of the conversation where current APIs allow.

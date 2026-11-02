@@ -44,20 +44,18 @@ export function AdaptiveStatusPage(props: { api: GuiApi }): JSX.Element {
 
   return (
     <div class="adaptive-page">
-      <div class="adaptive-status" role="table" aria-label="OpenCode Adaptive status">
-        <For each={statusRows(snapshot())}>
-          {(row) => (
-            <div class="adaptive-row" role="row" data-tone={row.tone}>
-              <span class="adaptive-row-label" role="cell">
-                {row.label}
-              </span>
-              <span class="adaptive-row-value" role="cell">
-                {row.value}
-              </span>
-            </div>
-          )}
-        </For>
-      </div>
+      <table class="adaptive-status" aria-label="OpenCode Adaptive status">
+        <tbody>
+          <For each={statusRows(snapshot())}>
+            {(row) => (
+              <tr class="adaptive-row" data-tone={row.tone}>
+                <td class="adaptive-row-label">{row.label}</td>
+                <td class="adaptive-row-value">{row.value}</td>
+              </tr>
+            )}
+          </For>
+        </tbody>
+      </table>
       <label class="adaptive-mode">
         <span class="adaptive-row-label">Mode</span>
         <select
@@ -106,9 +104,7 @@ export default Plugin.define({
           description: "Execution tier routing, operating mode and resource health",
         },
       ],
-      render: () => {
-        return <AdaptiveStatusPage api={api} />
-      },
+      render: () => <AdaptiveStatusPage api={api} />,
     })
     context.add(Command, {
       id: "open",

@@ -31,10 +31,9 @@ export function adaptiveGuiApi(client: OpenCodeClient): GuiApi {
         return false
       }
     },
-    watchSettings: (onChange) => {
-      return rpc.events.on("settings-changed", () => {
+    watchSettings: (onChange) =>
+      rpc.events.on("settings-changed", () => {
         onChange()
-      })
-    },
+      }),
   }
 }

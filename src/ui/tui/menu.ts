@@ -34,12 +34,27 @@ export function modelsSummary(settings: SettingsV1): string {
   return parts.join(" · ")
 }
 
+function tierRequestDescription(tierRequest: TierName | null | undefined): string {
+  if (tierRequest === undefined) return "pin a tier for the current session"
+  if (tierRequest === null) return "not pinned — the routing ladder decides"
+  return `pinned to ${tierRequest} — steers this session`
+}
+
+function modeMarker(
+  mode: OperatingMode,
+  input: { override: OperatingMode | null; effective: OperatingMode },
+): "override" | "current" | undefined {
+  if (mode === input.override) return "override"
+  if (mode === input.effective) return "current"
+  return undefined
+}
+
 export function mainMenuOptions(
   settings: SettingsV1,
   status: StatusSnapshot | undefined,
   tierRequest?: TierName | null,
 ): SelectOption<MainMenuChoice>[] {
-  return MAIN_MENU_ITEMS.map((item) => {
+  const optionFor = (item: MainMenuChoice): SelectOption<MainMenuChoice> => {
     switch (item) {
       case "status":
         return {
@@ -63,12 +78,7 @@ export function mainMenuOptions(
         return {
           title: "Tier",
           value: item,
-          description:
-            tierRequest === undefined
-              ? "pin a tier for the current session"
-              : tierRequest === null
-                ? "not pinned — the routing ladder decides"
-                : `pinned to ${tierRequest} — steers this session`,
+          description: tierRequestDescription(tierRequest),
         }
       case "pin":
         return {
@@ -82,7 +92,8 @@ export function mainMenuOptions(
       case "receipts":
         return { title: "Receipts", value: item, description: "why each turn ran the model it ran" }
     }
-  })
+  }
+  return MAIN_MENU_ITEMS.map(optionFor)
 }
 
 export function modeOptions(current: OperatingMode): SelectOption<OperatingMode>[] {
@@ -154,8 +165,7 @@ export function sessionModeOptions(input: {
     },
   ]
   for (const mode of OPERATING_MODES) {
-    const marker =
-      mode === input.override ? "override" : mode === input.effective ? "current" : undefined
+    const marker = modeMarker(mode, input)
     options.push({
       title: marker === undefined ? mode : `${mode} (${marker})`,
       value: { kind: "mode", mode },

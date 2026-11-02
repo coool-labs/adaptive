@@ -179,7 +179,7 @@ const report = {
     }),
 }
 mkdirSync("test-artifacts", { recursive: true })
-writeFileSync(join("test-artifacts", "traceability.json"), JSON.stringify(report, null, 2) + "\n")
+writeFileSync(join("test-artifacts", "traceability.json"), `${JSON.stringify(report, null, 2)}\n`)
 
 if (errors.length > 0) {
   for (const error of errors) console.error(`traceability: ${error}`)

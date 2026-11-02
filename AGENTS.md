@@ -162,6 +162,7 @@ npm run typecheck    # tsc --noEmit — must be clean
 npm test             # vitest
 npm run coverage     # vitest + 100% coverage gate
 npm run lint         # eslint
+npm run lint:biome   # biome: style anti-patterns (config: biome.json)
 npm run format:check # prettier
 npm run build        # tsc build + vite GUI bundle
 npm run plugin-test  # packed plugin tests against real OpenCode hosts

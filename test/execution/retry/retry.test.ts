@@ -222,7 +222,7 @@ describe("properties", () => {
   /** Independent oracle restating ADP-013/014 veto conditions. */
   function expected(i: RetryInput): RetryCoreDecision {
     const eligible = FAILOVER_ELIGIBLE.has(i.classification.category)
-    if (!eligible || !i.classification.definitive) {
+    if (!(eligible && i.classification.definitive)) {
       return { kind: "leave" }
     }
     if (i.recovery.kind !== "switch") {
@@ -292,7 +292,7 @@ describe("properties", () => {
               classification: classification(category, true),
               failingModel: FAILED,
               native: { retry: true, delay: 100 },
-              recovery: { kind: "switch", model: { providerID: "p" + String(step), id: "m" } },
+              recovery: { kind: "switch", model: { providerID: `p${String(step)}`, id: "m" } },
               vetoesUsed,
             })
             if (decision.kind === "leave") {

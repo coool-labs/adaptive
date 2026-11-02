@@ -43,6 +43,7 @@ jobs:
       - run: echo "OPENCODE_BIN=$(which opencode)" >> "$GITHUB_ENV"
       - run: npm run format:check
       - run: npm run lint
+      - run: npm run lint:biome
       - run: npm run typecheck
       - run: npm test
       - run: npm run coverage

@@ -201,7 +201,7 @@ describe("status table", () => {
           // anything is configured; every row has exactly four columns.
           expect(lines).toHaveLength(count === 0 ? 0 : count + 1)
           for (const line of lines) {
-            expect(line.split(/  +/)).toHaveLength(4)
+            expect(line.split(/ {2,}/)).toHaveLength(4)
           }
           expect(STATUS_EMPTY_MESSAGE.length).toBeGreaterThan(0)
         },

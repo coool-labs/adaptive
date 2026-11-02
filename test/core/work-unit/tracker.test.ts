@@ -443,13 +443,12 @@ describe("WorkUnitTracker properties", () => {
               if (oracleActive.has(sessionID)) {
                 expect(result.kind).toBe("closed")
                 if (result.kind !== "closed") return
-                expect(result.unit.kind).toBe(
-                  event.kind === "execution-succeeded"
-                    ? "succeeded"
-                    : event.kind === "execution-failed"
-                      ? "failed"
-                      : "interrupted",
-                )
+                const expectedKind = {
+                  "execution-succeeded": "succeeded",
+                  "execution-failed": "failed",
+                  "execution-interrupted": "interrupted",
+                }[event.kind]
+                expect(result.unit.kind).toBe(expectedKind)
                 oracleActive.delete(sessionID)
               } else {
                 expect(result).toEqual({ kind: "ignored", reason: "terminal-without-active-unit" })

@@ -146,15 +146,10 @@ function admitTier(input: SchedulerInput, tier: TierName): AdmissionDecision {
   }
   const first = input.tierCandidates[0]
   const evidenceBefore = (until: number): SkippedCandidate[] =>
-    seen.slice(0, until).map((e) => ({
-      ref: e.ref,
-      why:
-        e.bucket.kind === "skip"
-          ? e.bucket.why
-          : e.bucket.kind === "draining"
-            ? "draining"
-            : "probe-in-flight",
-    }))
+    seen.slice(0, until).map((e): SkippedCandidate => {
+      if (e.bucket.kind === "skip") return { ref: e.ref, why: e.bucket.why }
+      return { ref: e.ref, why: e.bucket.kind === "draining" ? "draining" : "probe-in-flight" }
+    })
   if (readyRef !== undefined) {
     return apply(
       readyRef,

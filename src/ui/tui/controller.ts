@@ -371,9 +371,10 @@ type TierEditorOutcome = SettingsV1 | undefined
 
 async function runTierEditor(
   env: AdaptiveEnv,
-  settings: SettingsV1,
+  initial: SettingsV1,
   feedback: SaveFeedback,
 ): Promise<TierEditorOutcome> {
+  let settings = initial
   for (;;) {
     const status = await tryApi(env, () => env.api.status())
     if (status === undefined) return undefined

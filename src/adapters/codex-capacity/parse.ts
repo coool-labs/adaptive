@@ -47,17 +47,22 @@ function emptyAccumulator(): WindowAccumulator {
   return { usedPercent: undefined, resetAfterSeconds: undefined, resetAtSeconds: undefined }
 }
 
+function takenValue(accumulator: WindowAccumulator, suffix: string): number | undefined {
+  switch (suffix) {
+    case "used-percent":
+      return accumulator.usedPercent
+    case "reset-after-seconds":
+      return accumulator.resetAfterSeconds
+    case "reset-at":
+      return accumulator.resetAtSeconds
+    default:
+      return undefined
+  }
+}
+
 function applyField(accumulator: WindowAccumulator, suffix: string, value: string): void {
   // First valid value per field wins; invalid or duplicate values are ignored.
-  const taken =
-    suffix === "used-percent"
-      ? accumulator.usedPercent
-      : suffix === "reset-after-seconds"
-        ? accumulator.resetAfterSeconds
-        : suffix === "reset-at"
-          ? accumulator.resetAtSeconds
-          : undefined
-  if (taken !== undefined) {
+  if (takenValue(accumulator, suffix) !== undefined) {
     return
   }
   switch (suffix) {

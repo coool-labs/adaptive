@@ -36,15 +36,19 @@ export function checkCompatibility(candidate: CandidateModel, demand: Demand): V
   if (demand.tools === true && candidate.capabilities?.tools !== true) {
     reasons.push("tool-use-unsupported")
   }
-  if (demand.input !== undefined && demand.input.length > 0) {
-    if (!supportsModalities(candidate.capabilities?.input, demand.input)) {
-      reasons.push("input-modality-unsupported")
-    }
+  if (
+    demand.input !== undefined &&
+    demand.input.length > 0 &&
+    !supportsModalities(candidate.capabilities?.input, demand.input)
+  ) {
+    reasons.push("input-modality-unsupported")
   }
-  if (demand.output !== undefined && demand.output.length > 0) {
-    if (!supportsModalities(candidate.capabilities?.output, demand.output)) {
-      reasons.push("output-modality-unsupported")
-    }
+  if (
+    demand.output !== undefined &&
+    demand.output.length > 0 &&
+    !supportsModalities(candidate.capabilities?.output, demand.output)
+  ) {
+    reasons.push("output-modality-unsupported")
   }
 
   if (assessableTokens(demand.contextTokens)) {

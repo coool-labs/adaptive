@@ -12,7 +12,7 @@
 import { createFakeProvider } from "./server.js"
 import { FAKE_SCENARIOS, type FakeProviderBehavior } from "./scenarios.js"
 
-const portArg = process.argv.findIndex((arg) => arg === "--port")
+const portArg = process.argv.indexOf("--port")
 const raw = portArg >= 0 ? (process.argv[portArg + 1] ?? "") : ""
 const port = Number.parseInt(raw, 10)
 if (!Number.isInteger(port) || port <= 0 || port > 65535) {

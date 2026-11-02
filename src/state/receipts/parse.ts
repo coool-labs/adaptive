@@ -204,9 +204,7 @@ function parseReceipt(raw: unknown): Receipt | undefined {
   const sessionID = parseOptionalBounded(raw["sessionID"])
   const decision = parseDecision(raw["decision"])
   if (
-    !isFiniteNonNegative(id) ||
-    !Number.isInteger(id) ||
-    !isFiniteNonNegative(at) ||
+    !(isFiniteNonNegative(id) && Number.isInteger(id) && isFiniteNonNegative(at)) ||
     sessionID === undefined ||
     decision === undefined
   ) {

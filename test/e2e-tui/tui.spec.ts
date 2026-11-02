@@ -434,7 +434,7 @@ async function backToAdaptiveMenu(app: TerminalApp): Promise<void> {
  * dialog overlays do not hide the base texts from the screen reader.
  */
 async function escapeToBase(app: TerminalApp): Promise<void> {
-  for (let escape = 0; escape < 5; escape++) {
+  for (let presses = 0; presses < 5; presses++) {
     await app.press("Escape")
     await app.waitForQuiet({ quietMs: 200 })
   }
