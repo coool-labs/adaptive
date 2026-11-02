@@ -74,8 +74,11 @@ export default define({
         new Promise<void>((resolve) => {
           context.ui.dialog.show(
             () => (
-              <box style={{ flexDirection: "column" }}>
-                <text>{spec.title}</text>
+              <box style={{ flexDirection: "column", padding: 2 }}>
+                <box style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                  <text>{spec.title}</text>
+                  <text>esc</text>
+                </box>
                 {spec.lines.map((line) => (
                   <text>{line}</text>
                 ))}

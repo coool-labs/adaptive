@@ -226,6 +226,8 @@ describe("the prompt chip's session mode (ADP-054)", () => {
     const text = container.textContent
     expect(text).toContain("Status")
     expect(text).toContain("MODEL")
+    // The esc hint sits in the title row's right corner.
+    expect(text).toContain("esc")
     // Closing the dialog (Escape on the host side) resolves the view's
     // promise through the onClose handoff.
     shown.onClose?.()

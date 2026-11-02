@@ -868,6 +868,9 @@ test(
           // one line: the full row (health, windowed state, clock deadline)
           // must render without wrapping.
           await openStatusPage(app, /rate_limited\s+windowed until \d{2}:\d{2}/)
+          // The dialog body is padded and carries the esc hint in the title
+          // row's right corner.
+          await app.waitForText("esc", { timeout: 10_000 })
           return
         } catch (error) {
           if (attempt === 4) throw error
