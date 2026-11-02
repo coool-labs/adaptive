@@ -257,6 +257,14 @@ describe("the prompt chip's session mode (ADP-054)", () => {
     dialogs.selectQueue.push(true, "receipts")
     ;(layers[0] as { commands: { run: () => void }[] }).commands[0]?.run()
     await new Promise((resolve) => setTimeout(resolve, 0))
+    // The main menu (a non-search select) carries the Backspace-as-back
+    // footer action; the model picker (a search select) must not — probed:
+    // the host dispatches bound actions before the query input, so binding
+    // there would steal Backspace from text editing.
+    const menuSelect = dialogs.selects[1]
+    expect(menuSelect?.actions?.map((action) => [action.title, action.bind])).toEqual([
+      ["Back", "backspace"],
+    ])
     const paged = dialogs.selects.at(-1)
     if (paged?.actions?.length === undefined) {
       throw new Error("the paged receipts select never opened")
@@ -287,5 +295,22 @@ describe("the prompt chip's session mode (ADP-054)", () => {
     // menu loop exits on its own empty queue.
     dialogs.pagedResolvers.at(-1)?.(undefined)
     await new Promise((resolve) => setTimeout(resolve, 0))
+    // The Back action's trigger clears the host dialog (Backspace-as-back).
+    menuSelect?.actions?.[0]?.onTrigger()
+    expect(dialogs.clears).toBe(3)
+  })
+
+  it("propagates a rejected actioned select to the flow's error toast", async () => {
+    const { context, dialogs, layers } = fakeTuiContext({
+      settings: settingsJSON("observe"),
+      clientPatches: [],
+      failSelect: new Error("dialog broke"),
+    })
+    await tuiPlugin.setup(context)
+    ;(layers[0] as { commands: { run: () => void }[] }).commands[0]?.run()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // The wrapper resolves the host select through .then/.catch so the
+    // controller's fail-open catch still sees the rejection.
+    expect(dialogs.toasts).toContainEqual({ message: "dialog broke", variant: "error" })
   })
 })

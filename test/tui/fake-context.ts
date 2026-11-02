@@ -100,13 +100,26 @@ export function fakeTuiContext(options: {
       return Promise.reject(options.failSelect)
     }
     if (spec.actions !== undefined) {
-      // A paged select stays pending like the real host's (footer actions
-      // flip the page while the dialog is open); the test drives the flip
-      // through the recorded onTrigger and ends the loop through the
-      // resolver.
-      return new Promise((resolve) => {
-        dialogs.pagedResolvers.push(resolve)
+      // An actioned select stays pending like the real host's (footer
+      // actions flip the page while the dialog is open); the test drives the
+      // flip through the recorded onTrigger and ends the loop through the
+      // resolver. A queued pick (the Backspace-as-back menu select in the
+      // receipts wiring test) resolves the normal way instead.
+      let resolvePending!: (picked: unknown) => void
+      const pending = new Promise((resolve) => {
+        resolvePending = resolve
       })
+      dialogs.pagedResolvers.push(resolvePending)
+      // An explicit `undefined` queue entry is a real pick (Escape); only an
+      // EMPTY queue leaves the select pending for the test to drive.
+      const hadQueued = dialogs.selectQueue.length > 0
+      const queued = dialogs.selectQueue.shift()
+      if (hadQueued) {
+        const at = dialogs.pagedResolvers.indexOf(resolvePending)
+        if (at >= 0) dialogs.pagedResolvers.splice(at, 1)
+        return Promise.resolve(queued as never)
+      }
+      return pending
     }
     const next = dialogs.selectQueue.shift()
     return Promise.resolve(next as never)

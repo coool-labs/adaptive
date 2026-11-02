@@ -489,6 +489,66 @@ test("the command palette is keyboard-operable and escapable", async ({
 })
 
 test(
+  "backspace goes back through the menus and edits the picker query",
+  { timeout: 240_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal)
+    const app = launched.app
+    await bootTui(launched)
+    await step("backspace closes the main menu like escape", async () => {
+      await openAdaptiveMenu(app)
+      // Plugin selects bind Backspace as a footer "Back" action.
+      await app.press("backspace")
+      await app.waitForText(/Ask anything|Getting started/, { timeout: 15_000 })
+    })
+    await step("backspace steps back from the tier list to the menu", async () => {
+      await openAdaptiveMenu(app)
+      // Models is the second menu option; the tier list is one Enter away.
+      await pressAll(app, ["ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText("quick (", { timeout: 30_000 })
+      await app.press("backspace")
+      await app.waitForText(MENU_TITLE, { timeout: 15_000 })
+    })
+    await step("in the model picker backspace edits the query instead", async () => {
+      await pressAll(app, ["ArrowDown"])
+      // The activating Enter can be dropped while the tier list re-renders —
+      // retry while the list is still open.
+      for (let enter = 0; enter < 3; enter++) {
+        await app.press("Enter")
+        try {
+          await app.waitForText("Tier: quick", { timeout: 8_000 })
+          break
+        } catch {
+          let listStillOpen = true
+          try {
+            await app.waitForText("quick (", { timeout: 2_000 })
+          } catch {
+            listStillOpen = false
+          }
+          if (!listStillOpen) throw new Error("drifted out of the tier list")
+        }
+      }
+      // "Add model…" is the highlighted first editor option; Enter opens the
+      // picker (search selects keep Backspace for query editing — the host
+      // dispatches bound actions before the query input).
+      await app.press("Enter")
+      await app.waitForText("Search provider / model / name", { timeout: 30_000 })
+      await app.type("fa")
+      await app.waitForText("fake/fake-model", { timeout: 15_000 })
+      await app.press("backspace")
+      // The query narrowed to "f": the option list broadens past the fake
+      // models (hosted catalog entries appear) and the dialog stays open —
+      // proof the keystroke edited the query instead of triggering Back.
+      await app.waitForText("flint", { timeout: 15_000 })
+    })
+    await escapeToBase(app)
+    await app.close()
+    await closeLaunched(launched)
+  },
+)
+
+test(
   "a session turn runs through the fake provider and answers",
   { timeout: 120_000 },
   async ({ termwright: tw, terminal }) => {
