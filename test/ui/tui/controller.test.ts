@@ -1,4 +1,4 @@
-// covers: ["ADP-032", "ADP-033", "ADP-054"]
+// covers: ["ADP-032", "ADP-033", "ADP-054", "ADP-055"]
 import { describe, expect, it } from "vitest"
 
 import { INVITE_MESSAGE, INVITE_TITLE, runAdaptive } from "../../../src/ui/tui/controller.js"
@@ -9,6 +9,7 @@ import type { SettingsPatch, SettingsV1 } from "../../../src/state/settings/inde
 import type { PatchResult } from "../../../src/state/settings/index.js"
 import type { AdaptiveApi, AdaptiveView } from "../../../src/ui/tui/controller.js"
 import type { ModelSummary } from "../../../src/ui/tui/tiers.js"
+import type { TierName } from "../../../src/core/tier-policy/types.js"
 import type { StatusSnapshot, TierResourceStatus } from "../../../src/rpc/status.js"
 
 interface FakeView extends AdaptiveView {
@@ -18,7 +19,7 @@ interface FakeView extends AdaptiveView {
   tables: { title: string; lines: string[] }[]
   toasts: { message: string; variant?: string }[]
   selects: string[]
-  selectOptions: { title: string; value: unknown }[][]
+  selectOptions: { title: string; value: unknown; description?: string }[][]
   pagedSpecs: {
     title: string
     options: { title: string; value: unknown }[]
@@ -34,7 +35,7 @@ function fakeView(): FakeView {
     tables: [] as { title: string; lines: string[] }[],
     toasts: [] as { message: string; variant?: string }[],
     selects: [] as string[],
-    selectOptions: [] as { title: string; value: unknown }[][],
+    selectOptions: [] as { title: string; value: unknown; description?: string }[][],
     pagedSpecs: [] as {
       title: string
       options: { title: string; value: unknown }[]
@@ -110,6 +111,8 @@ function resource(overrides: Partial<TierResourceStatus> = {}): TierResourceStat
     breaker: "closed",
     windowed: true,
     windowUntil: null,
+    usedPercent: null,
+    resetAt: null,
     ...overrides,
   }
 }
@@ -135,6 +138,8 @@ function fakeApi(overrides: Partial<AdaptiveApi> = {}, patches: SettingsPatch[] 
     receipts: () => Promise.resolve([] as Receipt[]),
     sessionMode: () => Promise.resolve(null),
     setSessionMode: () => Promise.resolve({ ok: true }),
+    tierRequest: () => Promise.resolve(null),
+    setTierRequest: () => Promise.resolve({ ok: true }),
   }
   return Object.assign(api, overrides)
 }
@@ -654,6 +659,167 @@ describe("controller: session-mode branch (ADP-054)", () => {
     await runAdaptive(e)
     // The menu stays titled after the (still set) override.
     expect(e.view.selects[0]).toBe("Adaptive (off)")
+    expect(e.view.toasts.map((t) => t.message)).toEqual(["storage down"])
+  })
+})
+
+describe("controller: session tier-request branch (ADP-055)", () => {
+  it("alerts on home when Tier is picked and returns to the menu", async () => {
+    const e = env({})
+    e.view.selectQueue.push("tier", undefined)
+    await runAdaptive(e)
+    expect(e.view.alerts).toContainEqual({
+      title: "This session",
+      message:
+        "This session's tier request can only be changed inside a session. Open a session and run /adaptive from there.",
+    })
+    expect(e.view.selectQueue.length).toBe(0)
+  })
+
+  it("offers Follow routing ladder first, then the tiers with the pinned one marked", async () => {
+    const e = env({
+      sessionID: "ses_1",
+      api: fakeApi({ tierRequest: () => Promise.resolve("quick" as const) }),
+    })
+    e.view.selectQueue.push("tier", undefined, undefined)
+    await runAdaptive(e)
+    const options = e.view.selectOptions[1]
+    if (options === undefined) throw new Error("tier menu was not shown")
+    expect(options.map((option) => option.title)).toEqual([
+      "Follow routing ladder",
+      "quick (pinned)",
+      "standard",
+      "advanced",
+    ])
+    expect(options[0]?.value).toEqual({ kind: "ladder" })
+  })
+
+  it("picking a tier pins the session's request and retitles the menu entry", async () => {
+    const sets: unknown[] = []
+    let pinned: TierName | null = null
+    const e = env({
+      sessionID: "ses_1",
+      api: fakeApi({
+        tierRequest: () => Promise.resolve(pinned),
+        setTierRequest: (sessionID, tier) => {
+          pinned = tier as TierName | null
+          sets.push({ sessionID, tier })
+          return Promise.resolve({ ok: true })
+        },
+      }),
+    })
+    e.view.selectQueue.push("tier", { kind: "tier", tier: "advanced" }, undefined)
+    await runAdaptive(e)
+    expect(sets).toEqual([{ sessionID: "ses_1", tier: "advanced" }])
+    // The menu re-rendered after the pin: the last main-menu render shows it.
+    const reRendered = e.view.selectOptions[2]
+    expect(reRendered?.find((option) => option.value === "tier")?.description).toBe(
+      "pinned to advanced — steers this session",
+    )
+  })
+
+  it("picking Follow routing ladder clears the request", async () => {
+    const sets: unknown[] = []
+    let pinned: TierName | null = "quick"
+    const e = env({
+      sessionID: "ses_1",
+      api: fakeApi({
+        tierRequest: () => Promise.resolve(pinned),
+        setTierRequest: (sessionID, tier) => {
+          pinned = tier as TierName | null
+          sets.push({ sessionID, tier })
+          return Promise.resolve({ ok: true })
+        },
+      }),
+    })
+    e.view.selectQueue.push("tier", { kind: "ladder" }, undefined)
+    await runAdaptive(e)
+    expect(sets).toEqual([{ sessionID: "ses_1", tier: null }])
+    // The menu re-rendered after the clear: the null result must survive the
+    // per-loop fetch (not be coerced to undefined) so the description says the
+    // ladder decides again.
+    const reRendered = e.view.selectOptions[2]
+    expect(reRendered?.find((option) => option.value === "tier")?.description).toBe(
+      "not pinned — the routing ladder decides",
+    )
+  })
+
+  it("picking the already-pinned tier is a no-op", async () => {
+    const sets: unknown[] = []
+    const e = env({
+      sessionID: "ses_1",
+      api: fakeApi({
+        tierRequest: () => Promise.resolve("standard"),
+        setTierRequest: (sessionID, tier) => {
+          sets.push({ sessionID, tier })
+          return Promise.resolve({ ok: true })
+        },
+      }),
+    })
+    e.view.selectQueue.push("tier", { kind: "tier", tier: "standard" }, undefined)
+    await runAdaptive(e)
+    expect(sets).toEqual([])
+  })
+
+  it("toasts Settings saved only on the first tier save of a dialog session", async () => {
+    let pinned: TierName | null = null
+    const e = env({
+      sessionID: "ses_1",
+      api: fakeApi({
+        tierRequest: () => Promise.resolve(pinned),
+        setTierRequest: (_sessionID, tier) => {
+          // The controller's API surface passes the tier as a raw string; the
+          // RPC layer validates it, so this fixture narrows it to TierName.
+          pinned = tier as TierName | null
+          return Promise.resolve({ ok: true })
+        },
+      }),
+    })
+    e.view.selectQueue.push(
+      "tier",
+      { kind: "tier", tier: "quick" },
+      "tier",
+      { kind: "tier", tier: "advanced" },
+      undefined,
+    )
+    await runAdaptive(e)
+    expect(e.view.toasts.filter((t) => t.message === "Settings saved")).toHaveLength(1)
+  })
+
+  it("alerts on an invalid tier-request result", async () => {
+    const sets: unknown[] = []
+    const e = env({
+      sessionID: "ses_1",
+      api: fakeApi({
+        setTierRequest: (sessionID, tier) => {
+          sets.push({ sessionID, tier })
+          return Promise.resolve({ ok: false, errors: ["tier refused"] })
+        },
+      }),
+    })
+    e.view.selectQueue.push("tier", { kind: "tier", tier: "quick" }, undefined)
+    await runAdaptive(e)
+    expect(sets).toEqual([{ sessionID: "ses_1", tier: "quick" }])
+    expect(e.view.alerts).toContainEqual({ title: "Invalid tier request", message: "tier refused" })
+  })
+
+  it("toasts when the request fetch fails and skips the menu", async () => {
+    const e = env({
+      sessionID: "ses_1",
+      api: fakeApi({ tierRequest: () => Promise.reject(new Error("raw")) }),
+    })
+    e.view.selectQueue.push("tier", undefined)
+    await runAdaptive(e)
+    expect(e.view.toasts.map((t) => t.message)).toEqual(["raw"])
+  })
+
+  it("toasts when the request write fails and stays in the menu", async () => {
+    const e = env({
+      sessionID: "ses_1",
+      api: fakeApi({ setTierRequest: () => Promise.reject(new Error("storage down")) }),
+    })
+    e.view.selectQueue.push("tier", { kind: "tier", tier: "quick" }, undefined)
+    await runAdaptive(e)
     expect(e.view.toasts.map((t) => t.message)).toEqual(["storage down"])
   })
 })

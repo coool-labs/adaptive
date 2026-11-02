@@ -62,6 +62,8 @@ export default define({
       receipts: () => client["receipts.list"](),
       sessionMode: (sessionID) => client["session-mode.get"]({ sessionID }).then((out) => out.mode),
       setSessionMode: (sessionID, mode) => client["session-mode.set"]({ sessionID, mode }),
+      tierRequest: (sessionID) => client["tier-request.get"]({ sessionID }).then((out) => out.tier),
+      setTierRequest: (sessionID, tier) => client["tier-request.set"]({ sessionID, tier }),
     }
     const view: AdaptiveView = {
       select: (options) => context.ui.dialog.select(options),

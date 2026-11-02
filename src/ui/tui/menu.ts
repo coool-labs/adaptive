@@ -12,7 +12,7 @@ import type { SettingsV1 } from "../../state/settings/index.js"
 import type { SelectOption } from "./options.js"
 import { resourceLabel } from "./tiers.js"
 
-export const MAIN_MENU_ITEMS = ["status", "models", "mode", "pin", "receipts"] as const
+export const MAIN_MENU_ITEMS = ["status", "models", "mode", "tier", "pin", "receipts"] as const
 export type MainMenuChoice = (typeof MAIN_MENU_ITEMS)[number]
 
 /** "3 resources · 1 windowed" — the status line under the menu entry. */
@@ -37,6 +37,7 @@ export function modelsSummary(settings: SettingsV1): string {
 export function mainMenuOptions(
   settings: SettingsV1,
   status: StatusSnapshot | undefined,
+  tierRequest?: TierName | null,
 ): SelectOption<MainMenuChoice>[] {
   return MAIN_MENU_ITEMS.map((item) => {
     switch (item) {
@@ -57,6 +58,17 @@ export function mainMenuOptions(
           title: "Mode",
           value: item,
           description: `currently ${settings.mode}`,
+        }
+      case "tier":
+        return {
+          title: "Tier",
+          value: item,
+          description:
+            tierRequest === undefined
+              ? "pin a tier for the current session"
+              : tierRequest === null
+                ? "not pinned — the routing ladder decides"
+                : `pinned to ${tierRequest} — steers this session`,
         }
       case "pin":
         return {
@@ -148,6 +160,46 @@ export function sessionModeOptions(input: {
       title: marker === undefined ? mode : `${mode} (${marker})`,
       value: { kind: "mode", mode },
       description: modeDescription(mode),
+    })
+  }
+  return options
+}
+
+/** What one tier is for — shared by the tier editor and the per-session menu. */
+function tierDescription(tier: TierName): string {
+  switch (tier) {
+    case "quick":
+      return "routine edits, mechanical steps"
+    case "standard":
+      return "the default"
+    case "advanced":
+      return "multi-step design, broad refactors"
+  }
+}
+
+/** One per-session tier-menu pick: follow the routing ladder, or pin a tier. */
+export type SessionTierChoice = { kind: "ladder" } | { kind: "tier"; tier: TierName }
+
+/**
+ * The per-session tier menu (ADP-055): first "Follow routing ladder" (clearing
+ * the request), then every tier. A pinned request is marked "(pinned)" so the
+ * user can tell the sticky request apart from the ordinary ladder.
+ */
+export function sessionTierOptions(input: {
+  pinned: TierName | null
+}): SelectOption<SessionTierChoice>[] {
+  const options: SelectOption<SessionTierChoice>[] = [
+    {
+      title: "Follow routing ladder",
+      description: "clear this session's tier request",
+      value: { kind: "ladder" },
+    },
+  ]
+  for (const tier of TIERS) {
+    options.push({
+      title: tier === input.pinned ? `${tier} (pinned)` : tier,
+      value: { kind: "tier", tier },
+      description: tierDescription(tier),
     })
   }
   return options

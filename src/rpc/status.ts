@@ -9,6 +9,7 @@ import type { ModelRef } from "../core/work-unit/types.js"
 import type { TierName } from "../core/tier-policy/types.js"
 import { TIERS } from "../core/tier-policy/types.js"
 import type { ResourceRecord } from "../health/resource-health/types.js"
+import type { CapacityReading } from "../health/capacity/types.js"
 import { resourceKeyID } from "../health/resource-health/index.js"
 import type { SettingsV1 } from "../state/settings/index.js"
 
@@ -24,6 +25,10 @@ export interface TierResourceStatus {
    * status.get once any resource was configured.
    */
   windowUntil: number | null
+  /** Used capacity as a rounded whole percent; null when no reading exists. */
+  usedPercent: number | null
+  /** Wall-clock capacity reset deadline (ms epoch); null when unread. */
+  resetAt: number | null
 }
 
 export interface StatusSnapshot {
@@ -37,6 +42,7 @@ export interface StatusSnapshot {
 export function buildStatus(input: {
   settings: SettingsV1
   health: readonly ResourceRecord[]
+  capacity: Readonly<Record<string, CapacityReading | null>>
   parked: number
   receipts: number
 }): StatusSnapshot {
@@ -46,12 +52,15 @@ export function buildStatus(input: {
   for (const tier of TIERS) {
     tiers[tier] = input.settings.tiers[tier].map((ref) => {
       const record = byKey.get(schedulerHealthKey(ref))
+      const capacityReading = input.capacity[schedulerHealthKey(ref)] ?? null
       return {
         ref,
         health: record?.health ?? "healthy",
         breaker: record?.breaker.state ?? "closed",
         windowed: record?.window !== undefined,
         windowUntil: record?.window?.until ?? null,
+        usedPercent: capacityUsedPercent(capacityReading),
+        resetAt: capacityReading?.resetAt ?? null,
       }
     })
   }
@@ -62,4 +71,16 @@ export function buildStatus(input: {
     parked: input.parked,
     receipts: input.receipts,
   }
+}
+
+/**
+ * Derives the used-capacity percentage from a reading. Readings may carry any
+ * subset of the two ratios: usedRatio directly, or the remainder inferred from
+ * remainingRatio. A reading with neither ratio is still present (confidence,
+ * resetAt may be set) but yields no percentage — null, not undefined.
+ */
+function capacityUsedPercent(reading: CapacityReading | null): number | null {
+  if (reading?.usedRatio !== undefined) return Math.round(reading.usedRatio * 100)
+  if (reading?.remainingRatio !== undefined) return Math.round((1 - reading.remainingRatio) * 100)
+  return null
 }

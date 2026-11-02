@@ -11,7 +11,8 @@
  * persistence within the session), the pin flow with its menu and status-page
  * rendering, a full session turn through the fake provider, the per-session
  * mode override (Follow global select, override markers, effective-mode menu
- * title, global mode untouched), the reconnect
+ * title, global mode untouched), the per-session tier request (Follow
+ * routing ladder, pinned-tier markers, clearing), the reconnect
  * after the background service daemon dies, and dimension runs.
  *
  * Host facts (empirical, OpenCode 2.2.5):
@@ -143,10 +144,23 @@ async function launchTui(
       "fake-model-2": { name: "Fake Model 2" },
     },
   }
+  // The "openai" provider id matches the plugin's codex capacity sensor
+  // (CODEX_PROVIDER_ID): the capacity journey seeds this model into a tier so
+  // the status table can show the sensed subscription usage window. Its model
+  // id deliberately avoids "fake" so the picker's "fake" filter still narrows
+  // to exactly the two fake models.
+  const openaiProvider = {
+    npm: "@ai-sdk/openai-compatible",
+    name: "OpenAI",
+    options: { baseURL: `http://127.0.0.1:${String(port)}/v1` },
+    models: {
+      "probe-codex": { name: "Codex Probe" },
+    },
+  }
   const opencodeJson = JSON.stringify({
     $schema: "https://opencode.ai/config.json",
     model: "fake/fake-model",
-    provider: { fake: fakeProvider },
+    provider: { fake: fakeProvider, openai: openaiProvider },
   })
   // The plugin must be configured in the GLOBAL config for the TUI to mount
   // its bundle: a project-local plugins entry registers the palette command
@@ -166,12 +180,12 @@ async function launchTui(
   // observed by inst=1, every status read served by inst=2 with health=[]).
   const globalJsonXdg = JSON.stringify({
     $schema: "https://opencode.ai/config.json",
-    provider: { fake: fakeProvider },
+    provider: { fake: fakeProvider, openai: openaiProvider },
     plugins: [REPO_ROOT],
   })
   const globalJsonHome = JSON.stringify({
     $schema: "https://opencode.ai/config.json",
-    provider: { fake: fakeProvider },
+    provider: { fake: fakeProvider, openai: openaiProvider },
   })
   writeFileSync(join(home, ".config", "opencode", "opencode.json"), globalJsonHome)
   writeFileSync(join(home, "config", "opencode", "opencode.json"), globalJsonXdg)
@@ -610,7 +624,7 @@ test(
       await app.waitForText("Adaptive (observe)", { timeout: 15_000 })
     })
     await step("escape from the mode menu returns to the menu, not home", async () => {
-      // Mode is the third menu option (Status, Models, Mode, Pin, Receipts).
+      // Mode is the third menu option (Status, Models, Mode, Tier, Pin, Receipts).
       await pressAll(app, ["ArrowDown", "ArrowDown"])
       await app.press("Enter")
       // The unified target select asks which mode to steer even on home.
@@ -620,12 +634,12 @@ test(
       await app.waitForText("Adaptive (observe)", { timeout: 15_000 })
     })
     await step("the pin menu degrades to an alert with nothing configured", async () => {
-      // A fresh open starts the highlight on Status, so Pin is three rows
+      // A fresh open starts the highlight on Status, so Pin is four rows
       // down; the empty pin menu is an alert, not a select.
       await leaveMenuToBase(app)
       await runAdaptiveCommand(app)
       await app.waitForText("Adaptive (observe)", { timeout: 30_000 })
-      await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown"])
+      await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"])
       await app.press("Enter")
       await app.waitForText("(no configured resources to pin)", { timeout: 30_000 })
       // Escaping the alert reopens the main menu (cancel path).
@@ -694,8 +708,8 @@ test(
     await bootTui(launched)
     await step("empty receipts alert", async () => {
       await openAdaptiveMenu(app)
-      // Receipts is the fifth menu option; the highlight starts on Status.
-      await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"])
+      // Receipts is the sixth menu option; the highlight starts on Status.
+      await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"])
       await app.press("Enter")
       await app.waitForText("No decisions recorded yet.", { timeout: 30_000 })
     })
@@ -722,7 +736,7 @@ test(
     })
     await step("the receipts dialog lists the real decision line", async () => {
       await openAdaptiveMenu(app)
-      await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"])
+      await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"])
       await app.press("Enter")
       // Observe mode with no tiers configured: the admission deferred with
       // reason routing-defer / tier-not-configured — the dialog must show
@@ -774,8 +788,8 @@ test(
     await bootTui(launched)
     await step("page one lists the newest receipts and offers the next page", async () => {
       await openAdaptiveMenu(app)
-      // Receipts is the last (fifth) menu option.
-      await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"])
+      // Receipts is the last (sixth) menu option.
+      await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"])
       await app.press("Enter")
       await app.waitForText("Receipts (25, newest first)", { timeout: 30_000 })
       // Newest first: the top row is the highest seeded id. "Next page" is
@@ -913,6 +927,49 @@ test(
 )
 
 test(
+  "the status page shows a subscription capacity window with its reset time",
+  { timeout: 300_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal)
+    const app = launched.app
+    await bootTui(launched)
+    await step("a completed turn records the subscription usage headers", async () => {
+      // The fake provider's success response carries x-codex telemetry; the
+      // completed turn (not a failed one) is what makes the provider answer,
+      // and the plugin's passive sensor reads the usage window from it.
+      await submitTurn(app, "say done")
+    })
+    await step("seed the standard tier with the openai model", async () => {
+      await openAdaptiveMenu(app)
+      await openTierMenu(app, 0)
+      await pressAll(app, ["ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText("Tier: standard", { timeout: 30_000 })
+      await addHighlightedModel(
+        app,
+        ["p", "r", "o", "b", "e"],
+        1,
+        "standard",
+        /Variant: openai\/probe-codex/,
+      )
+      await backToAdaptiveMenu(app)
+      await leaveMenuToBase(app)
+    })
+    await step("the status page shows the used percent and the reset time", async () => {
+      await openAdaptiveMenu(app)
+      // The capacity segment rides the STATE column: a healthy, unwindowed,
+      // breaker-free resource with a sensed reading reads
+      // "used <N>%, resets HH:MM" (used percent first, then the reset clock).
+      await openStatusPage(app, /used 72%, resets \d{2}:\d{2}/)
+      await app.waitForText("esc", { timeout: 10_000 })
+    })
+    await escapeToBase(app)
+    await app.close()
+    await closeLaunched(launched)
+  },
+)
+
+test(
   "the tui reconnects after its background service restarts",
   { timeout: 300_000 },
   async ({ termwright: tw, terminal }) => {
@@ -976,7 +1033,7 @@ test(
 // between tests; the cleanup journeys themselves are covered by the remove
 // and clear-pin steps below.
 
-/** Activate the main-menu option at `index` (status 0, models 1, mode 2, pin 3, receipts 4). */
+/** Activate the main-menu option at `index` (status 0, models 1, mode 2, tier 3, pin 4, receipts 5). */
 async function chooseMainMenuItem(app: TerminalApp, index: number): Promise<void> {
   await pressAll(
     app,
@@ -1004,7 +1061,9 @@ async function openQuickEditor(app: TerminalApp): Promise<void> {
  * highlighted entry. Every picker model — the fake ones included — then opens
  * the `Variant: <model>` select (variants are host-reported), where Enter
  * accepts the highlighted "(model default)" and keeps the resource label
- * variant-free. The flow lands back on the tier menu, verified by the tier's
+ * variant-free (`variant` overrides the expected `Variant: <model>` title when
+ * the picked model is not fake/fake-model). The flow lands back on the tier
+ * menu, verified by the tier's
  * count growing to `newCount` (`tier` defaults to quick, whose editor is
  * entered without any ArrowDown moves).
  */
@@ -1013,13 +1072,14 @@ async function addHighlightedModel(
   keys: string[],
   newCount: number,
   tier: "quick" | "standard" | "advanced" = "quick",
+  variant = /Variant: fake\/fake-model/,
 ): Promise<void> {
   await app.press("Enter")
   await app.waitForText("Search provider / model / name", { timeout: 30_000 })
   await pressAll(app, keys)
   await app.waitForQuiet({ quietMs: 300 })
   await app.press("Enter")
-  await app.waitForText(/Variant: fake\/fake-model/, { timeout: 30_000 })
+  await app.waitForText(variant, { timeout: 30_000 })
   await app.press("Enter")
   await app.waitForText(`${tier} (${String(newCount)})`, { timeout: 30_000 })
 }
@@ -1037,16 +1097,20 @@ test(
       await openQuickEditor(app)
       await app.waitForText("Add model…", { timeout: 15_000 })
     })
-    await step("the model picker lists the fake catalog", async () => {
+    await step("the model picker lists the fake catalog once filtered", async () => {
       await app.press("Enter")
       await app.waitForText("Search provider / model / name", { timeout: 30_000 })
+      // The openai provider (seeded for the capacity journey) pulls the
+      // host's built-in OpenAI catalog into the unfiltered list, so the fake
+      // models are only guaranteed on screen once the query narrows it.
+      await pressAll(app, ["f", "a", "k", "e"])
       await app.waitForText("fake/fake-model-2", { timeout: 15_000 })
       await app.waitForText("Fake Model 2", { timeout: 15_000 })
     })
-    await step("filter the picker to fake-model-2 and save", async () => {
+    await step("pick fake-model-2 and save", async () => {
       // "fake" narrows the picker to the two fake models in catalog order
       // (fake-model first), so one ArrowDown lands on fake-model-2.
-      await pressAll(app, ["f", "a", "k", "e", "ArrowDown"])
+      await pressAll(app, ["ArrowDown"])
       await app.waitForQuiet({ quietMs: 300 })
       await app.press("Enter")
       await app.waitForText(/Variant: fake\/fake-model/, { timeout: 30_000 })
@@ -1179,7 +1243,7 @@ test(
       await app.waitForText(MENU_TITLE, { timeout: 30_000 })
     })
     await step("pin fake/fake-model", async () => {
-      await chooseMainMenuItem(app, 3)
+      await chooseMainMenuItem(app, 4)
       await app.waitForText("No pin", { timeout: 30_000 })
       await app.waitForText("fake/fake-model (quick)", { timeout: 15_000 })
       await pressAll(app, ["ArrowDown"])
@@ -1204,7 +1268,7 @@ test(
       await app.waitForText(MENU_TITLE, { timeout: 15_000 })
     })
     await step("clearing the pin restores the force-one-resource description", async () => {
-      await chooseMainMenuItem(app, 3)
+      await chooseMainMenuItem(app, 4)
       await app.waitForText("No pin", { timeout: 30_000 })
       await app.press("Enter")
       // Second save of the session: silent — the reopened menu's Pin
@@ -1275,6 +1339,54 @@ test(
     await step("escape back home", async () => {
       // Escaping the mode menu reopens the main menu (cancel path), so a
       // full dialog-stack depth of Escapes lands on the base screen.
+      await escapeToBase(app)
+    })
+    await app.close()
+    await closeLaunched(launched)
+  },
+)
+
+test(
+  "a per-session tier request steers that session's menu and clears from the same menu",
+  { timeout: 180_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal)
+    const app = launched.app
+    await bootTui(launched)
+    // A completed turn creates the session the command then runs inside —
+    // the tier request targets THIS session.
+    await submitTurn(app, "say done")
+    await step("the tier menu lists the ladder option and every tier", async () => {
+      await openAdaptiveMenu(app)
+      await app.waitForText("Adaptive (observe)", { timeout: 30_000 })
+      await chooseMainMenuItem(app, 3)
+      await app.waitForText("Follow routing ladder", { timeout: 30_000 })
+      await app.waitForText("quick", { timeout: 15_000 })
+      await app.waitForText("advanced", { timeout: 15_000 })
+    })
+    await step("pinning standard marks the tier entry in the menu", async () => {
+      // Highlight starts on Follow routing ladder; standard is two rows down.
+      await pressAll(app, ["ArrowDown", "ArrowDown"])
+      await app.press("Enter")
+      // The save is silent (the invitation dismissal was this dialog
+      // session's first save); the re-rendered main menu's Tier description
+      // is the evidence.
+      await app.waitForText("pinned to standard — steers this session", { timeout: 30_000 })
+    })
+    await step("the pin survives closing and reopening the flow", async () => {
+      await app.press("Escape")
+      await leaveMenuToBase(app)
+      await runAdaptiveCommand(app)
+      await app.waitForText(MENU_TITLE, { timeout: 30_000 })
+      await chooseMainMenuItem(app, 3)
+      await app.waitForText("standard (pinned)", { timeout: 30_000 })
+    })
+    await step("clearing with Follow routing ladder restores the ladder description", async () => {
+      // Highlight already rests on Follow routing ladder (first row).
+      await app.press("Enter")
+      await app.waitForText("not pinned — the routing ladder decides", { timeout: 30_000 })
+    })
+    await step("escape back home", async () => {
       await escapeToBase(app)
     })
     await app.close()

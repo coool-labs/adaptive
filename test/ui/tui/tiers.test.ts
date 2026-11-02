@@ -27,6 +27,8 @@ function tierResource(providerID: string, id: string): TierResourceStatus {
     breaker: "closed",
     windowed: false,
     windowUntil: null,
+    usedPercent: null,
+    resetAt: null,
   }
 }
 
@@ -48,6 +50,8 @@ describe("healthTag", () => {
     breaker: "closed",
     windowed: false,
     windowUntil: null,
+    usedPercent: null,
+    resetAt: null,
   }
 
   it("is empty for healthy closed unwindowed resources and missing status", () => {
@@ -107,6 +111,8 @@ describe("tier menus", () => {
             breaker: "closed",
             windowed: false,
             windowUntil: null,
+            usedPercent: null,
+            resetAt: null,
           },
           {
             ref: ref("prov", "b", "v"),
@@ -114,6 +120,8 @@ describe("tier menus", () => {
             breaker: "closed",
             windowed: false,
             windowUntil: null,
+            usedPercent: null,
+            resetAt: null,
           },
         ],
         advanced: [],

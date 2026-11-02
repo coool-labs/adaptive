@@ -127,6 +127,13 @@ const rateLimitBehavior = (retryAfter: string): FakeProviderBehavior => ({
 })
 
 const successBehavior = (): FakeProviderBehavior => ({
+  // Codex-shaped subscription telemetry (ADP-020 wire format): the TUI
+  // capacity journey reads these through the plugin's passive header sensor,
+  // so the success response carries a used percent and a 15-minute reset.
+  headers: {
+    "x-codex-primary-used-percent": "72",
+    "x-codex-primary-reset-after-seconds": "900",
+  },
   body: completionBody(FAKE_MODEL_ID, "done"),
 })
 

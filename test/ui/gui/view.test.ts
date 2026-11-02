@@ -28,6 +28,8 @@ function tierResource(
     breaker: "closed",
     windowed: false,
     windowUntil: null,
+    usedPercent: null,
+    resetAt: null,
     ...overrides,
   }
 }
@@ -155,6 +157,8 @@ describe("properties", () => {
       breaker: fc.constantFrom("closed", "open", "half_open"),
       windowed: fc.boolean(),
       windowUntil: fc.option(fc.nat(1_000_000), { nil: null }),
+      usedPercent: fc.option(fc.integer({ min: 0, max: 100 }), { nil: null }),
+      resetAt: fc.option(fc.nat(1_000_000), { nil: null }),
     })
     const snapArb = fc.record({
       mode: modeArb,

@@ -26,6 +26,12 @@ interface SensorEntry {
   latest: CapacityReading | null
 }
 
+/** One registry snapshot row: the sensor's resource and its latest reading. */
+export interface SensorSnapshot {
+  readonly resource: ResourceKey
+  readonly latest: CapacityReading | null
+}
+
 export class CapacityRegistry {
   readonly #clock: Clock
   readonly #config: CapacityConfig
@@ -45,6 +51,18 @@ export class CapacityRegistry {
   /** Removes a sensor; returns whether an entry existed. */
   unregister(id: string): boolean {
     return this.#sensors.delete(id)
+  }
+
+  /**
+   * Every registered sensor's latest reading alongside the resource it
+   * observes. The persisted-mirror path uses this to save what any instance
+   * observed; an entry whose sensor has no reading yet carries `null`.
+   */
+  snapshot(): readonly SensorSnapshot[] {
+    return [...this.#sensors.values()].map((entry) => ({
+      resource: entry.sensor.resource,
+      latest: entry.latest,
+    }))
   }
 
   /**

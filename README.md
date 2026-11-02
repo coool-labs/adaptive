@@ -71,6 +71,25 @@ Settings live on the server; every surface (TUI, GUI, RPC) edits the same truth.
 
 `pin` names a concrete model and outranks every other routing input. `agentTiers` maps an agent name to a tier (a role hint). Both are optional.
 
+## Recipe: subscriptions first
+
+If you pay for subscriptions and keep a metered API as the safety net, list the subscriptions first:
+
+```json
+{
+  "mode": "active",
+  "tiers": {
+    "standard": [
+      { "providerID": "openai", "id": "gpt-5-codex" },
+      { "providerID": "anthropic", "id": "claude-sonnet-4-5" },
+      { "providerID": "openrouter", "id": "anthropic/claude-sonnet-4.5" }
+    ]
+  }
+}
+```
+
+Order is policy, so the subscriptions are used first and OpenRouter only when both are windowed (rate limited) or exhausted. Nothing is force-failed back: once a preferred resource recovers, it is used again automatically at the next safe boundary — never mid-episode. The Status page shows each subscription's sensed usage (`used 72%, resets 18:42`) when the provider reports it, so you can see how close a window is to running out. Substitute the model IDs you actually have configured.
+
 ## How routing behaves
 
 Routing happens only at safe boundaries, by a deterministic priority ladder — no LLM classifier, no keyword soup:

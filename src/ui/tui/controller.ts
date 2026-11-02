@@ -15,6 +15,7 @@ import type { ModelRef } from "../../core/work-unit/types.js"
 import type { SettingsPatch, SettingsV1 } from "../../state/settings/index.js"
 import type { PatchResult } from "../../state/settings/types.js"
 import type { SessionModeSetResult } from "../../state/session-modes/index.js"
+import type { TierRequestSetResult } from "../../rpc/handlers.js"
 import type { Receipt } from "../../state/receipts/types.js"
 import type { StatusSnapshot } from "../../rpc/status.js"
 import { STATUS_EMPTY_MESSAGE, statusTable } from "./status.js"
@@ -23,6 +24,7 @@ import {
   modeOptions,
   modeTargetOptions,
   sessionModeOptions,
+  sessionTierOptions,
   type MainMenuChoice,
 } from "./menu.js"
 import {
@@ -76,6 +78,9 @@ export interface AdaptiveApi {
   /** The session's mode override (`null` = follows the global mode). */
   sessionMode: (sessionID: string) => Promise<OperatingMode | null>
   setSessionMode: (sessionID: string, mode: OperatingMode | null) => Promise<SessionModeSetResult>
+  /** The session's pinned tier request (`null` = follows the routing ladder). */
+  tierRequest: (sessionID: string) => Promise<TierName | null>
+  setTierRequest: (sessionID: string, tier: string | null) => Promise<TierRequestSetResult>
 }
 
 export type ModelLister = () => readonly ModelSummary[]
@@ -160,6 +165,30 @@ async function applySessionMode(
   return result
 }
 
+/**
+ * Persist one session tier request; alert on errors, toast on success. Same
+ * once-toast semantics as `applySettings` — the success toast is shown only
+ * on the first successful save of a dialog session.
+ */
+async function applyTierRequest(
+  env: AdaptiveEnv,
+  sessionID: string,
+  tier: string | null,
+  feedback: SaveFeedback,
+): Promise<TierRequestSetResult | undefined> {
+  const result = await tryApi(env, () => env.api.setTierRequest(sessionID, tier))
+  if (result === undefined) return undefined
+  if (!result.ok) {
+    await env.view.alert({ title: "Invalid tier request", message: result.errors.join("; ") })
+    return undefined
+  }
+  if (!feedback.once) {
+    env.view.toast("Settings saved", "success")
+    feedback.once = true
+  }
+  return result
+}
+
 export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
   const loaded = await tryApi(env, () => env.api.settings())
   if (loaded === undefined) return
@@ -190,9 +219,16 @@ export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
     // spam a toast on every loop iteration (the flows that need status toast
     // through tryApi themselves).
     const status = await env.api.status().catch(() => undefined)
+    // The session's pinned tier request: fetched per loop so the entry
+    // description tracks the latest request; a failure degrades to the
+    // generic description (the menu still works).
+    const tierPinned =
+      sessionID === undefined
+        ? undefined
+        : await env.api.tierRequest(sessionID).catch(() => undefined)
     const choice = await env.view.select({
       title: `Adaptive (${override ?? settings.mode})`,
-      options: mainMenuOptions(settings, status),
+      options: mainMenuOptions(settings, status, tierPinned),
     })
     if (choice === undefined) return
     if (choice === "status") {
@@ -209,6 +245,20 @@ export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
         settings = next.settings
         override = next.override
       }
+      continue
+    }
+    if (choice === "tier") {
+      if (sessionID === undefined) {
+        // The tier request only exists inside a session; on home the pick is
+        // explained (not silently dropped) and the menu re-opens.
+        await env.view.alert({
+          title: "This session",
+          message:
+            "This session's tier request can only be changed inside a session. Open a session and run /adaptive from there.",
+        })
+        continue
+      }
+      await runTierRequestMenu(env, sessionID, feedback)
       continue
     }
     if (choice === "pin") {
@@ -280,6 +330,24 @@ async function runModeMenu(
     const saved = await applySessionMode(env, sessionID, pick.mode, feedback)
     return saved === undefined ? undefined : { settings, override: pick.mode }
   }
+}
+
+/** The per-session tier-request menu (ADP-055): pin a tier or clear it. */
+async function runTierRequestMenu(
+  env: AdaptiveEnv,
+  sessionID: string,
+  feedback: SaveFeedback,
+): Promise<void> {
+  const pinned = await tryApi(env, () => env.api.tierRequest(sessionID))
+  if (pinned === undefined) return
+  const pick = await env.view.select({
+    title: "This session's tier",
+    options: sessionTierOptions({ pinned }),
+  })
+  if (pick === undefined) return
+  const next = pick.kind === "ladder" ? null : pick.tier
+  if (next === pinned) return
+  await applyTierRequest(env, sessionID, next, feedback)
 }
 
 /**

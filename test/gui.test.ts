@@ -102,6 +102,8 @@ describe("AdaptiveStatusPage", () => {
               breaker: "closed",
               windowed: false,
               windowUntil: null,
+              usedPercent: null,
+              resetAt: null,
             },
           ],
         }),

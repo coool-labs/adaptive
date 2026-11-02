@@ -17,6 +17,8 @@ function entry(overrides: Partial<TierResourceStatus> = {}): TierResourceStatus 
     breaker: "closed",
     windowed: false,
     windowUntil: null,
+    usedPercent: null,
+    resetAt: null,
     ...overrides,
   }
 }
@@ -95,6 +97,28 @@ describe("status table", () => {
     expect(lines[1]).toBe("prov/m1  quick  healthy  -")
   })
 
+  it("renders capacity usage and its reset time in STATE", () => {
+    const at = new Date(2026, 0, 1, 18, 42).getTime()
+    const lines = statusTable(
+      snapshot({
+        tiers: {
+          quick: [
+            entry({ usedPercent: 72, resetAt: at }),
+            entry({ usedPercent: 100 }),
+            entry({ usedPercent: 0, resetAt: at }),
+          ],
+          standard: [],
+          advanced: [],
+        },
+      }),
+    )
+    expect(lines[1]).toContain("used 72%, resets 18:42")
+    expect(lines[2]).toContain("used 100%")
+    expect(lines[3]).toContain("used 0%, resets 18:42")
+    // No reading → no capacity text at all.
+    expect(lines[0]).not.toContain("used")
+  })
+
   it("marks an unknown window deadline and a probing breaker in STATE", () => {
     const lines = statusTable(
       snapshot({
@@ -128,6 +152,11 @@ describe("status table", () => {
         id: "m1",
       }),
     ).toBe("prov/other — healthy")
+    const capAt = new Date(2026, 0, 1, 18, 42).getTime()
+    expect(statusLine(entry({ usedPercent: 72, resetAt: capAt }), null)).toBe(
+      "prov/m1 — healthy, used 72%, resets 18:42",
+    )
+    expect(statusLine(entry({ usedPercent: 30 }), null)).toBe("prov/m1 — healthy, used 30%")
   })
 
   it("never throws over arbitrary snapshots (property)", () => {
@@ -152,6 +181,8 @@ describe("status table", () => {
         breaker: breakerArb,
         windowed: fc.boolean(),
         windowUntil: fc.option(fc.nat(1_000_000), { nil: null }),
+        usedPercent: fc.option(fc.integer({ min: 0, max: 100 }), { nil: null }),
+        resetAt: fc.option(fc.nat(1_000_000), { nil: null }),
       }),
       { maxLength: 4 },
     )

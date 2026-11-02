@@ -42,11 +42,16 @@ export function fakeTuiContext(options: {
   status?: unknown
   /** The session-mode override the fake rpc serves (null = no override). */
   sessionMode?: OperatingMode | null
-  /** Receipts the fake rpc serves for receipts.list (empty when absent). */
-  receipts?: unknown[]
   failSessionModeGet?: boolean
   /** Records every session-mode.set call for assertions. */
   sessionModePatches?: { sessionID: string; mode: OperatingMode | null }[]
+  /** The tier request the fake rpc serves (null = follows the routing ladder). */
+  tierRequest?: string | null
+  failTierRequestGet?: boolean
+  /** Records every tier-request.set call for assertions. */
+  tierRequestPatches?: { sessionID: string; tier: string | null }[]
+  /** Receipts the fake rpc serves for receipts.list (empty when absent). */
+  receipts?: unknown[]
 }): {
   context: Context
   dialogs: DialogRecord
@@ -58,6 +63,7 @@ export function fakeTuiContext(options: {
     eventDisposals: number
     settingsGets: number
     sessionModeGets: number
+    tierRequestGets: number
   }
 } {
   const dialogs: DialogRecord = {
@@ -81,6 +87,7 @@ export function fakeTuiContext(options: {
     eventDisposals: 0,
     settingsGets: 0,
     sessionModeGets: 0,
+    tierRequestGets: 0,
   }
   const select = (spec: {
     title: string
@@ -125,6 +132,7 @@ export function fakeTuiContext(options: {
     return Promise.resolve(next as never)
   }
   const sessionModePatches = options.sessionModePatches ?? []
+  const tierRequestPatches = options.tierRequestPatches ?? []
   const context = {
     client: {
       rpc: () => ({
@@ -157,6 +165,16 @@ export function fakeTuiContext(options: {
         },
         "session-mode.set": (input: { sessionID: string; mode: OperatingMode | null }) => {
           sessionModePatches.push(input)
+          return Promise.resolve({ ok: true })
+        },
+        "tier-request.get": (input: { sessionID: string }) => {
+          counts.tierRequestGets += 1
+          return options.failTierRequestGet
+            ? Promise.reject(new Error("boom"))
+            : Promise.resolve({ tier: options.tierRequest ?? null, sessionID: input.sessionID })
+        },
+        "tier-request.set": (input: { sessionID: string; tier: string | null }) => {
+          tierRequestPatches.push(input)
           return Promise.resolve({ ok: true })
         },
         events: {

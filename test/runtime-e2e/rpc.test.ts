@@ -85,6 +85,8 @@ describe("runtime e2e: typed rpc surface on a real opencode host", () => {
         breaker: "closed",
         windowed: false,
         windowUntil: null,
+        usedPercent: null,
+        resetAt: null,
       },
     ])
     expect(status.parked).toBe(0)

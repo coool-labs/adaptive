@@ -38,7 +38,7 @@ export function statusLine(status: TierResourceStatus, pin: StatusSnapshot["pin"
   return `${resourceLabel(status.ref)} — ${status.health}${stateSuffix(status, pin)}`
 }
 
-/** Everything after the health state: window, breaker, pin. */
+/** Everything after the health state: capacity usage, window, breaker, pin. */
 function stateSuffix(status: TierResourceStatus, pin: StatusSnapshot["pin"]): string {
   let suffix = ""
   if (status.windowed) {
@@ -46,6 +46,10 @@ function stateSuffix(status: TierResourceStatus, pin: StatusSnapshot["pin"]): st
       status.windowUntil === null
         ? ", windowed (deadline unknown)"
         : `, windowed until ${clockTime(status.windowUntil)}`
+  }
+  if (status.usedPercent !== null) {
+    suffix += `, used ${String(status.usedPercent)}%`
+    if (status.resetAt !== null) suffix += `, resets ${clockTime(status.resetAt)}`
   }
   if (status.breaker === "open") suffix += ", breaker open"
   else if (status.breaker === "half_open") suffix += ", probing"

@@ -111,6 +111,10 @@ describe("fake provider scenarios", () => {
     expect(payload.model).toBe(FAKE_MODEL_ID)
     expect(payload.choices[0]?.message).toEqual({ role: "assistant", content: "done" })
     expect(payload.choices[0]?.finish_reason).toBe("stop")
+    // The success response carries the Codex-shaped telemetry the plugin's
+    // capacity sensor reads passively (ADP-020 wire format).
+    expect(response.headers.get("x-codex-primary-used-percent")).toBe("72")
+    expect(response.headers.get("x-codex-primary-reset-after-seconds")).toBe("900")
 
     const call = provider.calls[provider.calls.length - 1]
     expect(call?.path).toBe(CHAT_PATH)

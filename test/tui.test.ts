@@ -1,4 +1,4 @@
-// covers: ["ADP-032", "ADP-033", "ADP-054"]
+// covers: ["ADP-032", "ADP-033", "ADP-054", "ADP-055"]
 import { describe, expect, it } from "vitest"
 
 import tuiPlugin, { chipFor } from "../src/tui.js"
@@ -333,6 +333,26 @@ describe("tui entry: session-scoped flows (ADP-054)", () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(patches.map((patch) => patch["mode"])).toEqual(["active"])
     expect(sessionPatches).toEqual([])
+  })
+
+  it("passes the open session into the tier flow and pins its request (ADP-055)", async () => {
+    const patches: Record<string, unknown>[] = []
+    const tierPatches: { sessionID: string; tier: string | null }[] = []
+    const { context, dialogs, layers } = fakeTuiContext({
+      settings: observedSettings("observe"),
+      clientPatches: patches,
+      route: { type: "session", sessionID: "ses_1" },
+      tierRequestPatches: tierPatches,
+    })
+    await tuiPlugin.setup(context)
+    const run = (layers[0] as { commands: { run: () => void }[] }).commands[0]?.run
+    if (run === undefined) throw new Error("slash command was not registered")
+    // The tier menu steers the session's request, not the global settings.
+    dialogs.selectQueue.push("tier", { kind: "tier", tier: "quick" }, undefined)
+    run()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(tierPatches).toEqual([{ sessionID: "ses_1", tier: "quick" }])
+    expect(patches).toEqual([])
   })
 })
 

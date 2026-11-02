@@ -5,7 +5,7 @@
  * payloads (receipts/parked are parsed back from storage — the stores are
  * private by design).
  */
-// covers: ["ADP-002", "ADP-010", "ADP-013", "ADP-015", "ADP-016", "ADP-024", "ADP-029", "ADP-030", "ADP-031", "ADP-054"]
+// covers: ["ADP-002", "ADP-010", "ADP-013", "ADP-015", "ADP-016", "ADP-024", "ADP-029", "ADP-030", "ADP-031", "ADP-054", "ADP-056"]
 import { describe, expect, it, vi } from "vitest"
 
 import type { ModelSource } from "../../src/adapters/opencode/inventory.js"
@@ -22,6 +22,7 @@ import { Supervisor } from "../../src/supervisor/index.js"
 import { CODEX_PROVIDER_ID } from "../../src/supervisor/types.js"
 import { CONTINUATION_PROMPT } from "../../src/execution/index.js"
 import { SETTINGS_KEY } from "../../src/state/settings/types.js"
+import { CAPACITY_KEY } from "../../src/state/capacity/types.js"
 import { HEALTH_KEY } from "../../src/state/health/types.js"
 import { SESSION_MODES_KEY } from "../../src/state/session-modes/types.js"
 import {
@@ -1783,6 +1784,109 @@ describe("supervisor: state API for surfaces", () => {
     await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 1 })
     const after = await supervisor.status()
     expect(after.receipts).toBe(1)
+  })
+
+  const CODEX_USAGE_RESPONSE = {
+    kind: "http-response",
+    sessionID: "s1",
+    status: 200,
+    capturedHeaders: {
+      "x-codex-primary-used-percent": "72",
+      "x-codex-primary-reset-after-seconds": "900",
+    },
+  } as const
+
+  function codexStorage(): KeyFailStorage {
+    const storage = activeStorage()
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("openai", "a")] }))
+    return storage
+  }
+
+  it("status shows the usage sensed from a response's x-codex headers on the same instance", async () => {
+    // The passive observation reaches the registry only through refresh(); the
+    // admission-time refresh always runs before the response carrying the
+    // telemetry, so the response handler must sync the mirror itself.
+    const storage = codexStorage()
+    const supervisor = makeSupervisor({
+      storage,
+      session: new FakeSupervisorSession(),
+      infos: [makeInfo("openai", "a")],
+    })
+    await supervisor.handleReport(CODEX_USAGE_RESPONSE)
+    const snapshot = await supervisor.status()
+    expect(snapshot.tiers.standard[0]?.usedPercent).toBe(72)
+    expect(snapshot.tiers.standard[0]?.resetAt).not.toBeNull()
+  })
+
+  // The TUI host loads the plugin twice: one instance observes the response
+  // headers (event pump), the other serves status.get with an empty sensor
+  // registry. Capacity must travel through the persisted mirror.
+  it("status reflects capacity sensed by another instance sharing the storage", async () => {
+    const storage = codexStorage()
+    const infos = [makeInfo("openai", "a")]
+    const observer = makeSupervisor({ storage, session: new FakeSupervisorSession(), infos })
+    await observer.handleReport(CODEX_USAGE_RESPONSE)
+    const reader = makeSupervisor({ storage, session: new FakeSupervisorSession(), infos })
+    const status = await reader.status()
+    expect(status.tiers.standard[0]?.usedPercent).toBe(72)
+    expect(status.tiers.standard[0]?.resetAt).not.toBeNull()
+  })
+
+  it("persists nothing for a response whose headers carry no usage telemetry", async () => {
+    const storage = codexStorage()
+    const supervisor = makeSupervisor({
+      storage,
+      session: new FakeSupervisorSession(),
+      infos: [makeInfo("openai", "a")],
+    })
+    await supervisor.handleReport({
+      ...CODEX_USAGE_RESPONSE,
+      capturedHeaders: { "content-type": "application/json" },
+    })
+    expect(storage.data.get(CAPACITY_KEY)).toEqual({ version: 1, readings: [] })
+    const snapshot = await supervisor.status()
+    expect(snapshot.tiers.standard[0]?.usedPercent).toBeNull()
+  })
+
+  it("reports no capacity for a resource nothing has sensed", async () => {
+    const supervisor = makeSupervisor({
+      storage: codexStorage(),
+      session: new FakeSupervisorSession(),
+      infos: [makeInfo("openai", "a")],
+    })
+    const snapshot = await supervisor.status()
+    expect(snapshot.tiers.standard[0]?.usedPercent).toBeNull()
+    expect(snapshot.tiers.standard[0]?.resetAt).toBeNull()
+  })
+
+  it("keeps handling the response when the capacity mirror cannot persist", async () => {
+    const errors = spyErrors()
+    try {
+      const storage = new KeyFailStorage(CAPACITY_KEY)
+      seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("openai", "a")] }))
+      const session = new FakeSupervisorSession()
+      const supervisor = makeSupervisor({ storage, session, infos: [makeInfo("openai", "a")] })
+      await supervisor.handleReport(STARTED_S1)
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: "s1",
+        at: 15,
+        model: ref("openai", "a"),
+      })
+      await supervisor.handleReport({
+        ...CODEX_USAGE_RESPONSE,
+        status: 429,
+        capturedHeaders: { ...CODEX_USAGE_RESPONSE.capturedHeaders, "retry-after": "30" },
+      })
+      await flush()
+      // The mirror write degraded (fail-open log) but the 429 was still
+      // recorded as health evidence for the resource.
+      expect(errors.lines.some((line) => line.includes("[coool.adaptive] capacity:"))).toBe(true)
+      const status = await supervisor.status()
+      expect(status.tiers.standard[0]?.windowed).toBe(true)
+    } finally {
+      errors.restore()
+    }
   })
 
   it("lists receipts newest first", async () => {

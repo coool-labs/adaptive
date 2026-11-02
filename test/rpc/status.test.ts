@@ -4,6 +4,7 @@ import fc from "fast-check"
 import { buildStatus } from "../../src/rpc/status.js"
 import type { ResourceRecord } from "../../src/health/resource-health/types.js"
 import { resourceKeyID } from "../../src/health/resource-health/index.js"
+import type { CapacityReading } from "../../src/health/capacity/types.js"
 import { schedulerHealthKey } from "../../src/core/scheduler/index.js"
 import type { SettingsV1 } from "../../src/state/settings/index.js"
 import { defaultSettings } from "../../src/state/settings/index.js"
@@ -26,13 +27,17 @@ function record(
   }
 }
 
+function reading(overrides: Partial<CapacityReading> = {}): CapacityReading {
+  return { confidence: "high", observedAt: 5, ...overrides }
+}
+
 describe("buildStatus", () => {
   it("defaults missing records to healthy/closed/unwindowed", () => {
     const settings: SettingsV1 = {
       ...defaultSettings(),
       tiers: { ...defaultSettings().tiers, standard: [ref("prov", "a")] },
     }
-    const snapshot = buildStatus({ settings, health: [], parked: 0, receipts: 0 })
+    const snapshot = buildStatus({ settings, health: [], capacity: {}, parked: 0, receipts: 0 })
     expect(snapshot.mode).toBe("observe")
     expect(snapshot.pin).toBeNull()
     expect(snapshot.tiers.standard).toEqual([
@@ -42,6 +47,8 @@ describe("buildStatus", () => {
         breaker: "closed",
         windowed: false,
         windowUntil: null,
+        usedPercent: null,
+        resetAt: null,
       },
     ])
     expect(snapshot.tiers.quick).toEqual([])
@@ -63,7 +70,7 @@ describe("buildStatus", () => {
         { health: "healthy", breaker: { state: "open", failures: 5, openCount: 1, reopenAt: 50 } },
       ),
     ]
-    const snapshot = buildStatus({ settings, health, parked: 2, receipts: 7 })
+    const snapshot = buildStatus({ settings, health, capacity: {}, parked: 2, receipts: 7 })
     const [a, b] = snapshot.tiers.standard
     expect(a).toEqual({
       ref: ref("prov", "a"),
@@ -71,6 +78,8 @@ describe("buildStatus", () => {
       breaker: "closed",
       windowed: true,
       windowUntil: 99,
+      usedPercent: null,
+      resetAt: null,
     })
     expect(b).toEqual({
       ref: ref("prov", "b", "high"),
@@ -79,6 +88,8 @@ describe("buildStatus", () => {
       windowed: false,
       // null, not undefined: the host RPC encoder rejects present-but-undefined keys.
       windowUntil: null,
+      usedPercent: null,
+      resetAt: null,
     })
     expect(snapshot.parked).toBe(2)
     expect(snapshot.receipts).toBe(7)
@@ -90,7 +101,7 @@ describe("buildStatus", () => {
       tiers: { ...defaultSettings().tiers, quick: [ref("p", "m", "v")] },
     }
     const health = [record({ providerID: "p", modelID: "m", variantID: "v" })]
-    const snapshot = buildStatus({ settings, health, parked: 0, receipts: 0 })
+    const snapshot = buildStatus({ settings, health, capacity: {}, parked: 0, receipts: 0 })
     expect(snapshot.tiers.quick[0]?.health).toBe("degraded")
   })
 
@@ -103,7 +114,7 @@ describe("buildStatus", () => {
       record({ providerID: "p", modelID: "m" }, { health: "degraded" }),
       record({ providerID: "p", modelID: "m" }, { health: "unavailable" }),
     ]
-    const snapshot = buildStatus({ settings, health, parked: 0, receipts: 0 })
+    const snapshot = buildStatus({ settings, health, capacity: {}, parked: 0, receipts: 0 })
     expect(snapshot.tiers.standard[0]?.health).toBe("unavailable")
   })
 
@@ -155,7 +166,7 @@ describe("buildStatus", () => {
             },
           ),
         )
-        const snapshot = buildStatus({ settings, health, parked: 1, receipts: 2 })
+        const snapshot = buildStatus({ settings, health, capacity: {}, parked: 1, receipts: 2 })
         expect(snapshot.tiers.standard).toHaveLength(refs.length)
         for (const entry of snapshot.tiers.standard) {
           expect(typeof entry.health).toBe("string")
@@ -171,5 +182,43 @@ describe("buildStatus", () => {
       }),
       { numRuns: 100 },
     )
+  })
+
+  it("maps capacity readings into usedPercent and resetAt", () => {
+    const settings: SettingsV1 = {
+      ...defaultSettings(),
+      tiers: {
+        ...defaultSettings().tiers,
+        standard: [ref("prov", "a"), ref("prov", "b"), ref("prov", "c"), ref("prov", "d")],
+      },
+    }
+    const snapshot = buildStatus({
+      settings,
+      health: [],
+      capacity: {
+        [schedulerHealthKey(ref("prov", "a"))]: reading({ usedRatio: 0.724, resetAt: 1234 }),
+        [schedulerHealthKey(ref("prov", "b"))]: reading({ remainingRatio: 0.25 }),
+        [schedulerHealthKey(ref("prov", "c"))]: reading({}),
+        [schedulerHealthKey(ref("prov", "d"))]: null,
+      },
+      parked: 0,
+      receipts: 0,
+    })
+    const [a, b, c, d] = snapshot.tiers.standard
+    expect(a).toEqual({
+      ref: ref("prov", "a"),
+      health: "healthy",
+      breaker: "closed",
+      windowed: false,
+      windowUntil: null,
+      usedPercent: 72,
+      resetAt: 1234,
+    })
+    expect(b?.usedPercent).toBe(75)
+    expect(b?.resetAt).toBeNull()
+    expect(c?.usedPercent).toBeNull()
+    expect(c?.resetAt).toBeNull()
+    expect(d?.usedPercent).toBeNull()
+    expect(d?.resetAt).toBeNull()
   })
 })

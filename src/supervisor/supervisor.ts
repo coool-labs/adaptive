@@ -53,8 +53,13 @@ import { classifyFailure, CapacityRegistry, ResourceHealthRegistry } from "../he
 import { sweepRecord } from "../health/resource-health/transitions.js"
 import type { ResourceRecord } from "../health/resource-health/types.js"
 import { HealthRecordStore, HEALTH_KEY } from "../state/health/index.js"
+import { CapacityReadingStore, CAPACITY_KEY } from "../state/capacity/index.js"
+import type { PersistedCapacityReading } from "../state/capacity/index.js"
+import { mergeReadings } from "../health/capacity/merge.js"
+import { resourceChain, resourceKeyID } from "../health/resource-health/key.js"
 import type {
   Assessment,
+  CapacityReading,
   CapacitySignals,
   FailureCategory,
   FailureClassification,
@@ -128,6 +133,7 @@ export class Supervisor {
   readonly #tracker = new WorkUnitTracker()
   readonly #health: ResourceHealthRegistry
   readonly #healthRecords: HealthRecordStore
+  readonly #capacityStore: CapacityReadingStore
   readonly #sessionModes: SessionModeStore
   readonly #capacity: CapacityRegistry
   readonly #codex: CodexCapacitySensor
@@ -207,6 +213,7 @@ export class Supervisor {
     this.#receipts = new ReceiptStore(storageSeam(RECEIPTS_KEY, options.storage))
     this.#parked = new ParkedWorkStore(storageSeam(PARKED_KEY, options.storage))
     this.#healthRecords = new HealthRecordStore(storageSeam(HEALTH_KEY, options.storage))
+    this.#capacityStore = new CapacityReadingStore(storageSeam(CAPACITY_KEY, options.storage))
     this.#sessionModes = new SessionModeStore(
       storageSeam(SESSION_MODES_KEY, options.storage),
       options.clock,
@@ -279,6 +286,7 @@ export class Supervisor {
       // host's double-instance reconciliation) must keep steering sessions
       // under the modes the user set for them.
       await this.#sessionModes.load()
+      await this.#capacityStore.load()
       return this.#settings.load()
     }
     this.#ready = loadState()
@@ -424,11 +432,28 @@ export class Supervisor {
   async status(): Promise<StatusSnapshot> {
     const settings = await this.#ensureSettings()
     await this.#healthRecords.load()
+    // The persisted mirror serves the status surface: a serving instance
+    // without the event-pump hooks must still report sensed capacity.
+    await this.#capacityStore.load()
     const now = this.#options.clock()
     const records = this.#healthRecords.snapshot().map((record) => sweepRecord(record, now))
+    // Capacity readings are gathered per configured ref (mirroring the health
+    // input shape) so buildStatus stays a pure function of its inputs.
+    const capacity: Record<string, CapacityReading | null> = {}
+    for (const tier of TIERS) {
+      for (const ref of settings.tiers[tier]) {
+        const chainIDs = new Set(resourceChain(refKey(ref)).map(resourceKeyID))
+        const candidates = this.#capacityStore
+          .snapshot()
+          .filter((entry) => chainIDs.has(resourceKeyID(entry.key)))
+          .map((entry) => entry.reading)
+        capacity[schedulerHealthKey(ref)] = mergeReadings(candidates, now)
+      }
+    }
     return buildStatus({
       settings,
       health: records,
+      capacity,
       parked: this.#parked.count(),
       receipts: this.#receipts.snapshot().length,
     })
@@ -487,7 +512,7 @@ export class Supervisor {
         })
         return
       case "http-response":
-        this.#onHttpResponse(report)
+        await this.#onHttpResponse(report)
         return
       case "idle":
         await this.#onIdle(settings)
@@ -1016,9 +1041,10 @@ export class Supervisor {
 
   // ---------- http evidence ----------
 
-  #onHttpResponse(report: EventReport & { kind: "http-response" }): void {
+  async #onHttpResponse(report: EventReport & { kind: "http-response" }): Promise<void> {
     if (report.capturedHeaders !== undefined) {
       this.#codex.observe(report.capturedHeaders, this.#options.clock())
+      await this.#syncCapacityMirror()
     }
     if (report.status < 400) return
     const unit = this.#tracker.active(report.sessionID)
@@ -1359,6 +1385,27 @@ export class Supervisor {
     void this.#healthRecords.replace(records).catch((error: unknown) => {
       logFailOpen("health", error)
     })
+  }
+
+  /**
+   * Persist the capacity mirror after a passive observation (same instance
+   * split rationale as the health mirror): the status surface reads persisted
+   * readings so a serving instance without the event-pump hooks still reports
+   * sensed capacity. Failures are fail-open (ADP-031).
+   */
+  async #syncCapacityMirror(): Promise<void> {
+    try {
+      await this.#capacity.refresh()
+      const entries: PersistedCapacityReading[] = []
+      for (const sensor of this.#capacity.snapshot()) {
+        if (sensor.latest !== null) {
+          entries.push({ key: sensor.resource, reading: sensor.latest })
+        }
+      }
+      await this.#capacityStore.replace(entries)
+    } catch (error) {
+      logFailOpen("capacity", error)
+    }
   }
 }
 
