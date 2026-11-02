@@ -31,9 +31,7 @@ export function healthTag(status: TierResourceStatus | undefined): string {
   return parts.length === 0 ? "" : ` [${parts.join(", ")}]`
 }
 
-export type TierEditorChoice =
-  { kind: "add" } | { kind: "resource"; index: number } | { kind: "back" }
-
+export type TierEditorChoice = { kind: "add" } | { kind: "resource"; index: number }
 export function tierEditorOptions(
   settings: SettingsV1,
   tier: TierName,
@@ -50,7 +48,8 @@ export function tierEditorOptions(
       description: "Move or remove",
     })
   })
-  options.push({ title: "Back", value: { kind: "back" } })
+  // No "Back" row: Escape steps back out of the dialog (undefined pick →
+  // the editor loop re-shows the tier list).
   return options
 }
 

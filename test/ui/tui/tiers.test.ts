@@ -122,11 +122,10 @@ describe("tier menus", () => {
       receipts: 0,
     }
     const options = tierEditorOptions(settings, "standard", status)
-    expect(options).toHaveLength(4)
+    expect(options).toHaveLength(3)
     expect(options[0]?.title).toBe("Add model…")
     expect(options[1]?.title).toBe("prov/a [unavailable]")
     expect(options[2]?.title).toBe("prov/b@v")
-    expect(options[3]?.title).toBe("Back")
     expect(options[1]?.value).toEqual({ kind: "resource", index: 0 })
   })
 

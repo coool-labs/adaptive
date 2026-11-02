@@ -289,7 +289,7 @@ async function runTierEditor(
       title: `Tier: ${tier}`,
       options: tierEditorOptions(settings, tier, status),
     })
-    if (choice === undefined || choice.kind === "back") continue
+    if (choice === undefined) continue
     if (choice.kind === "add") {
       const next = await runAddModel(env, settings, tier, feedback)
       if (next !== undefined) settings = next

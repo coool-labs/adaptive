@@ -549,9 +549,9 @@ describe("controller: tiers branch", () => {
     expect(e.view.selectQueue.length).toBe(0)
   })
 
-  it("returns to the tier menu on back", async () => {
+  it("returns to the tier menu on escape", async () => {
     const e = env()
-    e.view.selectQueue.push("models", "standard", { kind: "back" }, ...EXIT)
+    e.view.selectQueue.push("models", "standard", undefined, ...EXIT)
     await runAdaptive(e)
     expect(e.view.selectQueue.length).toBe(0)
   })

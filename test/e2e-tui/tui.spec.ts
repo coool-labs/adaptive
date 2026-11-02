@@ -941,7 +941,8 @@ test(
 // `advanced (N)`, described by the resources they hold (`p/a · p/b`) or
 // "(empty — add models to enable routing)"; the editor select is titled
 // `Tier: <tier>` and lists "Add model…" first, one row per resource
-// (`provider/model`, empty health tag while healthy), then "Back". The model
+// (`provider/model`, empty health tag while healthy) — no "Back" row: Escape
+// steps back out (undefined pick re-shows the tier list). The model
 // picker shows EVERY catalog entry on an empty query — not just the
 // configured fake provider: the opencode/* builtin free models come first,
 // the fake models (`fake/fake-model`, then `fake/fake-model-2`) are the last
