@@ -1,4 +1,4 @@
-// covers: ["ADP-028", "ADP-036", "ADP-051", "ADP-054"]
+// covers: ["ADP-028", "ADP-036", "ADP-051", "ADP-054", "ADP-055"]
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { adaptiveRpcHandlers, type AdaptiveRpcSource } from "../../src/rpc/handlers.js"
 import type { PatchResult, SettingsPatch } from "../../src/state/settings/types.js"
@@ -29,6 +29,9 @@ function source(overrides: Partial<AdaptiveRpcSource> = {}): AdaptiveRpcSource {
     receipts: () => Promise.resolve([]),
     getSessionMode: () => Promise.resolve(null),
     setSessionMode: () => Promise.resolve(),
+    getTierRequest: () => Promise.resolve(null),
+    noteTierRequest: () => true,
+    setTierRequest: () => Promise.resolve(),
     ...overrides,
   }
 }
@@ -141,6 +144,8 @@ describe("adaptiveRpcHandlers", () => {
       "settings.get",
       "settings.set",
       "status.get",
+      "tier-request.get",
+      "tier-request.set",
     ])
   })
 })
@@ -240,5 +245,127 @@ describe("adaptiveRpcHandlers: session-mode (ADP-054)", () => {
       ok: true,
     })
     expect(spy.mock.calls[0]?.[0]).toContain("[coool.adaptive] rpc-emit")
+  })
+})
+
+describe("adaptiveRpcHandlers: tier-request (ADP-055)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("tier-request.get delegates to the source", async () => {
+    const spy = vi.fn((sessionID: string) =>
+      Promise.resolve(sessionID === "ses_1" ? ("advanced" as const) : null),
+    )
+    const handlers = adaptiveRpcHandlers(source({ getTierRequest: spy }))
+    await expect(handlers["tier-request.get"]({ sessionID: "ses_1" })).resolves.toEqual({
+      tier: "advanced",
+    })
+    expect(spy).toHaveBeenCalledOnce()
+    expect(spy.mock.calls[0]?.[0]).toBe("ses_1")
+  })
+
+  it("tier-request.set records the tier and emits tier-request-changed on success", async () => {
+    const note = vi.fn(() => true)
+    const emit = vi.fn(() => Promise.resolve())
+    const handlers = adaptiveRpcHandlers(source({ noteTierRequest: note }), emit)
+    await expect(
+      handlers["tier-request.set"]({ sessionID: "ses_1", tier: "advanced" }),
+    ).resolves.toEqual({
+      ok: true,
+    })
+    expect(note).toHaveBeenCalledWith("ses_1", "advanced")
+    expect(emit).toHaveBeenCalledWith("tier-request-changed", { sessionID: "ses_1" })
+  })
+
+  it("clearing the request (null) delegates to setTierRequest and emits", async () => {
+    const set = vi.fn(() => Promise.resolve())
+    const note = vi.fn(() => true)
+    const emit = vi.fn(() => Promise.resolve())
+    const handlers = adaptiveRpcHandlers(
+      source({ setTierRequest: set, noteTierRequest: note }),
+      emit,
+    )
+    await expect(handlers["tier-request.set"]({ sessionID: "ses_1", tier: null })).resolves.toEqual(
+      { ok: true },
+    )
+    expect(set).toHaveBeenCalledWith("ses_1", null)
+    expect(note).not.toHaveBeenCalled()
+    expect(emit).toHaveBeenCalledWith("tier-request-changed", { sessionID: "ses_1" })
+  })
+
+  it("rejects an out-of-bounds sessionID without calling the source", async () => {
+    const note = vi.fn(() => true)
+    const set = vi.fn(() => Promise.resolve())
+    const handlers = adaptiveRpcHandlers(source({ noteTierRequest: note, setTierRequest: set }))
+    for (const sessionID of ["", "x".repeat(129)]) {
+      await expect(handlers["tier-request.set"]({ sessionID, tier: "quick" })).resolves.toEqual({
+        ok: false,
+        errors: ["sessionID must be a non-empty string of at most 128 characters"],
+      })
+    }
+    expect(note).not.toHaveBeenCalled()
+    expect(set).not.toHaveBeenCalled()
+  })
+
+  it("rejects an unknown tier without calling the source", async () => {
+    const note = vi.fn(() => true)
+    const handlers = adaptiveRpcHandlers(source({ noteTierRequest: note }))
+    await expect(
+      handlers["tier-request.set"]({ sessionID: "ses_1", tier: "bogus" }),
+    ).resolves.toEqual({
+      ok: false,
+      errors: ["tier must be one of quick, standard, advanced or null"],
+    })
+    expect(note).not.toHaveBeenCalled()
+  })
+
+  it("degrades a failed note (false) to an error result", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const emit = vi.fn(() => Promise.resolve())
+    const handlers = adaptiveRpcHandlers(source({ noteTierRequest: () => false }), emit)
+    await expect(
+      handlers["tier-request.set"]({ sessionID: "ses_1", tier: "quick" }),
+    ).resolves.toEqual({ ok: false, errors: ["internal error"] })
+    expect(emit).not.toHaveBeenCalled()
+    expect(spy.mock.calls[0]?.[0]).toContain("[coool.adaptive] rpc-set")
+  })
+
+  it("does not emit when the clear fails internally", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const emit = vi.fn(() => Promise.resolve())
+    const handlers = adaptiveRpcHandlers(
+      source({ setTierRequest: () => Promise.reject(new Error("storage down")) }),
+      emit,
+    )
+    await expect(handlers["tier-request.set"]({ sessionID: "ses_1", tier: null })).resolves.toEqual(
+      { ok: false, errors: ["internal error"] },
+    )
+    expect(emit).not.toHaveBeenCalled()
+    expect(spy.mock.calls[0]?.[0]).toContain("[coool.adaptive] rpc-set")
+  })
+
+  it("logs emit failures without losing the set result", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const handlers = adaptiveRpcHandlers(
+      source({
+        noteTierRequest: () => true,
+        setTierRequest: () => Promise.resolve(),
+      }),
+      () => Promise.reject(new Error("emit boom")),
+    )
+    await expect(handlers["tier-request.set"]({ sessionID: "ses_1", tier: null })).resolves.toEqual(
+      { ok: true },
+    )
+    expect(spy.mock.calls[0]?.[0]).toContain("[coool.adaptive] rpc-emit")
+  })
+
+  it("succeeds without an emitter (emit is optional)", async () => {
+    const note = vi.fn(() => true)
+    const handlers = adaptiveRpcHandlers(source({ noteTierRequest: note }))
+    await expect(
+      handlers["tier-request.set"]({ sessionID: "ses_1", tier: "standard" }),
+    ).resolves.toEqual({ ok: true })
+    expect(note).toHaveBeenCalledOnce()
   })
 })

@@ -373,6 +373,8 @@ describe("plugin entry: rpc surface", () => {
       "settings.get",
       "settings.set",
       "status.get",
+      "tier-request.get",
+      "tier-request.set",
     ])
     const handlers = record?.handlers ?? {}
     const settings = (await handlers["settings.get"]?.(undefined)) as { mode: string }
@@ -388,6 +390,18 @@ describe("plugin entry: rpc surface", () => {
       ok: boolean
     }
     expect(set.ok).toBe(true)
+    const tierGet = (await handlers["tier-request.get"]?.({ sessionID: "s1" })) as {
+      tier: string | null
+    }
+    expect(tierGet).toEqual({ tier: null })
+    const tierSet = (await handlers["tier-request.set"]?.({
+      sessionID: "s1",
+      tier: "quick",
+    })) as { ok: boolean }
+    expect(tierSet.ok).toBe(true)
+    expect(
+      (await handlers["tier-request.get"]?.({ sessionID: "s1" })) as { tier: string | null },
+    ).toEqual({ tier: "quick" })
   })
 })
 

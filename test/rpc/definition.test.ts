@@ -21,8 +21,14 @@ describe("adaptiveRpc definition", () => {
       "settings.get",
       "settings.set",
       "status.get",
+      "tier-request.get",
+      "tier-request.set",
     ])
-    expect(Object.keys(adaptiveRpc.events)).toEqual(["settings-changed", "session-mode-changed"])
+    expect(Object.keys(adaptiveRpc.events)).toEqual([
+      "settings-changed",
+      "session-mode-changed",
+      "tier-request-changed",
+    ])
   })
 
   it("void schemas accept undefined and reject any other input", () => {
@@ -93,6 +99,34 @@ describe("adaptiveRpc definition", () => {
 
   it("the session-mode-changed event schema validates its data object", () => {
     const schema = adaptiveRpc.events["session-mode-changed"].schema
+    expect(validate(schema, { sessionID: "ses_1" })).toEqual({ value: { sessionID: "ses_1" } })
+    expect("issues" in validate(schema, { version: 1 })).toBe(true)
+    expect("issues" in validate(schema, 3)).toBe(true)
+  })
+
+  it("the tier-request.set gate requires a sessionID string and a tier string or null", () => {
+    const input = adaptiveRpc.methods["tier-request.set"].input
+    expect(validate(input, { sessionID: "ses_1", tier: null })).toEqual({
+      value: { sessionID: "ses_1", tier: null },
+    })
+    expect(validate(input, { sessionID: "ses_1", tier: "quick" })).toEqual({
+      value: { sessionID: "ses_1", tier: "quick" },
+    })
+    expect("issues" in validate(input, { sessionID: "ses_1", tier: 7 })).toBe(true)
+    expect("issues" in validate(input, { sessionID: "ses_1" })).toBe(true)
+    expect("issues" in validate(input, "x")).toBe(true)
+  })
+
+  it("the tier-request.get gate requires a sessionID string", () => {
+    const input = adaptiveRpc.methods["tier-request.get"].input
+    expect(validate(input, { sessionID: "ses_1" })).toEqual({ value: { sessionID: "ses_1" } })
+    expect("issues" in validate(input, {})).toBe(true)
+    expect("issues" in validate(input, { sessionID: 7 })).toBe(true)
+    expect("issues" in validate(input, null)).toBe(true)
+  })
+
+  it("the tier-request-changed event schema validates its data object", () => {
+    const schema = adaptiveRpc.events["tier-request-changed"].schema
     expect(validate(schema, { sessionID: "ses_1" })).toEqual({ value: { sessionID: "ses_1" } })
     expect("issues" in validate(schema, { version: 1 })).toBe(true)
     expect("issues" in validate(schema, 3)).toBe(true)

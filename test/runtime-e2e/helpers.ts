@@ -58,6 +58,10 @@ export interface HostRpc {
     get(sessionID: string): Promise<unknown>
     set(sessionID: string, mode: string | null): Promise<unknown>
   }
+  tierRequest: {
+    get(sessionID: string): Promise<unknown>
+    set(sessionID: string, tier: string | null): Promise<unknown>
+  }
 }
 
 export interface StartedHost {
@@ -314,6 +318,10 @@ export const rpc = (host: StartedHost): HostRpc => {
     sessionMode: {
       get: (sessionID) => call("session-mode.get", { sessionID }),
       set: (sessionID, mode) => call("session-mode.set", { sessionID, mode }),
+    },
+    tierRequest: {
+      get: (sessionID) => call("tier-request.get", { sessionID }),
+      set: (sessionID, tier) => call("tier-request.set", { sessionID, tier }),
     },
   }
 }

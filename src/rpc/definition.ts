@@ -4,7 +4,8 @@
  * they fetch snapshots, patch settings, and re-fetch on the `settings-changed`
  * event (the server is the single source of truth). Session-mode overrides
  * follow the same contract via `session-mode.get/set` and the
- * `session-mode-changed` event (ADP-054).
+ * `session-mode-changed` event (ADP-054); sticky per-session tier requests
+ * follow it via `tier-request.get/set` and `tier-request-changed` (ADP-055).
  *
  * Schema note: input schemas gate the wire shape (non-object patches are
  * rejected as rpc.invalid_input); deeper validation happens in the handlers
@@ -17,6 +18,8 @@ import type { OperatingMode } from "../core/scheduler/types.js"
 import type { SettingsPatch, SettingsV1 } from "../state/settings/index.js"
 import type { PatchResult } from "../state/settings/types.js"
 import type { SessionModeSetResult } from "../state/session-modes/index.js"
+import type { TierRequestSetResult } from "./handlers.js"
+import type { TierName } from "../core/tier-policy/types.js"
 import type { Receipt } from "../state/receipts/types.js"
 import type { StatusSnapshot } from "./status.js"
 
@@ -67,6 +70,12 @@ const isSessionModeSet = (value: unknown): boolean =>
   isString(value["sessionID"]) &&
   (value["mode"] === null || isString(value["mode"]))
 
+/** `{ sessionID: string, tier: string | null }` wire shape. */
+const isTierRequestSet = (value: unknown): boolean =>
+  isRecord(value) &&
+  isString(value["sessionID"]) &&
+  (value["tier"] === null || isString(value["tier"]))
+
 export const adaptiveRpc = Rpc.define({
   id: ADAPTIVE_RPC_ID,
   methods: {
@@ -100,12 +109,32 @@ export const adaptiveRpc = Rpc.define({
       ),
       output: schema<SessionModeSetResult>(isRecord, "output must be an object"),
     },
+    "tier-request.get": {
+      input: schema<{ sessionID: string }>(
+        hasSessionID,
+        "input must be an object with a sessionID string",
+      ),
+      output: schema<{ tier: TierName | null }>(isRecord, "output must be an object"),
+    },
+    "tier-request.set": {
+      input: schema<{ sessionID: string; tier: string | null }>(
+        isTierRequestSet,
+        "input must be an object with a sessionID string and a tier string or null",
+      ),
+      output: schema<TierRequestSetResult>(isRecord, "output must be an object"),
+    },
   },
   events: {
     "settings-changed": {
       schema: schema<{ version: number }>(isRecord, "event data must be an object"),
     },
     "session-mode-changed": {
+      schema: schema<{ sessionID: string }>(
+        hasSessionID,
+        "event data must be an object with a sessionID string",
+      ),
+    },
+    "tier-request-changed": {
       schema: schema<{ sessionID: string }>(
         hasSessionID,
         "event data must be an object with a sessionID string",

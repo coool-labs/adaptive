@@ -83,16 +83,10 @@ export default Plugin.define({
     // The settings-changed emitter resolves the registration lazily: handlers
     // only run after `register` resolves, so the holder is always populated.
     const rpcHolder: { registration?: RpcRegistration<typeof adaptiveRpc> } = {}
-    const emit: AdaptiveRpcEmit = (_name, data) => {
-      // The handlers only ever pair an event name with its own payload shape,
-      // so the payload discriminates the event to emit.
-      if ("version" in data) {
-        return rpcHolder.registration?.events.emit("settings-changed", { version: data.version })
-      }
-      return rpcHolder.registration?.events.emit("session-mode-changed", {
-        sessionID: data.sessionID,
-      })
-    }
+    const emit: AdaptiveRpcEmit = (...args) =>
+      // The correlated tuple pairing is checked by the handler types; the
+      // registration forwards it to the host emitter untouched.
+      rpcHolder.registration?.events.emit(...args)
     const rpcRegistration = await context.rpc.register(
       adaptiveRpc,
       adaptiveRpcHandlers(supervisor, emit),
