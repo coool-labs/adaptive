@@ -307,21 +307,21 @@ describe("controller: status branch", () => {
 describe("controller: mode branch", () => {
   it("leaves the current mode untouched", async () => {
     const { e, patches } = envWith()
-    e.view.selectQueue.push("mode", "observe", ...EXIT)
+    e.view.selectQueue.push("mode", "global", "observe", ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([])
   })
 
   it("applies a mode change", async () => {
     const { e, patches } = envWith()
-    e.view.selectQueue.push("mode", "active", ...EXIT)
+    e.view.selectQueue.push("mode", "global", "active", ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([{ mode: "active" }])
   })
 
   it("aborts when the mode dialog is cancelled", async () => {
     const { e, patches } = envWith()
-    e.view.selectQueue.push("mode", undefined, ...EXIT)
+    e.view.selectQueue.push("mode", "global", undefined, ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([])
   })
@@ -517,12 +517,18 @@ describe("controller: session-mode branch (ADP-054)", () => {
       sets.push({ sessionID, mode })
       return Promise.resolve({ ok: true })
     }
-    e.view.selectQueue.push("mode", undefined, ...EXIT)
+    e.view.selectQueue.push("mode", "session", undefined, ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([])
     expect(sets).toEqual([])
-    // Only the menu, the target select, and the re-shown menu were shown.
-    expect(e.view.selects).toEqual(["Adaptive (observe)", "Operating mode", "Adaptive (observe)"])
+    // The menu, the target select, and the session list re-shown before the
+    // menu again.
+    expect(e.view.selects).toEqual([
+      "Adaptive (observe)",
+      "Operating mode",
+      "This session's mode",
+      "Adaptive (observe)",
+    ])
   })
 
   it("does not re-patch when the pick changes nothing", async () => {
@@ -572,13 +578,42 @@ describe("controller: session-mode branch (ADP-054)", () => {
     expect(e.view.toasts.map((t) => t.message)).toEqual(["storage down"])
   })
 
+  it("escape on the home target select reopens the menu without a mode list", async () => {
+    const { e, patches } = envWith()
+    e.view.selectQueue.push("mode", undefined, ...EXIT)
+    await runAdaptive(e)
+    expect(patches).toEqual([])
+    expect(e.view.selects).toEqual(["Adaptive (observe)", "Operating mode", "Adaptive (observe)"])
+  })
+
+  it("alerts on home when This session… is picked and repeats the target question", async () => {
+    const { e, patches } = envWith()
+    e.view.selectQueue.push("mode", "session", "global", "observe", ...EXIT)
+    await runAdaptive(e)
+    expect(patches).toEqual([])
+    expect(e.view.alerts).toContainEqual({
+      title: "This session",
+      message:
+        "This session's mode can only be changed inside a session. Open a session and run /adaptive from there.",
+    })
+    // The target question is re-shown after the alert, so the user can pick
+    // the global target without leaving the menu.
+    expect(e.view.selects).toEqual([
+      "Adaptive (observe)",
+      "Operating mode",
+      "Operating mode",
+      "Global mode",
+      "Adaptive (observe)",
+    ])
+  })
+
   it("keeps the global mode menu when no session is open", async () => {
     const { e, patches } = envWith()
-    e.view.selectQueue.push("mode", "active", ...EXIT)
+    e.view.selectQueue.push("mode", "global", "active", ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([{ mode: "active" }])
     // The global menu has no Follow global entry.
-    expect(e.view.selectOptions[1]?.map((option) => option.title)).toEqual([
+    expect(e.view.selectOptions[2]?.map((option) => option.title)).toEqual([
       "off",
       "observe (current)",
       "active",
@@ -931,6 +966,7 @@ describe("controller: save feedback", () => {
     })
     e.view.selectQueue.push(
       "mode",
+      "global",
       "active",
       "pin",
       { kind: "pin", ref: { providerID: "prov", id: "m1" } },
@@ -1024,7 +1060,7 @@ describe("controller: cancel and stale paths", () => {
     const { e, patches } = envWith({
       setSettings: () => Promise.reject(new Error("down")),
     })
-    e.view.selectQueue.push("mode", "active", ...EXIT)
+    e.view.selectQueue.push("mode", "global", "active", ...EXIT)
     await runAdaptive(e)
     expect(e.view.toasts.map((t) => t.message)).toEqual(["down"])
     expect(patches).toEqual([])

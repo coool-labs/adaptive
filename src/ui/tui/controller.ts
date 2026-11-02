@@ -232,52 +232,54 @@ async function runModeMenu(
   sessionID: string | undefined,
   override: OperatingMode | null,
 ): Promise<ModeMenuOutcome | undefined> {
-  // On home the menu patches the global mode, unchanged behavior.
-  if (sessionID === undefined) {
-    const pick = await env.view.select({
+  // Every screen gets the same first question — which mode to steer — so a
+  // user who opens the menu on home learns the two-level structure before
+  // they ever run the command inside a session.
+  for (;;) {
+    const target = await env.view.select({
       title: "Operating mode",
-      options: modeOptions(settings.mode),
+      options: modeTargetOptions(settings.mode, override ?? settings.mode),
     })
-    if (pick === undefined || pick === settings.mode) return undefined
-    const applied = await applySettings(env, { mode: pick }, feedback)
-    return applied === undefined ? undefined : { settings: applied, override: null }
-  }
-  // Inside a session the menu first asks which mode to steer: the global
-  // default (patches settings for every session without an override) or the
-  // session's own override (ADP-054).
-  const target = await env.view.select({
-    title: "Operating mode",
-    options: modeTargetOptions(settings.mode, override ?? settings.mode),
-  })
-  if (target === undefined) return undefined
-  if (target === "global") {
+    if (target === undefined) return undefined
+    if (target === "global") {
+      const pick = await env.view.select({
+        title: "Global mode",
+        options: modeOptions(settings.mode),
+      })
+      if (pick === undefined || pick === settings.mode) return undefined
+      const applied = await applySettings(env, { mode: pick }, feedback)
+      // The session override is deliberately untouched: changing the global
+      // default must not rewrite what a session was pinned to.
+      return applied === undefined ? undefined : { settings: applied, override }
+    }
+    if (sessionID === undefined) {
+      // The session override only exists inside a session; on home the pick
+      // is explained (not silently dropped) and the target question repeats.
+      await env.view.alert({
+        title: "This session",
+        message:
+          "This session's mode can only be changed inside a session. Open a session and run /adaptive from there.",
+      })
+      continue
+    }
     const pick = await env.view.select({
-      title: "Global mode",
-      options: modeOptions(settings.mode),
+      title: "This session's mode",
+      options: sessionModeOptions({
+        global: settings.mode,
+        override,
+        effective: override ?? settings.mode,
+      }),
     })
-    if (pick === undefined || pick === settings.mode) return undefined
-    const applied = await applySettings(env, { mode: pick }, feedback)
-    // The session override is deliberately untouched: changing the global
-    // default must not rewrite what this session was pinned to.
-    return applied === undefined ? undefined : { settings: applied, override }
+    if (pick === undefined) return undefined
+    if (pick.kind === "global") {
+      if (override === null) return undefined
+      const saved = await applySessionMode(env, sessionID, null, feedback)
+      return saved === undefined ? undefined : { settings, override: null }
+    }
+    if (pick.mode === (override ?? settings.mode)) return undefined
+    const saved = await applySessionMode(env, sessionID, pick.mode, feedback)
+    return saved === undefined ? undefined : { settings, override: pick.mode }
   }
-  const pick = await env.view.select({
-    title: "This session's mode",
-    options: sessionModeOptions({
-      global: settings.mode,
-      override,
-      effective: override ?? settings.mode,
-    }),
-  })
-  if (pick === undefined) return undefined
-  if (pick.kind === "global") {
-    if (override === null) return undefined
-    const saved = await applySessionMode(env, sessionID, null, feedback)
-    return saved === undefined ? undefined : { settings, override: null }
-  }
-  if (pick.mode === (override ?? settings.mode)) return undefined
-  const saved = await applySessionMode(env, sessionID, pick.mode, feedback)
-  return saved === undefined ? undefined : { settings, override: pick.mode }
 }
 
 /**

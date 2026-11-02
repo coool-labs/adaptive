@@ -613,7 +613,8 @@ test(
       // Mode is the third menu option (Status, Models, Mode, Pin, Receipts).
       await pressAll(app, ["ArrowDown", "ArrowDown"])
       await app.press("Enter")
-      await app.waitForText("Adaptive does nothing", { timeout: 30_000 })
+      // The unified target select asks which mode to steer even on home.
+      await app.waitForText("Global mode…", { timeout: 30_000 })
       // Cancelling the mode menu reopens the main menu (cancel path).
       await app.press("Escape")
       await app.waitForText("Adaptive (observe)", { timeout: 15_000 })
@@ -651,6 +652,10 @@ test(
       await openAdaptiveMenu(app)
       // Mode is the third menu option.
       await pressAll(app, ["ArrowDown", "ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText("Global mode…", { timeout: 30_000 })
+      // The unified target select lists "Global mode…" first on home too;
+      // Enter takes that target, then the global mode list highlights "off".
       await app.press("Enter")
       await app.waitForText("Adaptive does nothing", { timeout: 30_000 })
       // The mode menu highlights "off" on open; active is two rows down.
@@ -808,6 +813,10 @@ test(
       // Mode is the third menu option.
       await pressAll(app, ["ArrowDown", "ArrowDown"])
       await app.press("Enter")
+      await app.waitForText("Global mode…", { timeout: 30_000 })
+      // The unified target select lists "Global mode…" first; Enter takes
+      // that target, then the global mode list highlights "off".
+      await app.press("Enter")
       await app.waitForText("Adaptive does nothing", { timeout: 30_000 })
       // "off" is highlighted first in the mode menu; applying the patch
       // reopens the main menu.
@@ -831,9 +840,11 @@ test(
     await bootTui(launched)
     await step("switch to active and seed the standard tier", async () => {
       await openAdaptiveMenu(app)
-      // Mode is the third menu option; "off" is highlighted in the mode
-      // menu and active is two rows down.
+      // Mode is the third menu option; the unified target select asks which
+      // mode to steer even on home, and "Global mode…" is highlighted first.
       await pressAll(app, ["ArrowDown", "ArrowDown"])
+      await app.press("Enter")
+      await app.waitForText("Global mode…", { timeout: 30_000 })
       await app.press("Enter")
       await app.waitForText("Adaptive does nothing", { timeout: 30_000 })
       await pressAll(app, ["ArrowDown", "ArrowDown"])

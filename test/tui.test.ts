@@ -107,8 +107,8 @@ describe("tui entry: full flows", () => {
     const run = (layers[0] as { commands: { run: () => void }[] }).commands[0]?.run
     if (run === undefined) throw new Error("slash command was not registered")
     const selects = dialogs.selectQueue
-    // menu: status -> receipts -> mode -> change -> exit
-    selects.push("status", "receipts", "mode", "active", undefined)
+    // menu: status -> receipts -> mode -> global target -> change -> exit
+    selects.push("status", "receipts", "mode", "global", "active", undefined)
     run()
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(dialogs.alerts.some((a) => a.message.includes("No models configured yet"))).toBe(true)
@@ -328,7 +328,7 @@ describe("tui entry: session-scoped flows (ADP-054)", () => {
     await tuiPlugin.setup(context)
     const run = (layers[0] as { commands: { run: () => void }[] }).commands[0]?.run
     if (run === undefined) throw new Error("slash command was not registered")
-    dialogs.selectQueue.push("mode", "active", undefined)
+    dialogs.selectQueue.push("mode", "global", "active", undefined)
     run()
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(patches.map((patch) => patch["mode"])).toEqual(["active"])
