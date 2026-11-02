@@ -3192,3 +3192,160 @@ describe("per-session mode overrides (ADP-054)", () => {
     expect(await supervisor.getSessionMode("s1")).toBe("active")
   })
 })
+
+describe("tier requests (ADP-055)", () => {
+  const PROMPT_S1 = { kind: "prompt", sessionID: "s1" } as const
+
+  /** A supervisor whose session source treats one session as dead. */
+  function supervisorWithDeadSession(
+    storage: KeyFailStorage,
+    deadSessionID: string,
+  ): { supervisor: Supervisor; session: FakeSupervisorSession } {
+    const session = new FakeSupervisorSession()
+    const source = {
+      ...session.source,
+      get: (input: { sessionID: string }) =>
+        input.sessionID === deadSessionID
+          ? Promise.reject(new Error("session gone"))
+          : session.source.get(input),
+    }
+    const infos = [makeInfo("prov", "a"), makeInfo("prov", "b")]
+    const model = {
+      transform: (cb: (editor: unknown) => unknown) => {
+        const editor = {
+          list: () => infos,
+          get: (providerID: string, modelID: string) =>
+            infos.find((info) => info.providerID === providerID && info.id === modelID),
+        }
+        cb(editor)
+        return Promise.resolve({ dispose: () => Promise.resolve() })
+      },
+    } as unknown as ModelSource
+    const supervisor = new Supervisor({
+      session: source as unknown as SupervisorSessionSource,
+      model,
+      storage: storage.source,
+      clock: () => 1000,
+    })
+    return { supervisor, session }
+  }
+
+  it("a sticky tier request routes the next admission into the requested tier", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    expect(await supervisor.getTierRequest("s1")).toBeNull()
+    expect(supervisor.noteTierRequest("s1", "standard")).toBe(true)
+    expect(await supervisor.getTierRequest("s1")).toBe("standard")
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual(["switch:s1:prov/a"])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts[0]?.sessionID).toBe("s1")
+    expect(receipts[0]?.tier).toBe("standard")
+    expect(receipts[0]?.decision).toMatchObject({ kind: "apply", model: ref("prov", "a") })
+    // Sticky: the request survives the admission until explicitly cleared.
+    expect(await supervisor.getTierRequest("s1")).toBe("standard")
+  })
+
+  it("an unknown tier name is refused without touching routing", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    expect(supervisor.noteTierRequest("s1", "sideways")).toBe(false)
+    expect(await supervisor.getTierRequest("s1")).toBeNull()
+    // The prompt admits normally (no tier request in play).
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual(["switch:s1:prov/a"])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts[0]?.tier).toBe("standard")
+    expect(receipts[0]?.decision).toMatchObject({ kind: "apply", reason: "preferred" })
+  })
+
+  it("a user pin outranks the tier request", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    seed(
+      storage,
+      SETTINGS_KEY,
+      settingsJSON("active", { standard: [wireRef("prov", "a")] }, wireRef("prov", "b")),
+    )
+    const supervisor = makeSupervisor({ storage, session })
+    supervisor.noteTierRequest("s1", "standard")
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual(["switch:s1:prov/b"])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts[0]?.decision).toMatchObject({ kind: "apply", reason: "pin" })
+  })
+
+  it("an unconfigured requested tier defers with tier-not-configured", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    supervisor.noteTierRequest("s1", "advanced")
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual([])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts[0]?.sessionID).toBe("s1")
+    expect(receipts[0]?.decision).toEqual({
+      kind: "defer",
+      reason: "routing-defer",
+      detail: "tier-not-configured",
+    })
+  })
+
+  it("clears a tier request with null and refuses any other input", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    supervisor.noteTierRequest("s1", "quick")
+    await supervisor.setTierRequest("s1", null)
+    expect(await supervisor.getTierRequest("s1")).toBeNull()
+    await expect(supervisor.setTierRequest("s1", "quick")).rejects.toThrow(
+      "only null clears a tier request",
+    )
+    // Clearing an absent request is a no-op.
+    await supervisor.setTierRequest("s2", null)
+    expect(await supervisor.getTierRequest("s2")).toBeNull()
+  })
+
+  it("evicts the oldest tier request past the bounded capacity", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    for (let i = 0; i < Supervisor.MAX_TIER_REQUESTS; i++) {
+      supervisor.noteTierRequest(`s${String(i)}`, "standard")
+    }
+    // One more pushes the oldest (s0) out; the newest still rides.
+    supervisor.noteTierRequest("s-new", "quick")
+    expect(await supervisor.getTierRequest("s0")).toBeNull()
+    expect(await supervisor.getTierRequest("s-new")).toBe("quick")
+  })
+
+  it("does not re-probe a session that already joined the sweep", async () => {
+    const storage = activeStorage()
+    seed(storage, PARKED_KEY, {
+      version: 1,
+      parked: [
+        { id: "s1#1", sessionID: "s1", tier: "standard", reason: "all-blocked", parkedAt: 5 },
+      ],
+    })
+    const session = new FakeSupervisorSession()
+    const supervisor = makeSupervisor({ storage, session })
+    supervisor.noteTierRequest("s1", "quick")
+    await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+    // The parked holder joined the sweep first; the tier-request pass saw it
+    // already probed and kept the live session's request.
+    expect(await supervisor.getTierRequest("s1")).toBe("quick")
+  })
+
+  it("prunes a dead session's tier request at the idle sweep, keeps a live one", async () => {
+    const storage = activeStorage()
+    const { supervisor } = supervisorWithDeadSession(storage, "s2")
+    supervisor.noteTierRequest("s1", "quick")
+    supervisor.noteTierRequest("s2", "advanced")
+    expect(await supervisor.getTierRequest("s2")).toBe("advanced")
+    await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+    expect(await supervisor.getTierRequest("s1")).toBe("quick")
+    expect(await supervisor.getTierRequest("s2")).toBeNull()
+  })
+})

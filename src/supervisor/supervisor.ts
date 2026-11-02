@@ -33,6 +33,7 @@ import type { InterruptReason } from "../core/work-unit/interruption.js"
 import { resolveRouting } from "../core/tier-policy/resolve.js"
 import { TIERS, nextTier } from "../core/tier-policy/types.js"
 import type { RoutingDecision, TierName } from "../core/tier-policy/types.js"
+import type { TierRequest } from "../core/tier-policy/types.js"
 import {
   admit,
   forMode as schedulerForMode,
@@ -90,6 +91,11 @@ import type { RetryHookInput, SupervisorOptions } from "./types.js"
 import { CODEX_PROVIDER_ID } from "./types.js"
 
 /** Which tiers currently have configured resources (ADP-005). */
+/** Vocabulary guard without a cast: strict member equality. */
+function isTierName(tier: string): tier is TierName {
+  return TIERS.some((name) => name === tier)
+}
+
 function configuredTiers(settings: SettingsV1): TierName[] {
   return TIERS.filter((tier) => settings.tiers[tier].length > 0)
 }
@@ -136,6 +142,14 @@ export class Supervisor {
   // are worthless. Insertion order gives the eviction (oldest hint first).
   static readonly MAX_AGENT_HINTS = 1024
   readonly #agents = new Map<string, string>()
+  /**
+   * Per-session tier requests (agent-declared via the adaptive_tier tool):
+   * the request is STICKY — it steers the session's next and following
+   * admissions until cleared or the session dies — because an agent works
+   * across many units in one task. Insertion order gives the eviction.
+   */
+  static readonly MAX_TIER_REQUESTS = 1024
+  readonly #tierRequests = new Map<string, TierRequest>()
   /**
    * Sessions with an owned continuation prompt in flight: the prompt hook
    * will fire for it, but that prompt belongs to the active unit — it must
@@ -333,6 +347,42 @@ export class Supervisor {
     })
     this.#escalationEvidence.set(unit.id, recorded.slice(-MAX_ESCALATION_EVIDENCE))
     return true
+  }
+
+  /**
+   * Record an agent-declared tier request for the session (the adaptive_tier
+   * tool). STICKY: it steers the session's next and following admissions
+   * until cleared — an agent works across many units in one task. Returns
+   * false on an unknown tier (the tool re-validates before calling).
+   */
+  noteTierRequest(sessionID: string, tier: string): boolean {
+    if (!isTierName(tier)) return false
+    if (
+      !this.#tierRequests.has(sessionID) &&
+      this.#tierRequests.size >= Supervisor.MAX_TIER_REQUESTS
+    ) {
+      // The map is non-empty here (size >= MAX_TIER_REQUESTS > 0): Map
+      // preserves insertion order, so the first key is the oldest request.
+      for (const oldest of this.#tierRequests.keys()) {
+        this.#tierRequests.delete(oldest)
+        break
+      }
+    }
+    this.#tierRequests.set(sessionID, { tier, via: "manual-command" })
+    return true
+  }
+
+  /** The session's tier request, or `null` when it follows the routing ladder. */
+  async getTierRequest(sessionID: string): Promise<TierName | null> {
+    await this.#ready
+    return this.#tierRequests.get(sessionID)?.tier ?? null
+  }
+
+  /** Clear one session's tier request (`null` is the only valid input). */
+  async setTierRequest(sessionID: string, tier: TierName | null): Promise<void> {
+    await this.#ready
+    if (tier !== null) throw new Error("only null clears a tier request")
+    this.#tierRequests.delete(sessionID)
   }
 
   // ---------- state API for the control surfaces (ADP-033/034/036) ----------
@@ -586,6 +636,11 @@ export class Supervisor {
   }> {
     const routing = resolveRouting({
       ...(settings.pin !== null ? { pin: settings.pin } : {}),
+      // The agent-declared tier request (adaptive_tier tool) outranks the
+      // role hints but stays below the pin (ADP-002 ladder).
+      ...(this.#tierRequests.has(sessionID)
+        ? { tierRequest: this.#tierRequests.get(sessionID) }
+        : {}),
       // The agent-role hint is the session's last observed agent — the host
       // reports it on every model request (ADP-002 level 3).
       ...(this.#agents.has(sessionID) ? { agent: this.#agents.get(sessionID) } : {}),
@@ -1130,7 +1185,7 @@ export class Supervisor {
     // pruned here (its per-session steering is worthless once the session is
     // gone), in the same sweep that clears the other per-session maps.
     const overrideIDs = this.#sessionModes.snapshot().map((record) => record.sessionID)
-    if (records.length === 0 && overrideIDs.length === 0) return
+    if (records.length === 0 && overrideIDs.length === 0 && this.#tierRequests.size === 0) return
     // OFF sessions are not supervised: their parked records are neither
     // dropped nor resumed, and no alive probe runs for them.
     const supervised = new Set(
@@ -1142,6 +1197,11 @@ export class Supervisor {
     for (const sessionID of new Set([...supervised, ...overrideIDs])) {
       alive.set(sessionID, await this.#isSessionAlive(sessionID))
     }
+    // Tier-request holders join the alive sweep too: a dead session's sticky
+    // tier request dies with its session, like the other per-session maps.
+    for (const sessionID of this.#tierRequests.keys()) {
+      if (!alive.has(sessionID)) alive.set(sessionID, await this.#isSessionAlive(sessionID))
+    }
     const plan = selectResumable(records, {
       tierConfigured: (tier) => configuredTiers(settings).includes(tier),
       sessionAlive: (sessionID) => alive.get(sessionID) === true,
@@ -1149,6 +1209,10 @@ export class Supervisor {
     for (const dropped of plan.drop) {
       if (this.#modeFor(dropped.sessionID, settings) === "off") continue
       await this.#dropParked(dropped)
+    }
+    // Tier requests die with their session, like the other per-session maps.
+    for (const sessionID of this.#tierRequests.keys()) {
+      if (alive.get(sessionID) === false) this.#tierRequests.delete(sessionID)
     }
     // At most ONE continuation per session per sweep: prompting a session
     // with an active unit would supersede the user's in-flight episode (not

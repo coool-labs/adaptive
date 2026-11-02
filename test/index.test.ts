@@ -308,6 +308,13 @@ describe("plugin entry", () => {
     )) as () => void
     const tool = addedTools[0] as { name: string } | undefined
     expect(tool?.name).toBe("adaptive_escalate")
+    const tierToolInstance = addedTools[1] as
+      | {
+          name: string
+          execute: (input: unknown, context: { sessionID: string }) => Promise<unknown>
+        }
+      | undefined
+    expect(tierToolInstance?.name).toBe("adaptive_tier")
     // The tool records against the session's active unit.
     events.push(startedEvent())
     await vi.waitFor(() => {
@@ -322,6 +329,14 @@ describe("plugin entry", () => {
       content: string
     }
     expect(result.content).toContain("recorded")
+    // The tier tool (ADP-055) routes through the same supervisor.
+    const tierResult = (await tierToolInstance?.execute(
+      { tier: "quick" },
+      {
+        sessionID: "s1",
+      },
+    )) as { content: { text: string }[] }
+    expect(tierResult.content[0]?.text).toContain("Tier request recorded: quick")
     cleanup()
   })
 

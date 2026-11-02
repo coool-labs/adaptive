@@ -4,6 +4,7 @@ import {
   escalationTool,
   registerSessionHooks,
   subscribeSessions,
+  tierTool,
 } from "./adapters/opencode/index.js"
 import { PLUGIN_ID } from "./plugin-id.js"
 import { adaptiveRpc } from "./rpc/definition.js"
@@ -68,12 +69,15 @@ export default Plugin.define({
     )
     // The typed escalation tool (T-18, ADP-015): the agent's self-report
     // surface for stronger capability, applied at the next safe boundary.
+    // The tier tool (ADP-055): the agent declares the task's tier; the
+    // declaration steers the session's next admissions until cleared.
     const toolRegistration = await context.tool.transform((editor) => {
       editor.add(
         escalationTool((sessionID, reason, evidence) =>
           supervisor.noteEscalationRequest(sessionID, reason, evidence),
         ),
       )
+      editor.add(tierTool((sessionID, tier) => supervisor.noteTierRequest(sessionID, tier)))
     })
     // Typed RPC (ADP-034/036): the only channel to the control surfaces.
     // The settings-changed emitter resolves the registration lazily: handlers
