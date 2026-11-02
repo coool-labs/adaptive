@@ -76,20 +76,15 @@ export default define({
           context.ui.dialog.show(
             () => (
               // Styled to match the host's own dialogs (bold title, dim esc
-              // hint, one-row top inset — probed against the receipts
-              // dialog's rendering).
-              <box
-                style={{
-                  flexDirection: "column",
-                  paddingTop: 1,
-                  paddingBottom: 1,
-                  paddingX: 2,
-                }}
-              >
+              // hint). The host dialog panel already insets the content, so
+              // the box adds no top padding of its own; a blank spacer row
+              // separates the title row from the table.
+              <box style={{ flexDirection: "column", paddingBottom: 1, paddingX: 2 }}>
                 <box style={{ flexDirection: "row", justifyContent: "space-between" }}>
                   <text style={{ attributes: TextAttributes.BOLD }}>{spec.title}</text>
                   <text style={{ attributes: TextAttributes.DIM }}>esc</text>
                 </box>
+                <text> </text>
                 {spec.lines.map((line) => (
                   <text>{line}</text>
                 ))}
