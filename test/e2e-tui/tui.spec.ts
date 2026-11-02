@@ -746,35 +746,21 @@ test(
       await pressAll(app, ["ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"])
       await app.press("Enter")
       await app.waitForText("Receipts (25, newest first)", { timeout: 30_000 })
-      // Newest first: the top row is the highest seeded id, and the page
-      // ends with "Next page" (20 receipts + the action).
+      // Newest first: the top row is the highest seeded id. "Next page" is
+      // a footer action (not a list item), triggered by its ctrl+f binding.
       await app.waitForText("#25 ", { timeout: 15_000 })
-      await pressAll(
-        app,
-        Array.from({ length: 20 }, () => "ArrowDown"),
-      )
-      await app.press("Enter")
+      await app.waitForText("Next page", { timeout: 15_000 })
+      await app.press("ctrl+f")
     })
     await step("page two offers the way back to page one", async () => {
       await app.waitForText("Previous page", { timeout: 15_000 })
-      // The remaining 5 receipts are listed before the actions.
+      // The remaining 5 receipts are listed on this page.
       await app.waitForText("#1 ", { timeout: 15_000 })
-      await pressAll(
-        app,
-        Array.from({ length: 5 }, () => "ArrowDown"),
-      )
-      await app.press("Enter")
+      await app.press("ctrl+b")
     })
     await step("page one is shown again after going back", async () => {
       await app.waitForText("Receipts (25, newest first)", { timeout: 15_000 })
       await app.waitForText("#25 ", { timeout: 15_000 })
-      // The re-rendered page's highlight reset to the top, and the ~58-col
-      // dialog only renders the visible options window — scroll to the
-      // bottom to prove "Next page" is offered again.
-      await pressAll(
-        app,
-        Array.from({ length: 20 }, () => "ArrowDown"),
-      )
       await app.waitForText("Next page", { timeout: 15_000 })
     })
     await escapeToBase(app)

@@ -44,6 +44,13 @@ export interface AdaptiveView {
       options: readonly SelectOption<Value>[],
     ) => readonly SelectOption<Value>[]
   }): Promise<Value | undefined>
+  /** A select with footer actions (page flips): the action closes the
+   * dialog and is reported separately from an option pick. */
+  selectPaged<Value>(spec: {
+    title: string
+    options: readonly SelectOption<Value>[]
+    actions: readonly { title: string; value: string; bind: string }[]
+  }): Promise<{ picked: Value | undefined; action: string | undefined }>
   confirm(options: {
     title: string
     message: string
@@ -413,31 +420,31 @@ async function runReceiptsView(env: AdaptiveEnv): Promise<void> {
     })
     return
   }
-  // Paginated browse: every page is a bounded view, and "Next page" reaches
-  // the rest of the list the title count promises. Viewing a detail returns
-  // to the same page; Escape (undefined pick) leaves the browser.
+  // Paginated browse: every page is a bounded view, and the page flips are
+  // footer actions (not list items) — they close the dialog and the loop
+  // reopens it at the new offset. Viewing a detail returns to the same
+  // page; Escape (no pick, no action) leaves the browser.
   for (let offset = 0; ;) {
     const page = receiptPage(all.slice(offset))
     const hasNext = offset + RECEIPTS_PAGE_SIZE < all.length
-    const options: SelectOption<Receipt | "next" | "prev">[] = page.map((receipt) => ({
-      title: receiptLine(receipt),
-      value: receipt,
-    }))
-    if (offset > 0) options.push({ title: "Previous page", value: "prev" })
-    if (hasNext) options.push({ title: "Next page", value: "next" })
-    const pick = await env.view.select({
+    const result = await env.view.selectPaged({
       title: `Receipts (${String(all.length)}, newest first)`,
-      options,
+      options: page.map((receipt) => ({ title: receiptLine(receipt), value: receipt })),
+      actions: [
+        ...(offset > 0 ? [{ title: "Previous page", value: "prev", bind: "ctrl+b" }] : []),
+        ...(hasNext ? [{ title: "Next page", value: "next", bind: "ctrl+f" }] : []),
+      ],
     })
-    if (pick === undefined) return
-    if (pick === "next") {
+    if (result.action === "next") {
       offset += RECEIPTS_PAGE_SIZE
       continue
     }
-    if (pick === "prev") {
+    if (result.action === "prev") {
       offset = Math.max(0, offset - RECEIPTS_PAGE_SIZE)
       continue
     }
+    const pick = result.picked
+    if (pick === undefined) return
     await env.view.alert({ title: `Receipt #${String(pick.id)}`, message: receiptDetail(pick) })
   }
 }

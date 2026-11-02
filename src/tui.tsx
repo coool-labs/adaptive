@@ -21,6 +21,7 @@ import type { OperatingMode } from "./core/scheduler/types.js"
 import { parseMode } from "./state/settings/index.js"
 import { runAdaptive } from "./ui/tui/controller.js"
 import type { AdaptiveApi, AdaptiveView } from "./ui/tui/controller.js"
+import type { SelectOption } from "./ui/tui/options.js"
 import { errorText } from "./ui/tui/options.js"
 import type { ModelSummary } from "./ui/tui/tiers.js"
 
@@ -64,6 +65,35 @@ export default define({
     }
     const view: AdaptiveView = {
       select: (options) => context.ui.dialog.select(options),
+      selectPaged: <Value,>(spec: {
+        title: string
+        options: readonly SelectOption<Value>[]
+        actions: readonly { title: string; value: string; bind: string }[]
+      }) =>
+        // Footer actions flip pages: triggering one closes the dialog and
+        // resolves with the action instead of a pick; the controller loop
+        // then reopens the browser at the new offset. The host resolves its
+        // own select promise undefined on the clear() — resolving our
+        // promise first-come means the action result wins.
+        new Promise<{ picked: Value | undefined; action: string | undefined }>((resolve) => {
+          void context.ui.dialog
+            .select({
+              title: spec.title,
+              options: spec.options,
+              actions: spec.actions.map((action) => ({
+                bind: action.bind,
+                title: action.title,
+                selection: "none" as const,
+                onTrigger: () => {
+                  context.ui.dialog.clear()
+                  resolve({ picked: undefined, action: action.value })
+                },
+              })),
+            })
+            .then((picked) => {
+              resolve({ picked, action: undefined })
+            })
+        }),
       confirm: (options) => context.ui.dialog.confirm(options),
       alert: (options) => context.ui.dialog.alert(options),
       table: (spec) =>

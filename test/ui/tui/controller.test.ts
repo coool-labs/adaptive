@@ -19,6 +19,11 @@ interface FakeView extends AdaptiveView {
   toasts: { message: string; variant?: string }[]
   selects: string[]
   selectOptions: { title: string; value: unknown }[][]
+  pagedSpecs: {
+    title: string
+    options: { title: string; value: unknown }[]
+    actions: { title: string; value: string; bind: string }[]
+  }[]
 }
 
 function fakeView(): FakeView {
@@ -30,6 +35,11 @@ function fakeView(): FakeView {
     toasts: [] as { message: string; variant?: string }[],
     selects: [] as string[],
     selectOptions: [] as { title: string; value: unknown }[][],
+    pagedSpecs: [] as {
+      title: string
+      options: { title: string; value: unknown }[]
+      actions: { title: string; value: string; bind: string }[]
+    }[],
   }
   const view: AdaptiveView = {
     select: (spec) => {
@@ -37,6 +47,19 @@ function fakeView(): FakeView {
       state.selectOptions.push(spec.options.map((option) => ({ ...option })))
       const next = state.selectQueue.shift()
       return next as never
+    },
+    selectPaged: (spec) => {
+      state.selects.push(spec.title)
+      state.pagedSpecs.push({
+        title: spec.title,
+        options: spec.options.map((option) => ({ ...option })),
+        actions: spec.actions.map((action) => ({ ...action })),
+      })
+      const next = state.selectQueue.shift()
+      if (next === "next" || next === "prev") {
+        return Promise.resolve({ picked: undefined, action: next })
+      }
+      return Promise.resolve({ picked: next as never, action: undefined })
     },
     confirm: (spec) => {
       expect(spec.title.length).toBeGreaterThan(0)
@@ -861,21 +884,30 @@ describe("controller: receipts branch", () => {
       receipt({ id: index + 1, decision: { kind: "defer", reason: "routing-defer" } }),
     )
     const e = env({ api: fakeApi({ receipts: () => Promise.resolve(many) }) })
-    // Browse: open receipts → next page → back to page 1 → last receipt →
-    // detail → leave.
+    // Browse: open receipts → next page (footer action) → back to page 1 →
+    // pick the last receipt → detail → leave.
     e.view.selectQueue.push("receipts", "next", "prev", many[24], undefined)
     await runAdaptive(e)
 
-    // Page 1 of the browser (selectOptions[0] is the main menu).
-    expect(e.view.selectOptions[1]).toHaveLength(21)
-    expect(e.view.selectOptions[1]?.at(-1)).toEqual({ title: "Next page", value: "next" })
-    // Second page: the remaining 5 receipts plus the way back (no next).
-    expect(e.view.selectOptions[2]).toHaveLength(6)
-    expect(e.view.selectOptions[2]?.at(-1)).toEqual({ title: "Previous page", value: "prev" })
-    // "Previous page" re-renders the first page (its options are 21 again,
-    // ending in "Next page" and without a way back).
-    expect(e.view.selectOptions[3]).toHaveLength(21)
-    expect(e.view.selectOptions[3]?.some((option) => option.title === "Previous page")).toBe(false)
+    // The receipts pages in call order (the main menu uses plain select):
+    // page 1, page 2, page 1 after going back, page 1 again after the
+    // detail alert (viewing a detail returns to the same page).
+    const pages = e.view.pagedSpecs
+    expect(pages).toHaveLength(4)
+    // Page 1: exactly the first 20 receipts as options — the page flip is
+    // a footer action, not a list item.
+    expect(pages[0]?.options).toHaveLength(20)
+    expect(pages[0]?.options[0]?.title).toContain("#1")
+    expect(pages[0]?.actions).toEqual([{ title: "Next page", value: "next", bind: "ctrl+f" }])
+    // Page 2: the remaining 5 receipts plus only the way back.
+    expect(pages[1]?.options).toHaveLength(5)
+    expect(pages[1]?.options[0]?.title).toContain("#21")
+    expect(pages[1]?.options.at(-1)?.title).toContain("#25")
+    expect(pages[1]?.actions).toEqual([{ title: "Previous page", value: "prev", bind: "ctrl+b" }])
+    // Going back re-renders page 1 (footer action again, no way back).
+    expect(pages[2]?.options).toHaveLength(20)
+    expect(pages[2]?.actions).toEqual([{ title: "Next page", value: "next", bind: "ctrl+f" }])
+    expect(pages[3]?.options).toHaveLength(20)
     // The picked receipt's detail was shown.
     expect(e.view.alerts[0]?.title).toContain("#25")
   })

@@ -6,13 +6,21 @@ import type { Route } from "@opencode/plugin/tui/context"
 import type { OperatingMode } from "../../src/core/scheduler/types.js"
 
 export interface DialogRecord {
-  selects: { title: string; values: unknown[] }[]
+  selects: {
+    title: string
+    values: unknown[]
+    actions?: { title: string; bind: string; onTrigger: () => void }[]
+  }[]
   selectQueue: unknown[]
   confirmQueue: (boolean | undefined)[]
   alerts: { title: string; message: string }[]
   toasts: { message: string; variant?: string }[]
   /** Custom dialog renders (the status table), newest last. */
   shows: { render: () => unknown; onClose: (() => void) | undefined }[]
+  /** How often the host dialog layer was cleared (footer-action flips). */
+  clears: number
+  /** Resolvers of still-pending paged selects (the test ends the loop). */
+  pagedResolvers: ((picked: unknown) => void)[]
   /** Dialog presentation options set via dialog.set, in call order. */
   sets: unknown[]
 }
@@ -34,6 +42,8 @@ export function fakeTuiContext(options: {
   status?: unknown
   /** The session-mode override the fake rpc serves (null = no override). */
   sessionMode?: OperatingMode | null
+  /** Receipts the fake rpc serves for receipts.list (empty when absent). */
+  receipts?: unknown[]
   failSessionModeGet?: boolean
   /** Records every session-mode.set call for assertions. */
   sessionModePatches?: { sessionID: string; mode: OperatingMode | null }[]
@@ -58,6 +68,8 @@ export function fakeTuiContext(options: {
     toasts: [],
     shows: [],
     sets: [],
+    clears: 0,
+    pagedResolvers: [],
   }
   const shows = dialogs.shows
   const layers: unknown[] = []
@@ -74,13 +86,27 @@ export function fakeTuiContext(options: {
     title: string
     options: { value: unknown }[]
     search?: (query: string, options: { value: unknown }[]) => unknown
+    actions?: { title: string; bind: string; onTrigger: () => void }[]
   }) => {
     if (spec.search !== undefined) spec.search("", spec.options)
-    dialogs.selects.push({ title: spec.title, values: spec.options.map((option) => option.value) })
+    dialogs.selects.push({
+      title: spec.title,
+      values: spec.options.map((option) => option.value),
+      ...(spec.actions !== undefined ? { actions: [...spec.actions] } : {}),
+    })
     if (options.failSelect !== undefined) {
       // The runAdaptive catch must tolerate non-Error rejections (fail-open).
       // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
       return Promise.reject(options.failSelect)
+    }
+    if (spec.actions !== undefined) {
+      // A paged select stays pending like the real host's (footer actions
+      // flip the page while the dialog is open); the test drives the flip
+      // through the recorded onTrigger and ends the loop through the
+      // resolver.
+      return new Promise((resolve) => {
+        dialogs.pagedResolvers.push(resolve)
+      })
     }
     const next = dialogs.selectQueue.shift()
     return Promise.resolve(next as never)
@@ -109,7 +135,7 @@ export function fakeTuiContext(options: {
               receipts: 0,
             },
           ),
-        "receipts.list": () => Promise.resolve([]),
+        "receipts.list": () => Promise.resolve(options.receipts ?? []),
         "session-mode.get": (input: { sessionID: string }) => {
           counts.sessionModeGets += 1
           return options.failSessionModeGet
@@ -149,6 +175,9 @@ export function fakeTuiContext(options: {
         },
         show: (render: () => unknown, onClose?: () => void) => {
           shows.push({ render, onClose })
+        },
+        clear: () => {
+          dialogs.clears += 1
         },
         set: (options: unknown) => {
           dialogs.sets.push(options)

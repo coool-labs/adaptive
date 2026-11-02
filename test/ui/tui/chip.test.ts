@@ -236,4 +236,56 @@ describe("the prompt chip's session mode (ADP-054)", () => {
     // table dialog is widened to xlarge right after it opens.
     expect(dialogs.sets).toEqual([{ size: "xlarge" }])
   })
+
+  it("wires the receipts footer actions through the host select dialog", async () => {
+    const receipts = Array.from({ length: 25 }, (_, index) => ({
+      id: index + 1,
+      at: 1_000,
+      sessionID: `s${String(index)}`,
+      decision: { kind: "defer", reason: "routing-defer" },
+    }))
+    const { context, dialogs, layers } = fakeTuiContext({
+      settings: settingsJSON("observe"),
+      clientPatches: [],
+      receipts,
+    })
+    await tuiPlugin.setup(context)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // Open the receipts browser: invitation follow-up (true = open the menu)
+    // then the receipts entry. The paged select stays pending like the real
+    // host's; the test flips pages through the recorded footer actions.
+    dialogs.selectQueue.push(true, "receipts")
+    ;(layers[0] as { commands: { run: () => void }[] }).commands[0]?.run()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const paged = dialogs.selects.at(-1)
+    if (paged?.actions?.length === undefined) {
+      throw new Error("the paged receipts select never opened")
+    }
+    // The option list carries ONLY receipt lines (20 of 25); paging is a
+    // footer action, not a list entry.
+    expect(paged.title).toBe("Receipts (25, newest first)")
+    expect(paged.values).toHaveLength(20)
+    expect(paged.actions.map((action) => action.title)).toEqual(["Next page"])
+    // Triggering the footer action clears the host dialog and flips to the
+    // next page.
+    paged.actions[0]?.onTrigger()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(dialogs.clears).toBe(1)
+    const page2 = dialogs.selects.at(-1)
+    if (page2?.actions?.length === undefined) {
+      throw new Error("page two never opened")
+    }
+    expect(page2.values).toHaveLength(5)
+    expect(page2.actions.map((action) => action.title)).toEqual(["Previous page"])
+    page2.actions[0]?.onTrigger()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(dialogs.clears).toBe(2)
+    // Back on page one: full list and the "Next page" action again.
+    expect(dialogs.selects.at(-1)?.values).toHaveLength(20)
+    expect(dialogs.selects.at(-1)?.actions?.map((action) => action.title)).toEqual(["Next page"])
+    // End the browser loop: the queued pick (undefined) leaves it, and the
+    // menu loop exits on its own empty queue.
+    dialogs.pagedResolvers.at(-1)?.(undefined)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
 })
