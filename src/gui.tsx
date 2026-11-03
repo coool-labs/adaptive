@@ -33,8 +33,11 @@ export function AdaptiveStatusPage(props: { api: GuiApi }): JSX.Element {
   onCleanup(props.api.watchSettings(refresh))
   refresh()
 
-  const pick = (raw: string): void => {
-    const value = parseModeValue(raw)
+  const pick = (select: HTMLSelectElement): void => {
+    const value = parseModeValue(select.value)
+    // The DOM changes before onChange, even if the signal stays unchanged
+    // after a rejected write. Keep the control on the confirmed server value.
+    select.value = mode()
     if (value === undefined) return
     void props.api.update({ mode: value }).then((ok) => {
       setSaved(ok)
@@ -63,7 +66,7 @@ export function AdaptiveStatusPage(props: { api: GuiApi }): JSX.Element {
           disabled={snapshot() === undefined}
           value={mode()}
           onChange={(event) => {
-            pick(event.currentTarget.value)
+            pick(event.currentTarget)
           }}
         >
           <For each={modeChoices(mode())}>

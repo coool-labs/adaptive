@@ -215,10 +215,16 @@ export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
     if (pick !== true) return
   }
   for (;;) {
-    // The menu descriptions degrade silently: a failing status read must not
-    // spam a toast on every loop iteration (the flows that need status toast
-    // through tryApi themselves).
-    const status = await env.api.status().catch(() => undefined)
+    // Fresh status and settings on every pass: the menu rows pair the two,
+    // and the server is the single source of truth (ADP-036). A failed read
+    // degrades silently to the last known values — the menu descriptions
+    // must not spam a toast on every loop iteration (the flows that need
+    // status toast through tryApi themselves).
+    const [freshSettings, status] = await Promise.all([
+      env.api.settings().catch(() => undefined),
+      env.api.status().catch(() => undefined),
+    ])
+    if (freshSettings !== undefined) settings = freshSettings
     // The session's pinned tier request: fetched per loop so the entry
     // description tracks the latest request; a failure degrades to the
     // generic description (the menu still works).
@@ -228,7 +234,7 @@ export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
         : await env.api.tierRequest(sessionID).catch(() => undefined)
     const choice = await env.view.select({
       title: `Adaptive (${override ?? settings.mode})`,
-      options: mainMenuOptions(settings, status, tierPinned),
+      options: mainMenuOptions(settings, status, tierPinned, override ?? settings.mode),
     })
     if (choice === undefined) return
     if (choice === "status") {
@@ -236,7 +242,7 @@ export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
       continue
     }
     if (choice === "models") {
-      settings = (await runTierEditor(env, settings, feedback)) ?? settings
+      settings = (await runTierEditor(env, feedback)) ?? settings
       continue
     }
     if (choice === "mode") {
@@ -369,17 +375,21 @@ async function runStatusView(env: AdaptiveEnv): Promise<void> {
 
 type TierEditorOutcome = SettingsV1 | undefined
 
-async function runTierEditor(
-  env: AdaptiveEnv,
-  initial: SettingsV1,
-  feedback: SaveFeedback,
-): Promise<TierEditorOutcome> {
-  let settings = initial
+async function runTierEditor(env: AdaptiveEnv, feedback: SaveFeedback): Promise<TierEditorOutcome> {
+  // The last confirmed server snapshot from this editor session, returned
+  // when the editor closes so the menu view stays in sync with the server.
+  let saved: SettingsV1 | undefined
   for (;;) {
+    // The server is the single source of truth (ADP-036): settings are
+    // re-fetched on every editor pass — entering the editor and after each
+    // save — so the rows pair fresh settings with fresh status and an edit
+    // can never clobber a change made outside this dialog.
+    const settings = await tryApi(env, () => env.api.settings())
+    if (settings === undefined) return saved
     const status = await tryApi(env, () => env.api.status())
-    if (status === undefined) return undefined
+    if (status === undefined) return saved
     const tier = await env.view.select({ title: "Tier", options: tierMenuOptions(status) })
-    if (tier === undefined) return undefined
+    if (tier === undefined) return saved
     const choice = await env.view.select({
       title: `Tier: ${tier}`,
       options: tierEditorOptions(settings, tier, status),
@@ -387,11 +397,11 @@ async function runTierEditor(
     if (choice === undefined) continue
     if (choice.kind === "add") {
       const next = await runAddModel(env, settings, tier, feedback)
-      if (next !== undefined) settings = next
+      if (next !== undefined) saved = next
       continue
     }
     const next = await runResourceMenu(env, settings, tier, choice.index, feedback)
-    if (next !== undefined) settings = next
+    if (next !== undefined) saved = next
   }
 }
 

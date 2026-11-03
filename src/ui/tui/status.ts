@@ -20,12 +20,14 @@ export function healthEntries(
   return entries
 }
 
-/** "until 18:42" style wall-clock rendering of a window deadline. */
+/** Local date and time: quota windows may reset days or weeks from now. */
 export function clockTime(until: number): string {
   const at = new Date(until)
   const hours = String(at.getHours()).padStart(2, "0")
   const minutes = String(at.getMinutes()).padStart(2, "0")
-  return `${hours}:${minutes}`
+  const month = String(at.getMonth() + 1).padStart(2, "0")
+  const day = String(at.getDate()).padStart(2, "0")
+  return `${String(at.getFullYear())}-${month}-${day} ${hours}:${minutes}`
 }
 
 function pinnedTo(ref: TierResourceStatus["ref"], pin: StatusSnapshot["pin"]): boolean {

@@ -35,6 +35,19 @@ function snapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot {
 }
 
 describe("status table", () => {
+  it("distinguishes weekly reset dates even when their clock times match", () => {
+    const first = statusLine(
+      entry({ usedPercent: 100, resetAt: new Date(2026, 10, 3, 18, 42).getTime() }),
+      null,
+    )
+    const next = statusLine(
+      entry({ usedPercent: 100, resetAt: new Date(2026, 10, 10, 18, 42).getTime() }),
+      null,
+    )
+    expect(first).toContain("2026-11-03 18:42")
+    expect(next).toContain("2026-11-10 18:42")
+    expect(first).not.toBe(next)
+  })
   it("flattens configured resources in tier order", () => {
     const s = snapshot({
       tiers: {
@@ -56,7 +69,7 @@ describe("status table", () => {
   it("renders the window deadline as a local wall-clock time", () => {
     // Built from local components so the assertion holds in any timezone.
     const at = new Date(2026, 0, 1, 18, 42).getTime()
-    expect(clockTime(at)).toBe("18:42")
+    expect(clockTime(at)).toBe("2026-01-01 18:42")
   })
 
   it("aligns every row into columns with a header row, tier then priority order", () => {
@@ -86,7 +99,7 @@ describe("status table", () => {
     )
     expect(lines[0]).toBe("MODEL    TIER      HEALTH        STATE")
     expect(lines[1]).toBe("prov/m2  quick     healthy       (pinned)")
-    expect(lines[2]).toBe("prov/m1  standard  rate_limited  windowed until 18:42")
+    expect(lines[2]).toBe("prov/m1  standard  rate_limited  windowed until 2026-01-01 18:42")
     expect(lines[3]).toBe("prov/m0  standard  healthy       -")
     expect(lines[4]).toBe("prov/m3  advanced  healthy       breaker open")
   })
@@ -112,9 +125,9 @@ describe("status table", () => {
         },
       }),
     )
-    expect(lines[1]).toContain("used 72%, resets 18:42")
+    expect(lines[1]).toContain("used 72%, resets 2026-01-01 18:42")
     expect(lines[2]).toContain("used 100%")
-    expect(lines[3]).toContain("used 0%, resets 18:42")
+    expect(lines[3]).toContain("used 0%, resets 2026-01-01 18:42")
     // No reading → no capacity text at all.
     expect(lines[0]).not.toContain("used")
   })
@@ -144,7 +157,7 @@ describe("status table", () => {
     const at = new Date(2026, 0, 1, 9, 5).getTime()
     expect(
       statusLine(entry({ health: "rate_limited", windowed: true, windowUntil: at }), null),
-    ).toBe("prov/m1 — rate_limited, windowed until 09:05")
+    ).toBe("prov/m1 — rate_limited, windowed until 2026-01-01 09:05")
     expect(statusLine(entry(), { providerID: "prov", id: "m1" })).toBe("prov/m1 — healthy (pinned)")
     expect(
       statusLine(entry({ ref: { providerID: "prov", id: "other" } }), {
@@ -154,7 +167,7 @@ describe("status table", () => {
     ).toBe("prov/other — healthy")
     const capAt = new Date(2026, 0, 1, 18, 42).getTime()
     expect(statusLine(entry({ usedPercent: 72, resetAt: capAt }), null)).toBe(
-      "prov/m1 — healthy, used 72%, resets 18:42",
+      "prov/m1 — healthy, used 72%, resets 2026-01-01 18:42",
     )
     expect(statusLine(entry({ usedPercent: 30 }), null)).toBe("prov/m1 — healthy, used 30%")
   })

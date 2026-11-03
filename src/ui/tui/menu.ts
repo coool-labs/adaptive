@@ -53,6 +53,7 @@ export function mainMenuOptions(
   settings: SettingsV1,
   status: StatusSnapshot | undefined,
   tierRequest?: TierName | null,
+  effectiveMode: OperatingMode = settings.mode,
 ): SelectOption<MainMenuChoice>[] {
   const optionFor = (item: MainMenuChoice): SelectOption<MainMenuChoice> => {
     switch (item) {
@@ -72,7 +73,7 @@ export function mainMenuOptions(
         return {
           title: "Mode",
           value: item,
-          description: `currently ${settings.mode}`,
+          description: `currently ${effectiveMode}`,
         }
       case "tier":
         return {

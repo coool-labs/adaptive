@@ -166,6 +166,7 @@ describe("AdaptiveStatusPage", () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(container.querySelector(".adaptive-saved")).toBeNull()
+    expect(select.value).toBe("observe")
     dispose()
   })
 

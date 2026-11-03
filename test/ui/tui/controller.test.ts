@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 
 import { INVITE_MESSAGE, INVITE_TITLE, runAdaptive } from "../../../src/ui/tui/controller.js"
 import { errorText } from "../../../src/ui/tui/options.js"
+import { applyPatch } from "../../../src/state/settings/index.js"
 import { STATUS_EMPTY_MESSAGE, statusTable } from "../../../src/ui/tui/status.js"
 import type { Receipt } from "../../../src/state/receipts/index.js"
 import type { SettingsPatch, SettingsV1 } from "../../../src/state/settings/index.js"
@@ -91,6 +92,13 @@ function settings(overrides: Partial<SettingsV1> = {}): SettingsV1 {
     inviteDismissed: true,
     ...overrides,
   }
+}
+
+/** A server-side store: field absence in the patch means "leave unchanged". */
+function patched(base: SettingsV1, patch: SettingsPatch): SettingsV1 {
+  const applied = applyPatch(base, patch)
+  if (!applied.ok) throw new Error("test fixture sent an invalid patch")
+  return applied.settings
 }
 
 function statusSnapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot {
@@ -436,19 +444,19 @@ describe("controller: session-mode branch (ADP-054)", () => {
   it("picking Global mode… patches the global settings and keeps the override", async () => {
     const sets: unknown[] = []
     const patches: SettingsPatch[] = []
+    // No override: the session follows the global mode, so the retitled menu
+    // shows the patched global mode. The store is stateful: settings.get
+    // reflects the applied patch, exactly like the real server.
+    let current = settings()
     const e = env({
       sessionID: "ses_1",
       api: sessionApi(
         {
-          // No override: the session follows the global mode, so the
-          // retitled menu shows the patched global mode.
-          sessionMode: () => Promise.resolve(null),
+          settings: () => Promise.resolve(current),
           setSettings: (patch) => {
             patches.push(patch)
-            return Promise.resolve({
-              ok: true,
-              settings: settings({ mode: "active" }),
-            } satisfies PatchResult)
+            current = patched(current, patch)
+            return Promise.resolve({ ok: true, settings: current } satisfies PatchResult)
           },
         },
         sets,
@@ -663,6 +671,50 @@ describe("controller: session-mode branch (ADP-054)", () => {
   })
 })
 
+describe("controller: settings fetch failures inside menu loops", () => {
+  it("a failing menu-loop settings refetch degrades silently without a toast", async () => {
+    // runMenu refreshes settings+status per pass and swallows fetch failures
+    // (no toast spam); the menu still renders on the last known values. The
+    // entry read succeeds; the loop's refetch fails.
+    let settingsCalls = 0
+    const e = env({
+      api: fakeApi({
+        settings: () => {
+          settingsCalls += 1
+          return settingsCalls === 1
+            ? Promise.resolve(settings())
+            : Promise.reject(new Error("settings down"))
+        },
+      }),
+    })
+    e.view.selectQueue.push("tier", undefined)
+    await runAdaptive(e)
+    expect(e.view.selects[0]).toBe("Adaptive (observe)")
+    expect(e.view.toasts).toEqual([])
+  })
+
+  it("the tier editor exits with the last confirmed save when a refetch fails", async () => {
+    // Entry read and the editor's first pass succeed; the editor's SECOND
+    // pass (after exiting its first tier view) fails: tryApi toasts, the
+    // editor returns the last confirmed snapshot, and the menu re-renders.
+    let settingsCalls = 0
+    const e = env({
+      api: fakeApi({
+        settings: () => {
+          settingsCalls += 1
+          return settingsCalls <= 2
+            ? Promise.resolve(settings())
+            : Promise.reject(new Error("settings down"))
+        },
+      }),
+    })
+    e.view.selectQueue.push("models", "tier", undefined, undefined)
+    await runAdaptive(e)
+    expect(e.view.toasts).toEqual([{ message: "settings down", variant: "error" }])
+    expect(e.view.selects.at(-1)).toBe("Adaptive (observe)")
+  })
+})
+
 describe("controller: session tier-request branch (ADP-055)", () => {
   it("alerts on home when Tier is picked and returns to the menu", async () => {
     const e = env({})
@@ -825,6 +877,152 @@ describe("controller: session tier-request branch (ADP-055)", () => {
 })
 
 describe("controller: tiers branch", () => {
+  it.each([false, true])(
+    "retains saved tiers after leaving the editor (status failure: %s)",
+    async (failStatus) => {
+      let current = settings()
+      let writes = 0
+      const api = fakeApi({
+        settings: () => Promise.resolve(current),
+        setSettings: (patch) => {
+          current = patched(current, patch)
+          writes += 1
+          return Promise.resolve({ ok: true, settings: current })
+        },
+        status: () => {
+          if (failStatus && writes === 1) {
+            writes += 1
+            return Promise.reject(new Error("status unavailable"))
+          }
+          return Promise.resolve(statusSnapshot())
+        },
+      })
+      const e = env({ api })
+      e.view.selectQueue.push(
+        "models",
+        "standard",
+        { kind: "add" },
+        { providerID: "prov", modelID: "b" },
+        ...(failStatus ? [] : [undefined]),
+        "models",
+        "quick",
+        { kind: "add" },
+        { providerID: "prov", modelID: "b" },
+        undefined,
+        "pin",
+        undefined,
+        undefined,
+      )
+      await runAdaptive(e)
+      expect(current.tiers.standard).toEqual([{ providerID: "prov", id: "b" }])
+      expect(current.tiers.quick).toEqual([{ providerID: "prov", id: "b" }])
+      const menu = e.view.selectOptions.find(
+        (options) =>
+          options.some((option) => option.value === "mode") &&
+          options.some((option) => option.description === "quick: 0 · standard: 1 · advanced: 0"),
+      )
+      expect(menu).toBeDefined()
+      const pinIndex = e.view.selects.indexOf("Pin")
+      expect(e.view.selectOptions[pinIndex]?.map((option) => option.title)).toContain(
+        "prov/b (standard)",
+      )
+    },
+  )
+
+  it("serves the editor from fresh server settings, not the boot-time copy", async () => {
+    // One server-side store: a write from outside this dialog (another
+    // surface, another session) lands between the boot fetch and the first
+    // editor pass. The editor must re-read the store instead of pairing the
+    // stale boot snapshot with the fresh status, or its add-patch clobbers
+    // the out-of-band resource.
+    let current = settings()
+    let reads = 0
+    const writes: SettingsPatch[] = []
+    const api = fakeApi({
+      settings: () => {
+        reads += 1
+        if (reads >= 2) {
+          current = {
+            ...current,
+            mode: "active",
+            tiers: { ...current.tiers, standard: [{ providerID: "other", id: "x" }] },
+          }
+        }
+        return Promise.resolve(current)
+      },
+      setSettings: (patch) => {
+        writes.push(patch)
+        current = patched(current, patch)
+        return Promise.resolve({ ok: true, settings: current } satisfies PatchResult)
+      },
+    })
+    const e = env({ api })
+    e.view.selectQueue.push(
+      "models",
+      "standard",
+      { kind: "add" },
+      { providerID: "prov", modelID: "b" },
+      ...EXIT,
+    )
+    await runAdaptive(e)
+    const editorIndex = e.view.selects.indexOf("Tier: standard")
+    expect(editorIndex).toBeGreaterThan(0)
+    // The out-of-band resource shows up in the editor rows (fresh settings).
+    expect(e.view.selectOptions[editorIndex]?.map((option) => option.title)).toContain("other/x")
+    // The add-patch is built from the fresh list: the out-of-band resource
+    // survives, it is not clobbered back to the boot-time copy.
+    const firstWrite = writes[0]
+    if (firstWrite?.tiers === undefined) {
+      throw new Error("the editor never wrote a tiers patch")
+    }
+    expect(firstWrite.tiers.standard).toEqual([
+      { providerID: "other", id: "x" },
+      { providerID: "prov", id: "b" },
+    ])
+  })
+
+  it("refreshes the menu rows from the server on every loop pass", async () => {
+    // Same staleness family as the tier editor: the menu pairs settings with
+    // a freshly fetched status, so a write from outside the dialog between
+    // two passes must be picked up, not hidden behind the boot-time copy.
+    let current = settings()
+    let reads = 0
+    const api = fakeApi({
+      settings: () => {
+        reads += 1
+        if (reads >= 3) {
+          current = {
+            ...current,
+            tiers: { ...current.tiers, quick: [{ providerID: "other", id: "y" }] },
+          }
+        }
+        return Promise.resolve(current)
+      },
+    })
+    const e = env({ api })
+    e.view.selectQueue.push("models", ...EXIT)
+    await runAdaptive(e)
+    const menus = e.view.selectOptions.filter((options) =>
+      options.some((option) => option.value === "mode"),
+    )
+    const last = menus[menus.length - 1]
+    expect(last?.find((option) => option.value === "models")?.description).toBe(
+      "quick: 1 · standard: 0 · advanced: 0",
+    )
+  })
+
+  it("describes the effective session mode rather than the global default", async () => {
+    const e = env({
+      sessionID: "s1",
+      api: fakeApi({ sessionMode: () => Promise.resolve("active") }),
+    })
+    await runAdaptive(e)
+    expect(e.view.selects[0]).toBe("Adaptive (active)")
+    expect(e.view.selectOptions[0]?.find((option) => option.value === "mode")?.description).toBe(
+      "currently active",
+    )
+  })
+
   it("exits when the tier status fetch fails", async () => {
     const e = env({ api: failingApi("status", new Error("down")) })
     e.view.selectQueue.push("models", ...EXIT)
@@ -1123,9 +1321,12 @@ describe("controller: save feedback", () => {
     const patches: SettingsPatch[] = []
     const e = env({
       api: fakeApi({
+        // The store is stateful: settings.get reflects the applied patch, so
+        // the second flow sees the state the first save produced.
+        settings: () => Promise.resolve(current),
         setSettings: (patch) => {
           patches.push(patch)
-          current = { ...current, ...patch, version: 1 } as SettingsV1
+          current = patched(current, patch)
           return Promise.resolve({ ok: true, settings: current } satisfies PatchResult)
         },
       }),

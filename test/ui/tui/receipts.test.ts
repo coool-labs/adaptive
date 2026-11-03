@@ -127,6 +127,15 @@ describe("receiptDetail", () => {
 })
 
 describe("whatHappened", () => {
+  it.each([
+    ["escalation-ceiling", "no stronger tier is configured"],
+    ["escalation-budget-exhausted", "escalation budget"],
+    ["escalation-not-justified", "structured capability evidence"],
+    ["pin-incompatible", "requirements"],
+  ] as const)("explains %s distinctly", (reason, explanation) => {
+    expect(whatHappened(receipt({ decision: { kind: "defer", reason } }))).toContain(explanation)
+  })
+
   // A receipt parsed from a newer host may carry a reason this build does not
   // know; the drifted casts simulate that vocabulary extension at the type
   // level so the runtime fallback branches stay pinned.

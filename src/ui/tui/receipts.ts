@@ -110,7 +110,14 @@ const deferExplanation: Record<string, string> = {
   "adaptive-off": "Adaptive is switched off, so every turn runs on OpenCode's own choice.",
   "pin-unverifiable":
     "The pinned resource could not be verified as available, so Adaptive left the choice to OpenCode.",
-  "escalation-ceiling": "This unit had already escalated as far as the escalation budget allows.",
+  "pin-incompatible":
+    "The pinned resource does not fit this turn's requirements, so Adaptive left the choice to OpenCode.",
+  "escalation-not-justified":
+    "No structured capability evidence justified escalation, so Adaptive kept the current capability.",
+  "escalation-budget-exhausted":
+    "This unit has used its escalation budget; no further escalation is allowed.",
+  "escalation-ceiling":
+    "Adaptive is already at the highest capability tier; no stronger tier is configured.",
   "escalation-no-candidate":
     "No stronger resource was eligible to escalate to (unavailable, blocked, or not configured).",
 }
