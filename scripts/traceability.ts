@@ -51,7 +51,6 @@ const NOT_E2E_APPLICABLE: Readonly<Record<string, string>> = {
   "ADP-047": "this gate",
   "ADP-048":
     "packaging validation — structural test; pack/dry-run validation lands with the packaging task",
-  "ADP-049": "CI workflow definition",
   "ADP-050": "the verify:release script itself",
   "ADP-052":
     "prompt-overhead structure — the absence of an LLM call is structural, not runtime-observable",
@@ -111,7 +110,7 @@ function declaredIds(text: string): Set<string> {
 const requirementIdsAll = requirementIds(readFileSync("docs/REQUIREMENTS.md", "utf8"))
 
 // Coverage sources: the test suite plus the repo-level files that carry
-// `covers:` declarations (config gate, CI gate, policy docs, repo scripts).
+// `covers:` declarations (config gate, policy docs, repo scripts).
 const scriptFiles = readdirSync("scripts")
   .filter((name) => name.endsWith(".ts"))
   .map((name) => join("scripts", name))
@@ -119,7 +118,6 @@ const sources: string[] = [
   ...walkFiles("test").filter((file) => /\.(test|spec)\.ts$/.test(file)),
   "test/plugin-test/scenarios.ts",
   "vitest.config.ts",
-  join(".github", "workflows", "ci.yml"),
   "CONTRIBUTING.md",
   ...scriptFiles,
 ].sort()

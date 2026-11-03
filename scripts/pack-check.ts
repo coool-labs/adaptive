@@ -2,8 +2,8 @@
 /**
  * Pack validation (ADP-048): builds a real tarball with `npm pack`, inspects
  * its contents (required entrypoints present, no stray sources), and runs
- * `npm publish --dry-run`. Run via `npm run pack:check` — CI and
- * `verify:release` gate on it.
+ * `npm publish --dry-run`. Run via `npm run pack:check` —
+ * `verify:release` gates on it.
  */
 import { spawnSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"

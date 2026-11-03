@@ -29,9 +29,8 @@ npm run e2e:tui        # Termwright PTY TUI E2E (80x24 / narrow / wide)
 npm run traceability   # requirement-coverage gate (ADP-047)
 ```
 
-`npm run verify:release` chains all of the above in one command. CI runs the
-same gates split across jobs (see `.github/workflows/ci.yml`); the Termwright
-PTY leg runs on macOS only.
+`npm run verify:release` chains all of the above in one command and is the only
+release gate (there is no CI). The Termwright PTY leg runs on macOS only.
 
 Environment constraint: `npm run e2e:tui` (Termwright) needs Node 22/24 — e.g.
 `PATH="$HOME/.nvm/versions/node/v24.15.0/bin:$PATH" npm run e2e:tui` — and macOS

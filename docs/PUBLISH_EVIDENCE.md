@@ -14,7 +14,7 @@ protection (see CHANGELOG 1.0.1, 1.2.0, and 1.2.1). Machine-readable artifacts l
 
 - Commit/revision: the 1.2.0 release chain through `220dbb5` (tagged `v1.2.0`, published to npm) plus the post-publication fallback fixes through `897d5f9` (automatic terminal-quota recovery, provider-scope quota quarantine, steering protection — see CHANGELOG 1.2.1), verified with the 1.2.1 package/lockfile version and CHANGELOG. These release files and this evidence are recorded in commit `1.2.1`, tagged `v1.2.1`.
 - OpenCode versions tested: **2.2.1** (minimum supported, packed-plugin suite), **2.2.5** (current and latest, packed-plugin suite + all runtime/web/TUI E2E).
-- Node: v26.4.0 (format/lint/typecheck/test/coverage/build/pack/traceability/plugin-test/web E2E); v24.15.0 (Termwright PTY E2E — the verify-release script auto-prefixes a certified Node 22/24 when the runtime is newer). CI runs the same gates on Node 20/22/24.
+- Node: v26.4.0 (format/lint/typecheck/test/coverage/build/pack/traceability/plugin-test/web E2E); v24.15.0 (Termwright PTY E2E — the verify-release script auto-prefixes a certified Node 22/24 when the runtime is newer).
 
 ## Gate results (from the final verify:release run)
 
@@ -72,6 +72,6 @@ Real screenshots of both surfaces captured and inspected (kept under gitignored 
 ## Known limitations
 
 - **OpenCode 2.2.5 plugin GUI surface:** plugin GUI bundles (the `./gui-experimental` export) do not mount on ANY shipped host — the browser-served web app has the client SDK chunk but no plugin bridge, and the desktop app (1.15.4 and 1.19.5) ships neither the SDK nor the bridge (three-way proof: bundle archaeology + live desktop probes; covered by an inverted canary test; the page's copy/DOM is asserted at unit level). All settings features are fully usable via the TUI (`/adaptive`) and typed RPC; sibling plugins ship no GUI export either.
-- **Termwright PTY backend is darwin-only** (`@termwright/pty-darwin-arm64`); the CI `tui-e2e` job therefore runs on macOS.
+- **Termwright PTY backend is darwin-only** (`@termwright/pty-darwin-arm64`); `e2e:tui` therefore runs on macOS only.
 - **Capacity sensing is best-effort:** WebSocket-native providers (OpenAI OAuth/Codex) bypass the `http.request/response` hooks OpenCode exposes; header-based capacity views are never load-bearing.
 - **By design:** no cross-tier borrowing (a tier exhausted means work waits or parks); no de-escalation of a running episode; no failback mode; no telemetry.

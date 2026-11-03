@@ -68,17 +68,16 @@ Local OpenAI/OpenCode-compatible HTTP+SSE server scripting: success, streaming, 
 
 ## Traceability (ADP-047)
 
-- Test files, plugin-test scenarios, `vitest.config.ts`, CI workflow, CONTRIBUTING.md, and release scripts declare coverage with a `covers: ["ADP-xxx"]` literal (above the first import; `#` comment in YAML).
+- Test files, plugin-test scenarios, `vitest.config.ts`, CONTRIBUTING.md, and release scripts declare coverage with a `covers: ["ADP-xxx"]` literal (above the first import).
 - `npm run traceability` (`scripts/traceability.ts`) parses `docs/REQUIREMENTS.md` headings and fails on: an unknown ADP id (typo gate), a requirement with no declaring files, or an E2E-applicable requirement that no E2E file (runtime-e2e / e2e-web / e2e-tui / plugin-test) declares. Requirements that are inherently unit-level carry an explicit `NOT_E2E_APPLICABLE` exemption with a why-comment inside the script (safe default: applicable). The report lands in `test-artifacts/traceability.json`.
 
 ## Coverage (ADP-037)
 
 Vitest + V8 coverage, thresholds 100/100/100/100 on first-party `src/**`. Only genuinely generated/vendor code may be excluded, clearly identified. No `istanbul ignore`, no empty tests, no implementation-trivia assertions. `npm run coverage` runs the `unit` project only: real-host runtime E2E under V8 instrumentation is pathologically slow and timing-flaky (receipt polling against an instrumented host), and `src/**` coverage is complete from the deterministic suite alone; runtime E2E still runs in every `npm test` and in `verify:release`.
 
-## Packaging and CI (ADP-048/049/050)
+## Packaging and release gate (ADP-048/050)
 
 - `npm run pack:check` (`scripts/pack-check.ts`): builds a real tarball with `npm pack`, inspects it — required entrypoints (`dist/index.js`, `dist/tui.js`, `dist/rpc.js`, `dist/gui-experimental.cjs`, their `.d.ts`, `LICENSE`, `README.md`, `package.json`), forbidden content (`src/`, `test/`, `docs/`, `scripts/`, `node_modules`, `GOAL.md`, `coverage/`), manifest fields (name / semver version / MIT) — then runs `npm publish --dry-run`. Report artifact: `test-artifacts/pack-check.json`. The static publish contract is additionally asserted in `test/package.test.ts` (exact exports key set, MIT, minimal runtime dependencies).
-- CI (`.github/workflows/ci.yml`): `gates` job (ubuntu, Node 20/22/24: format, lint, typecheck, `npm test` — including the real-host runtime E2E project —, coverage, build, pack:check, traceability; the opencode CLI is installed from npm and picked up through `OPENCODE_BIN`), `plugin-test` job (packed plugin against OpenCode 2.2.1 / current / latest, self-installed hosts), `web-e2e` job (ubuntu; Chromium + WebKit via `playwright install --with-deps`), `tui-e2e` job (macOS runner — the Termwright PTY backend is darwin-only — with Node pinned to a Termwright-certified major 24). No paid credentials anywhere; all provider traffic goes to the fake provider.
 - `npm run verify:release` (`scripts/verify-release.ts`) runs the whole chain in one command, aborting at the first failure: format:check → lint → lint:biome → typecheck → test → coverage → build → pack:check → plugin-test → e2e:web → e2e:tui (Node 22/24 PATH prefix on newer runtimes, macOS-only PTY) → traceability.
 
 ## Regression policy (ADP-046)
