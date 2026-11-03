@@ -33,6 +33,7 @@
     "node": ">=20.19.0"
   },
   "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc -p tsconfig.build.json && vite build --config guiconfig.ts",
     "pack:check": "vite-node scripts/pack-check.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -63,7 +64,6 @@
     "@opentui/core": "^0.8.1",
     "@opentui/solid": "^0.8.1",
     "@playwright/test": "^1.64.1",
-    "@termwright/pty-darwin-arm64": "^0.7.7",
     "@types/node": "^24",
     "@vitest/coverage-v8": "^4",
     "eslint": "^9",

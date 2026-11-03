@@ -24,7 +24,13 @@ const REQUIRED_FILES = [
 ]
 
 /** Anything shipped in the tarball that is not part of the published artifact. */
-const FORBIDDEN = [/^package\/(src|test|docs|scripts)\//, /node_modules/, /GOAL\.md/, /coverage\//]
+const FORBIDDEN = [
+  /^package\/(src|test|docs|scripts)\//,
+  /node_modules/,
+  /GOAL\.md/,
+  /coverage\//,
+  /\.d\.ts\.map$/,
+]
 
 function run(command: string, args: readonly string[], env?: NodeJS.ProcessEnv): string {
   const result = spawnSync(command, args, {
@@ -65,6 +71,21 @@ try {
   for (const entry of listing) {
     if (FORBIDDEN.some((pattern) => pattern.test(entry))) {
       problems.push(`forbidden tarball file: ${entry}`)
+    }
+    if (entry.endsWith(".js.map")) {
+      const map: unknown = JSON.parse(run("tar", ["-xzOf", tarballPath, entry]))
+      if (
+        typeof map !== "object" ||
+        map === null ||
+        !("sources" in map) ||
+        !Array.isArray(map.sources) ||
+        !("sourcesContent" in map) ||
+        !Array.isArray(map.sourcesContent) ||
+        map.sourcesContent.length !== map.sources.length ||
+        !map.sourcesContent.every((source: unknown) => typeof source === "string")
+      ) {
+        problems.push(`source map is missing embedded sources: ${entry}`)
+      }
     }
   }
 
