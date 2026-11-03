@@ -83,25 +83,27 @@ export default define({
         // then reopens the browser at the new offset. The host resolves its
         // own select promise undefined on the clear() — resolving our
         // promise first-come means the action result wins.
-        new Promise<{ picked: Value | undefined; action: string | undefined }>((resolve) => {
-          void context.ui.dialog
-            .select({
-              title: spec.title,
-              options: spec.options,
-              actions: spec.actions.map((action) => ({
-                bind: action.bind,
-                title: action.title,
-                selection: "none" as const,
-                onTrigger: () => {
-                  context.ui.dialog.clear()
-                  resolve({ picked: undefined, action: action.value })
-                },
-              })),
-            })
-            .then((picked) => {
-              resolve({ picked, action: undefined })
-            })
-        }),
+        new Promise<{ picked: Value | undefined; action: string | undefined }>(
+          (resolve, reject) => {
+            void context.ui.dialog
+              .select({
+                title: spec.title,
+                options: spec.options,
+                actions: spec.actions.map((action) => ({
+                  bind: action.bind,
+                  title: action.title,
+                  selection: "none" as const,
+                  onTrigger: () => {
+                    context.ui.dialog.clear()
+                    resolve({ picked: undefined, action: action.value })
+                  },
+                })),
+              })
+              .then((picked) => {
+                resolve({ picked, action: undefined })
+              }, reject)
+          },
+        ),
       confirm: (options) => context.ui.dialog.confirm(options),
       alert: (options) => context.ui.dialog.alert(options),
       table: (spec) =>

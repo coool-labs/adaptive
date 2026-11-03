@@ -14,6 +14,7 @@ import { OPERATING_MODES } from "../../core/scheduler/types.js"
 
 export class SessionModeStore {
   #records: SessionModeRecord[] = []
+  #queue: Promise<void> = Promise.resolve()
 
   constructor(
     private readonly storage: SessionModesStorage,
@@ -21,7 +22,11 @@ export class SessionModeStore {
   ) {}
 
   /** Rebuild from storage (restart behavior). A read failure yields an empty store. */
-  async load(): Promise<void> {
+  load(): Promise<void> {
+    return this.#serialize(() => this.#load())
+  }
+
+  async #load(): Promise<void> {
     let raw: unknown
     try {
       raw = await this.storage.read()
@@ -59,6 +64,10 @@ export class SessionModeStore {
     if (mode !== null && !(OPERATING_MODES as readonly string[]).includes(mode)) {
       throw new Error(`mode must be one of ${OPERATING_MODES.join(", ")} or null`)
     }
+    return this.#serialize(() => this.#set(sessionID, mode))
+  }
+
+  async #set(sessionID: string, mode: OperatingMode | null): Promise<void> {
     const updatedAt = this.clock()
     const kept = this.#records.filter((record) => record.sessionID !== sessionID)
     const next =
@@ -70,6 +79,14 @@ export class SessionModeStore {
     const payload: SessionModesPayload = { version: SESSION_MODES_VERSION, records: next }
     await this.storage.write(payload)
     this.#records = next
+  }
+
+  // Reloads share the mutation queue so stale reads cannot overwrite commits.
+  // Recover only the queue tail: the failed operation still rejects its caller.
+  #serialize(operation: () => Promise<void>): Promise<void> {
+    const run = this.#queue.then(operation)
+    this.#queue = run.catch(() => undefined)
+    return run
   }
 }
 

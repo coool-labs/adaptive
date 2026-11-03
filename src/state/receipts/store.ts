@@ -28,11 +28,16 @@ export interface ReceiptRef {
 export class ReceiptStore {
   #receipts: Receipt[] = []
   #counter = 0
+  #queue: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly storage: ReceiptsStorage) {}
 
   /** Rebuild from storage (restart behavior). A read failure yields an empty store. */
-  async load(): Promise<void> {
+  load(): Promise<void> {
+    return this.#serialize(() => this.#load())
+  }
+
+  async #load(): Promise<void> {
     let raw: unknown
     try {
       raw = await this.storage.read()
@@ -50,7 +55,11 @@ export class ReceiptStore {
     return this.#receipts
   }
 
-  async record(input: ReceiptInput): Promise<Receipt> {
+  record(input: ReceiptInput): Promise<Receipt> {
+    return this.#serialize(() => this.#record(input))
+  }
+
+  async #record(input: ReceiptInput): Promise<Receipt> {
     // A receipt with no session can never be attributed to anything, and the
     // read path drops empty identifiers — persisting one would make it vanish
     // across a restart. Throw instead; the wiring layer fail-open-catches.
@@ -85,7 +94,11 @@ export class ReceiptStore {
    * (first outcome wins). Returns how many receipts were updated; zero
    * updates do not touch storage.
    */
-  async attachOutcome(ref: ReceiptRef, outcome: ReceiptOutcome): Promise<number> {
+  attachOutcome(ref: ReceiptRef, outcome: ReceiptOutcome): Promise<number> {
+    return this.#serialize(() => this.#attachOutcome(ref, outcome))
+  }
+
+  async #attachOutcome(ref: ReceiptRef, outcome: ReceiptOutcome): Promise<number> {
     let updated = 0
     const next = this.#receipts.map((receipt) => {
       if (receipt.outcome !== undefined) return receipt
@@ -113,7 +126,11 @@ export class ReceiptStore {
    * unit ever opened), stamping all of them would attach this unit's outcome
    * to foreign admission decisions; the older receipts stay pending instead.
    */
-  async adoptUnit(sessionID: string, unitID: string): Promise<number> {
+  adoptUnit(sessionID: string, unitID: string): Promise<number> {
+    return this.#serialize(() => this.#adoptUnit(sessionID, unitID))
+  }
+
+  async #adoptUnit(sessionID: string, unitID: string): Promise<number> {
     let target: number | undefined
     this.#receipts.forEach((receipt, index) => {
       if (receipt.unitID !== undefined || receipt.outcome !== undefined) return
@@ -128,6 +145,14 @@ export class ReceiptStore {
     await this.#persist(next)
     this.#receipts = next
     return 1
+  }
+
+  // Include reads in the chain so a reload cannot overwrite a newer commit.
+  // A failed write rejects its caller without blocking subsequent operations.
+  #serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.#queue.then(operation)
+    this.#queue = run.catch(() => undefined)
+    return run
   }
 
   /** Writes the given next state; the caller commits memory only on success. */

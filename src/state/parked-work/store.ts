@@ -17,11 +17,16 @@ function boundDetail(raw: string): string {
 
 export class ParkedWorkStore {
   #records: ParkedRecord[] = []
+  #queue: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly storage: ParkedStorage) {}
 
   /** Rebuild from storage (restart behavior). A read failure yields an empty store. */
-  async load(): Promise<void> {
+  load(): Promise<void> {
+    return this.#serialize(() => this.#load())
+  }
+
+  async #load(): Promise<void> {
     let raw: unknown
     try {
       raw = await this.storage.read()
@@ -41,7 +46,11 @@ export class ParkedWorkStore {
     return this.#records.length
   }
 
-  async park(record: ParkedRecord): Promise<void> {
+  park(record: ParkedRecord): Promise<void> {
+    return this.#serialize(() => this.#park(record))
+  }
+
+  async #park(record: ParkedRecord): Promise<void> {
     const bounded: ParkedRecord = {
       ...record,
       ...(record.detail !== undefined ? { detail: boundDetail(record.detail) } : {}),
@@ -58,7 +67,11 @@ export class ParkedWorkStore {
    * Remove a parked record and return it so the execution layer knows what
    * to continue. `undefined` (no record, no write) when the id is unknown.
    */
-  async resume(id: string): Promise<ParkedRecord | undefined> {
+  resume(id: string): Promise<ParkedRecord | undefined> {
+    return this.#serialize(() => this.#resume(id))
+  }
+
+  async #resume(id: string): Promise<ParkedRecord | undefined> {
     const record = this.#records.find((entry) => entry.id === id)
     if (record === undefined) return undefined
     const next = this.#records.filter((entry) => entry.id !== id)
@@ -72,6 +85,14 @@ export class ParkedWorkStore {
     const byOldest = [...records].sort((a, b) => a.parkedAt - b.parkedAt)
     const dropped = new Set(byOldest.slice(0, records.length - MAX_PARKED).map((r) => r.id))
     return records.filter((record) => !dropped.has(record.id))
+  }
+
+  // Reads share the queue so reloads cannot overwrite newer commits. Recover
+  // the queue after rejection while preserving the failing caller's promise.
+  #serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.#queue.then(operation)
+    this.#queue = run.catch(() => undefined)
+    return run
   }
 
   /** Writes the given next state; the caller commits memory only on success. */

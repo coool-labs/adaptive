@@ -36,6 +36,7 @@ export function fakeTuiContext(options: {
   modelList?: ModelInfo[] | undefined
   failSettingsGet?: boolean
   failSelect?: unknown
+  failPagedSelect?: unknown
   /** The screen the palette command runs from (home when absent). */
   route?: Route | undefined
   /** The status snapshot the fake rpc serves (empty tiers when absent). */
@@ -111,6 +112,10 @@ export function fakeTuiContext(options: {
       return Promise.reject(options.failSelect)
     }
     if (spec.actions !== undefined) {
+      if (options.failPagedSelect !== undefined) {
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        return Promise.reject(options.failPagedSelect)
+      }
       // An actioned select stays pending like the real host's (footer
       // actions flip the page while the dialog is open); the test drives the
       // flip through the recorded onTrigger and ends the loop through the

@@ -108,6 +108,64 @@ function collectStrings(value: unknown): string[] {
 
 const longText = "x".repeat(MAX_RECEIPT_TEXT + 50)
 
+test("concurrent receipt mutations retain unique IDs and ordered adoption/outcomes", async () => {
+  const storage = new FakeReceiptsStorage()
+  const store = new ReceiptStore(storage)
+  const first = store.record(input({ sessionID: "first", unitID: undefined }))
+  const second = store.record(input({ sessionID: "second" }))
+  const adopted = store.adoptUnit("first", "first#1")
+  const outcome = store.attachOutcome(
+    { sessionID: "first", unitID: "first#1" },
+    { status: "succeeded" },
+  )
+  expect((await Promise.all([first, second])).map((receipt) => receipt.id)).toEqual([1, 2])
+  expect(await adopted).toBe(1)
+  expect(await outcome).toBe(1)
+  const restarted = new ReceiptStore(storage)
+  await restarted.load()
+  expect(restarted.snapshot()).toEqual(store.snapshot())
+  expect(restarted.snapshot()[0]).toMatchObject({
+    id: 1,
+    unitID: "first#1",
+    outcome: { status: "succeeded" },
+  })
+  expect(restarted.snapshot()).toHaveLength(2)
+})
+
+test("a failed queued write rejects its caller without losing the next receipt", async () => {
+  const storage = new FakeReceiptsStorage()
+  let fail = true
+  const store = new ReceiptStore({
+    read: () => storage.read(),
+    write: (payload) => {
+      if (fail) {
+        fail = false
+        return Promise.reject(new Error("temporary write failure"))
+      }
+      return storage.write(payload)
+    },
+  })
+  const failed = store.record(input({ sessionID: "failed" }))
+  const next = store.record(input({ sessionID: "next" }))
+  await expect(failed).rejects.toThrow("temporary write failure")
+  await expect(next).resolves.toMatchObject({ id: 1, sessionID: "next" })
+  await store.load()
+  expect(store.snapshot()).toMatchObject([{ id: 1, sessionID: "next" }])
+})
+
+test("reload waits for an earlier receipt write before rebuilding the counter", async () => {
+  const storage = new FakeReceiptsStorage()
+  const store = new ReceiptStore(storage)
+  const first = store.record(input({ sessionID: "first" }))
+  const loaded = store.load()
+  const second = store.record(input({ sessionID: "second" }))
+  await Promise.all([first, loaded, second])
+  expect(store.snapshot().map((receipt) => [receipt.id, receipt.sessionID])).toEqual([
+    [1, "first"],
+    [2, "second"],
+  ])
+})
+
 describe("receipt constants", () => {
   test("pinned product constants", () => {
     expect(RECEIPTS_KEY).toBe("coool.adaptive/receipts")

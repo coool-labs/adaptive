@@ -158,6 +158,40 @@ describe("tui entry: full flows", () => {
     expect(dialogs.toasts).toContainEqual({ message: "raw", variant: "error" })
   })
 
+  it.each([new Error("receipt dialog broke"), "receipt dialog broke"])(
+    "toasts and stops the receipts flow when the paged host dialog rejects with %s",
+    async (failure) => {
+      const patches: Record<string, unknown>[] = []
+      const { context, dialogs, layers } = setup({
+        settings: observedSettings("observe"),
+        clientPatches: patches,
+        failPagedSelect: failure,
+        receipts: [
+          {
+            id: 1,
+            at: 0,
+            sessionID: "session",
+            decision: { kind: "defer", reason: "routing-defer" },
+          },
+        ],
+      })
+      await tuiPlugin.setup(context)
+      const run = (layers[0] as { commands: { run: () => void }[] }).commands[0]?.run
+      if (run === undefined) throw new Error("slash command was not registered")
+      dialogs.selectQueue.push("receipts", "mode")
+      run()
+      // Drain the bounded async UI flow without real timers.
+      for (let turn = 0; turn < 30; turn += 1) await Promise.resolve()
+      expect(dialogs.toasts).toEqual([{ message: "receipt dialog broke", variant: "error" }])
+      expect(dialogs.selects.map((select) => select.title)).toEqual([
+        "Adaptive (observe)",
+        "Receipts (1, newest first)",
+      ])
+      expect(dialogs.selectQueue).toEqual(["mode"])
+      expect(patches).toEqual([])
+    },
+  )
+
   it("maps an absent model list to an empty picker", async () => {
     const { context, dialogs, layers } = setup({
       settings: observedSettings("observe"),
