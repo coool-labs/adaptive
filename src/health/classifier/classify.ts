@@ -12,6 +12,15 @@ const TEXT_BOUND = 512
 const SHARED_QUOTA_PATTERN =
   /\byou['’]ve hit your (?:session|usage|weekly) limit(?=\s*(?:$|[·.,;(:]|resets?\b))|\b(?:out of credits|insufficient credits|credit balance)\b/i
 
+// A 429 whose message says the quota itself is spent ("You exceeded your
+// current quota, please check your plan and billing details") is quota
+// exhaustion: a burst-sized window would re-admit it every half minute. The
+// status stays the definitive evidence; text only picks the window. Messages
+// that also speak of rate limits keep the short window — Gemini words its
+// per-minute 429s as "exceeded your current quota" and links its rate-limit
+// docs.
+const RATE_LIMIT_TEXT = /rate[ _-]?limit|per min/i
+
 /**
  * Retry/failover policy per category (ADP-010, ADP-011).
  *
@@ -273,12 +282,15 @@ export function classifyFailure(evidence: ErrorEvidence): FailureClassification 
   if (isHttpStatus(evidence.status)) {
     const category = classifyStatus(evidence.status, headers)
     if (category !== undefined) {
-      return classification(
-        category,
-        "status",
-        true,
-        structuredRetryAfterMs ?? retryAfterHeaderMs(headers),
-      )
+      const retryAfterMs = structuredRetryAfterMs ?? retryAfterHeaderMs(headers)
+      if (category === "rate_limited" && evidence.text !== undefined) {
+        const bounded = evidence.text.slice(0, TEXT_BOUND)
+        if (classifyText(bounded) === "quota_exhausted" && !RATE_LIMIT_TEXT.test(bounded)) {
+          const quotaScope = SHARED_QUOTA_PATTERN.test(bounded) ? "provider" : undefined
+          return classification("quota_exhausted", "status", true, retryAfterMs, quotaScope)
+        }
+      }
+      return classification(category, "status", true, retryAfterMs)
     }
   }
 

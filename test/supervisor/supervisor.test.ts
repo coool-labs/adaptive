@@ -455,6 +455,35 @@ describe("supervisor", () => {
       ])
     })
 
+    it("a 429 whose text says the quota is spent benches the resource for the quota window", async () => {
+      let now = 1000
+      const session = new FakeSupervisorSession()
+      const storage = activeStorage()
+      const supervisor = makeSupervisor({ storage, session, clock: () => now })
+      await supervisor.handleReport(STARTED_S1)
+      await supervisor.handleRetry({
+        sessionID: "s1",
+        model: ref("prov", "a"),
+        error: {
+          type: "UnknownError",
+          message: "You exceeded your current quota, please check your plan and billing details.",
+          status: 429,
+        },
+        attempt: 1,
+        decision: { retry: true, delay: 100 },
+      })
+      await flush()
+      // The owned continuation runs on prov/b and finishes.
+      await supervisor.handleReport({ kind: "prompt", sessionID: "s1" })
+      await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 20 })
+      await supervisor.handleReport({ kind: "execution-succeeded", sessionID: "s1", at: 30 })
+      // Past the 30s rate-limit window, inside the quota window: prov/a stays benched.
+      now += 60_000
+      session.log.length = 0
+      await supervisor.handleReport({ kind: "prompt", sessionID: "s1" })
+      expect(session.log).toEqual(["switch:s1:prov/b"])
+    })
+
     it("stops vetoing after the per-unit budget is spent", async () => {
       const session = new FakeSupervisorSession()
       const storage = activeStorage()

@@ -104,8 +104,13 @@ const quotaBehavior: FakeProviderBehavior = {
     "x-ratelimit-reset-requests": "1m",
     "x-ratelimit-reset-tokens": "1m",
   },
+  // OpenAI's insufficient_quota 429: the text, not the status, says the quota is spent.
   body: JSON.stringify({
-    error: { message: "quota exceeded for this billing period", type: "fake_error", code: null },
+    error: {
+      message: "You exceeded your current quota, please check your plan and billing details.",
+      type: "insufficient_quota",
+      code: "insufficient_quota",
+    },
   }),
 }
 
@@ -351,79 +356,40 @@ describe("runtime e2e: supervision lifecycle", () => {
 
       const run = await host.run({ text: "use the quota" })
 
-      // The prompt-hook admission applies the preferred resource for the
-      // first turn; the quota-shaped 429 (retry-after 60) arrives with
-      // native.retry=false, so the host does not retry and the plugin does
-      // not veto — recovery defers to the next safe boundary (ADP-014). The
-      // next user prompt on the same session is that boundary.
-      const preferredReceipt = await pollReceipts(
+      // The 429 carries retry-after 60, so the host does not retry natively
+      // and the failure reaches the terminal with the provider's text. The
+      // text says the quota is spent: the resource is benched for the quota
+      // window (not a 30s rate limit) and the work continues on the tier
+      // sibling without another user prompt (ADP-009, ADP-013).
+      const list = await pollReceipts(
         host,
         (all) =>
           all.some(
             (r) =>
               r.sessionID === run.sessionID &&
               r.decision.kind === "apply" &&
-              r.decision.reason === "preferred",
+              r.decision.model.id === "fake-model-2" &&
+              r.outcome?.status === "succeeded",
           ),
-        30_000,
+        60_000,
       )
-      const preferred = preferredReceipt.find(
-        (r) =>
-          r.sessionID === run.sessionID &&
-          r.decision.kind === "apply" &&
-          r.decision.reason === "preferred",
-      )
-      expect(preferred).toBeDefined()
-      if (preferred?.decision.kind !== "apply") return
-      expect(preferred.decision.model.id).toBe("fake-model")
-
-      // The provider saw exactly the title call and the failed main call on
-      // the preferred resource — no native retry, no owned continuation.
-      const modelsAfterFirst = host.provider.calls
-        .map((c) => {
-          try {
-            return (JSON.parse(c.body) as { model?: string }).model ?? "?"
-          } catch {
-            return "?"
-          }
-        })
-        .filter((m) => m !== "?")
-      expect(modelsAfterFirst).toEqual(["fake-model", "fake-model"])
-
-      await host.run({ text: "try again", sessionID: run.sessionID })
-
-      // At the next admission the preferred resource is still inside its
-      // rate-limit window, so the tier sibling is applied with the skip
-      // evidence naming it (ADP-009: quota-shaped evidence stays
-      // failover-eligible; the runtime category is the coarser rate_limited
-      // because the host's failure report carries no response headers — the
-      // header refinement is proven in the classifier unit tests). The
-      // prompt-time admission receipts carry no unitID, so the episode
-      // outcome lands on no receipt; the executed model sequence below is
-      // the execution evidence.
-      const second = await pollReceipts(
-        host,
-        (all) =>
-          all.some(
-            (r) =>
-              r.sessionID === run.sessionID &&
-              r.decision.kind === "apply" &&
-              r.decision.model.id === "fake-model-2",
-          ),
-        30_000,
-      )
-      const fallback = second.find(
-        (r) =>
-          r.sessionID === run.sessionID &&
-          r.decision.kind === "apply" &&
-          r.decision.model.id === "fake-model-2",
-      )
-      expect(fallback).toBeDefined()
-      if (fallback?.decision.kind !== "apply") return
-      expect(fallback.decision.evidence.skipped).toEqual([
-        { ref: { providerID: "fake", id: "fake-model" }, why: "rate-limited" },
+      const applied = list
+        .filter((r) => r.sessionID === run.sessionID && r.decision.kind === "apply")
+        .sort((left, right) => left.id - right.id)
+      expect(applied.map((r) => (r.decision.kind === "apply" ? r.decision.model.id : ""))).toEqual([
+        "fake-model",
+        "fake-model-2",
       ])
-      // The fallback turn actually executed on the fallback resource.
+      expect(applied.map((r) => r.outcome?.status)).toEqual(["failed", "succeeded"])
+      const fallback = applied[1]
+      if (fallback?.decision.kind !== "apply") throw new Error("missing fallback receipt")
+      expect(fallback.decision.reason).toBe("fallback")
+      expect(fallback.decision.evidence.skipped).toEqual([
+        { ref: { providerID: "fake", id: "fake-model" }, why: "quota-exhausted" },
+      ])
+      expect(applied[0]?.outcome).toEqual({ status: "failed", category: "quota_exhausted" })
+      // Title call + the failed main call on the preferred resource, then the
+      // continuation on the sibling — no native retry.
       const models = host.provider.calls
         .map((c) => {
           try {
@@ -436,8 +402,8 @@ describe("runtime e2e: supervision lifecycle", () => {
       expect(models).toEqual(["fake-model", "fake-model", "fake-model-2"])
       // Quota-shaped infra failure never escalates capability and never
       // parks while a tier sibling is healthy (ADP-013).
-      expect(second.some((r) => r.decision.kind === "escalate")).toBe(false)
-      expect(second.some((r) => r.decision.kind === "park")).toBe(false)
+      expect(list.some((r) => r.decision.kind === "escalate")).toBe(false)
+      expect(list.some((r) => r.decision.kind === "park")).toBe(false)
       await stop(host, run.sessionID)
     },
   )

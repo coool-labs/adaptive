@@ -215,6 +215,54 @@ describe("classifyFailure: HTTP status layer", () => {
   })
 })
 
+describe("classifyFailure: 429 quota text", () => {
+  it("refines a 429 whose message says the quota is spent to quota exhaustion", () => {
+    const c = classifyFailure({
+      status: 429,
+      text: "You exceeded your current quota, please check your plan and billing details.",
+    })
+    expect(c.category).toBe("quota_exhausted")
+    expect(c.layer).toBe("status")
+    expect(c.definitive).toBe(true)
+    expect(c.failoverEligible).toBe(true)
+    expect(c.quotaScope).toBeUndefined()
+  })
+
+  it("keeps the 429's Retry-After as the quota window bound", () => {
+    const c = classifyFailure({
+      status: 429,
+      headers: { "retry-after": "60" },
+      text: "insufficient_quota: You exceeded your current quota",
+    })
+    expect(c.category).toBe("quota_exhausted")
+    expect(c.retry.retryAfterMs).toBe(60_000)
+  })
+
+  it("scopes a 429 shared subscription limit to the provider", () => {
+    const c = classifyFailure({
+      status: 429,
+      text: "You've hit your session limit · resets 6:10pm (Europe/Budapest)",
+    })
+    expect(c.category).toBe("quota_exhausted")
+    expect(c.quotaScope).toBe("provider")
+  })
+
+  it("keeps the short window when the message is about rate limits", () => {
+    for (const text of [
+      "Rate limit reached for gpt-x on tokens per min (TPM): Limit 10000. quota",
+      "You exceeded your current quota. See https://ai.google.dev/gemini-api/docs/rate-limits",
+      "rate limited",
+    ]) {
+      expect(classifyFailure({ status: 429, text }).category).toBe("rate_limited")
+    }
+  })
+
+  it("never lets quota text override a non-429 status", () => {
+    const c = classifyFailure({ status: 503, text: "quota exceeded" })
+    expect(c.category).toBe("outage")
+  })
+})
+
 describe("classifyFailure: retry-after extraction", () => {
   it("prefers the structured retryAfterMs over the header", () => {
     const c = classifyFailure({

@@ -1001,7 +1001,7 @@ export class Supervisor {
       status: report.error.status,
       // Terminal classification may use the bounded textual last resort
       // (content-policy rejections arrive as free text, not error types).
-      // The retry hook deliberately omits text: it must stay conservative.
+      // The retry hook passes text only to refine a 429's window.
       text: report.error.message,
     })
     const countTerminal = this.#countTerminalFailure(unitID, classification.category)
@@ -1396,6 +1396,9 @@ export class Supervisor {
           : {}),
       },
       status: input.error.status,
+      // Text only refines a definitive 429's window (rate limit vs spent
+      // quota); every other retry classification stays structural.
+      ...(input.error.status === 429 ? { text: input.error.message } : {}),
     })
     const unitID = this.#tracker.active(input.sessionID)?.id
     // The pumped http-response event describes the same failed request;
