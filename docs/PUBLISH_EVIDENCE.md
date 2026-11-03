@@ -2,16 +2,17 @@
 
 Real final verification output. Every number below comes from an actual run of
 `npm run verify:release` on 2026-11-03 (full gate chain, single local command,
-abort-on-first-failure), for release 1.2.0: the full post-1.0.0 correctness review,
+abort-on-first-failure), for release 1.2.1: the full post-1.0.0 correctness review,
 expanded real-host E2E coverage, subscription-limit classification,
-health-blocked manual-selection fallback, and the tier-editor save flow
-(see CHANGELOG 1.0.1 and 1.2.0). Machine-readable artifacts live under
+health-blocked manual-selection fallback, the tier-editor save flow, and
+automatic terminal-quota recovery with provider-scope quarantine and steering
+protection (see CHANGELOG 1.0.1, 1.2.0, and 1.2.1). Machine-readable artifacts live under
 `test-artifacts/` (`traceability.json`, `pack-check.json`, `e2e-tui-results/`,
 `e2e-web-results/`) and are gitignored.
 
 ## Revisions and runtimes
 
-- Commit/revision: fixes and tests through `220dbb5` (including `07a3ae2`, `2926cfb`, `a56ccd3`, and `a595336`), verified with the 1.2.0 package/lockfile version and CHANGELOG. These release files and this evidence are recorded in commit `1.2.0`, tagged `v1.2.0`.
+- Commit/revision: the 1.2.0 release chain through `220dbb5` (tagged `v1.2.0`, published to npm) plus the post-publication fallback fixes through `897d5f9` (automatic terminal-quota recovery, provider-scope quota quarantine, steering protection — see CHANGELOG 1.2.1), verified with the 1.2.1 package/lockfile version and CHANGELOG. These release files and this evidence are recorded in commit `1.2.1`, tagged `v1.2.1`.
 - OpenCode versions tested: **2.2.1** (minimum supported, packed-plugin suite), **2.2.5** (current and latest, packed-plugin suite + all runtime/web/TUI E2E).
 - Node: v26.4.0 (format/lint/typecheck/test/coverage/build/pack/traceability/plugin-test/web E2E); v24.15.0 (Termwright PTY E2E — the verify-release script auto-prefixes a certified Node 22/24 when the runtime is newer). CI runs the same gates on Node 20/22/24.
 
@@ -23,22 +24,22 @@ health-blocked manual-selection fallback, and the tier-editor save flow
 | lint (eslint)                                                                            | clean, 0 errors/warnings                                                                                                                                                                              |
 | lint:biome (style anti-patterns)                                                         | clean, 0 diagnostics (`--error-on-warnings`)                                                                                                                                                          |
 | typecheck (tsc --noEmit, strict + noUncheckedIndexedAccess + exactOptionalPropertyTypes) | 0 errors                                                                                                                                                                                              |
-| test (vitest, all projects)                                                              | **77 files, 1255 tests, all passed**                                                                                                                                                                  |
-| coverage (unit project)                                                                  | **100% statements (3156/3156), 100% branches (2095/2095), 100% functions (686/686), 100% lines (2761/2761)** on `src/**` — 66 files, 1210 tests. No exclusions, no `istanbul ignore`, no empty tests. |
+| test (vitest, all projects)                                                              | **78 files, 1291 tests, all passed**                                                                                                                                                                  |
+| coverage (unit project)                                                                  | **100% statements (3207/3207), 100% branches (2152/2152), 100% functions (690/690), 100% lines (2805/2805)** on `src/**` — 67 files, 1242 tests. No exclusions, no `istanbul ignore`, no empty tests. |
 | build                                                                                    | tsc build + vite GUI bundle OK                                                                                                                                                                        |
 | pack:check                                                                               | tarball OK (334 entries), publish dry-run OK                                                                                                                                                          |
 | plugin-test                                                                              | **PASS on all 3 targets** — current (opencode 2.2.5), 2.2.1, latest (opencode 2.2.5)                                                                                                                  |
-| e2e:web (Playwright)                                                                     | **45 passed, 0 failed, 0 skipped** (37.8s) — desktop + narrow + webkit, zero conditional skips                                                                                                        |
-| e2e:tui (Termwright)                                                                     | **23/23 passed** (run `df5d68a0-e1d8-42db-ba3d-c71ac2b37573`)                                                                                                                                         |
-| traceability                                                                             | **56 requirements, 87 declaring files, 35/35 E2E-applicable covered E2E — OK**                                                                                                                        |
+| e2e:web (Playwright)                                                                     | **45 passed, 0 failed, 0 skipped** (42.3s) — desktop + narrow + webkit, zero conditional skips                                                                                                        |
+| e2e:tui (Termwright)                                                                     | **23/23 passed** (run `397e2cca-e82b-40e9-a25f-8e765f07bea2`)                                                                                                                                         |
+| traceability                                                                             | **56 requirements, 88 declaring files, 35/35 E2E-applicable covered E2E — OK**                                                                                                                        |
 
-## Test layers within the 1255 passing tests
+## Test layers within the 1291 passing tests
 
 - Unit: every `src/**` module, 100% coverage.
 - Property / state-machine (fast-check): classification totality, health-state legality, scheduler invariants (unavailable/incompatible never selected; availability failure never escalates; Observe ≡ Control decisions; pin wins; finite escalation budgets; one half-open probe; preferred resource returns only at a safe boundary), receipt no-secrets/boundedness.
 - Integration: real seams with fake adapters (scheduler→health→state, retry veto policy, rpc validation, settings migration, restart round-trips, fail-open).
 - Fault injection: deterministic fake provider (429 + Retry-After, quota/reset, 503, timeout, disconnect, malformed error, context rejection, recovery-after-N) + injected clock; concurrent sessions, child-session failure, OpenCode restart, Adaptive internal exception.
-- Headless (ADP-045): 45 runtime E2E tests run against real `opencode serve` hosts with **no TUI/GUI surface loaded** — supervision, lifecycle, routing, rpc incl. wire-level schema-gate rejection, session modes, tier requests, active-mode recovery, failover, parks, receipts, provider failure modes, restart durability, manual-selection semantics, once-only breaker counting, and per-task escalation budgets.
+- Headless (ADP-045): 49 runtime E2E tests run against real `opencode serve` hosts with **no TUI/GUI surface loaded** — supervision, lifecycle, routing, rpc incl. wire-level schema-gate rejection, session modes, tier requests, active-mode recovery, failover, parks, receipts, provider failure modes, restart durability, manual-selection semantics, once-only breaker counting, per-task escalation budgets, steering that preserves the in-flight episode's model, and terminal quota failures that continue automatically through exhausted models to a working one.
 - Goal tests (ADP-041): the native `/goal` journey on a real host — "supervises a native /goal episode: fails over mid-goal and recovers at the next boundary" (lifecycle.test.ts) — plus unit/mode property tests for goal compatibility.
 
 ## Packed-plugin tests (ADP-040)
@@ -66,7 +67,7 @@ Real screenshots of both surfaces captured and inspected (kept under gitignored 
 - No TODO/FIXME/XXX/HACK placeholders remain (`grep` over `src/`, `scripts/`, `test/` — zero matches).
 - No `.only` / `.skip` / `.fixme` in vitest suites (zero matches); the Playwright suite runs with zero conditional skips (narrow coverage via settings URL routes).
 - No known flaky tests: zero retries in all E2E; flaky tests are treated as bugs and were fixed (e.g. scheduler draining oracle in T-21, receipt polling under instrumentation in T-28).
-- No known release-blocking bug remains: the T-32 adversarial review found 5 defects, all fixed with failing-first regression tests kept permanently; subsequent full-area re-reviews fixed 40+ more defects the same way (health windows, probe tickets and probe release, escalation budget attribution, store write ordering, setup rollback, rpc error surfacing, manual-selection handling, persisted parsers, packaging portability — see CHANGELOG 1.0.1). Release 1.2.0 adds quota-message regression cases, health-blocked manual-selection fallback coverage, and unit/TUI regressions proving saves keep the tier page open.
+- No known release-blocking bug remains: the T-32 adversarial review found 5 defects, all fixed with failing-first regression tests kept permanently; subsequent full-area re-reviews fixed 40+ more defects the same way (health windows, probe tickets and probe release, escalation budget attribution, store write ordering, setup rollback, rpc error surfacing, manual-selection handling, persisted parsers, packaging portability — see CHANGELOG 1.0.1). Release 1.2.0 adds quota-message regression cases, health-blocked manual-selection fallback coverage, and unit/TUI regressions proving saves keep the tier page open. Release 1.2.1 adds terminal-quota recovery, quota-scope, and steering regressions at unit and real-host level.
 
 ## Known limitations
 

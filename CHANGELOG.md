@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] — 2026-11-03
+
+### Fixed
+
+- Terminal quota failures now automatically continue on the next usable resource in the same tier, including failures on a manually selected model. Recovery uses current session state, requires no second user prompt, and has a finite per-task budget.
+- Explicit shared subscription/session limits and depleted credit balances quarantine the configured provider; model-specific quota stays model-scoped across variants. Other providers remain independent, even when they offer the same model.
+- A blocked manual selection stops suppressing routing after fallback, allowing the preferred resource to return at a later safe boundary when its quota window expires.
+- Steering messages during active work no longer re-admit the episode, change its model, or reset recovery budgets. Tier changes apply at the next fresh episode.
+
+### Added
+
+- Real-host regressions for automatic recovery through two exhausted models to a third, manual-pick quota recovery with model/provider scope, and steering that completes without switching models mid-work.
+- Deterministic recovery-edge tests for cancellation, OFF/OBSERVE, exhausted tiers, duplicate retry/terminal signals, bounded continuation, and probe release.
+
 ## [1.2.0] — 2026-11-03
 
 Fallback correctness for real provider failures, plus real-host end-to-end coverage.
@@ -61,6 +75,7 @@ Initial release.
 - Capacity awareness from provider response headers (best-effort, never load-bearing).
 - Fail-open on internal plugin failure; privacy and configured-provider restrictions fail closed.
 
+[1.2.1]: https://github.com/Hacklone/opencode-adaptive/releases/tag/v1.2.1
 [1.2.0]: https://github.com/Hacklone/opencode-adaptive/releases/tag/v1.2.0
 [1.0.1]: https://github.com/Hacklone/opencode-adaptive/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Hacklone/opencode-adaptive/releases/tag/v1.0.0
