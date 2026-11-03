@@ -1329,6 +1329,79 @@ describe("supervisor", () => {
       expect(receipts[1]?.tier).toBe("advanced")
     })
 
+    it("spends one escalation budget across a task's continuations, renewed by the next user prompt", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = new KeyFailStorage("unused")
+      seed(
+        storage,
+        SETTINGS_KEY,
+        settingsJSON("active", {
+          quick: [wireRef("prov", "q")],
+          standard: [wireRef("prov", "a")],
+          advanced: [wireRef("prov", "b")],
+        }),
+      )
+      const supervisor = makeSupervisor({
+        storage,
+        session,
+        infos: [makeInfo("prov", "q"), makeInfo("prov", "a"), makeInfo("prov", "b")],
+      })
+      supervisor.noteTierRequest("s1", "quick")
+      // Each failing episode opens a new unit: the user's prompt, then the
+      // owned continuation the first escalation delivered.
+      const fail = async (model: string, at: number): Promise<void> => {
+        await supervisor.handleReport({ kind: "prompt", sessionID: "s1" })
+        await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at })
+        await supervisor.handleReport({
+          kind: "model-selected",
+          sessionID: "s1",
+          at: at + 1,
+          model: ref("prov", model),
+        })
+        await supervisor.handleReport({
+          kind: "execution-failed",
+          sessionID: "s1",
+          at: at + 2,
+          error: CONTEXT_OVERFLOW,
+        })
+        await flush()
+      }
+      await fail("q", 10)
+      await fail("a", 20)
+      const escalations = parseReceiptsPayload(storedReceipts(storage)).filter(
+        (receipt) => receipt.decision.kind === "escalate",
+      )
+      expect(escalations.map((receipt) => receipt.decision)).toMatchObject([
+        { kind: "escalate", tier: "standard", budgetRemaining: 1 },
+        { kind: "escalate", tier: "advanced", budgetRemaining: 0 },
+      ])
+      // The advanced continuation completes the task; the next user prompt
+      // starts a new task with a fresh budget.
+      await supervisor.handleReport({ kind: "prompt", sessionID: "s1" })
+      await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 25 })
+      await supervisor.handleReport({ kind: "execution-succeeded", sessionID: "s1", at: 26 })
+      await supervisor.handleReport({ kind: "prompt", sessionID: "s1" })
+      await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: "s1",
+        at: 31,
+        model: ref("prov", "q"),
+      })
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 32,
+        error: CONTEXT_OVERFLOW,
+      })
+      await flush()
+      expect(
+        parseReceiptsPayload(storedReceipts(storage))
+          .filter((receipt) => receipt.decision.kind === "escalate")
+          .at(-1)?.decision,
+      ).toMatchObject({ kind: "escalate", tier: "standard", budgetRemaining: 1 })
+    })
+
     it("never escalates onto the resource that failed when the host reports it as variant 'default'", async () => {
       const session = new FakeSupervisorSession()
       const storage = new KeyFailStorage("unused")

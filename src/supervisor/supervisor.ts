@@ -19,7 +19,7 @@
  *   (a later episode supersedes it); no outcome is ever fabricated.
  * - escalation (ADP-015..017) triggers only on capability-classified unit
  *   failures (context overflow, content policy); infrastructure failures
- *   never escalate, and the per-unit budget is finite.
+ *   never escalate, and the per-task budget is finite.
  */
 import { WorkUnitTracker } from "../core/work-unit/tracker.js"
 import {
@@ -122,8 +122,8 @@ const CAPABILITY_EVIDENCE_CATEGORIES: readonly FailureCategory[] = [
   "content_policy",
 ]
 
-/** Finite per-unit escalation budget (ADP-017). */
-const MAX_ESCALATIONS_PER_UNIT = 2
+/** Finite per-task escalation budget (ADP-017). */
+const MAX_ESCALATIONS_PER_TASK = 2
 
 export class Supervisor {
   readonly #options: SupervisorOptions
@@ -138,6 +138,12 @@ export class Supervisor {
   readonly #capacity: CapacityRegistry
   readonly #codex: CodexCapacitySensor
   readonly #vetoes = new Map<string, number>()
+  /**
+   * Escalations spent per session on the current task (one user prompt and
+   * the owned continuations it spawns). Keyed by session, not unit: every
+   * escalation continues on a NEW unit, so a per-unit count would restart
+   * the budget at each step. A fresh user prompt starts a new task.
+   */
   readonly #escalations = new Map<string, number>()
   readonly #admissionTiers = new Map<string, TierName>()
   /** Recorded escalation-tool requests per unit (ADP-015 agent self-reports). */
@@ -549,6 +555,7 @@ export class Supervisor {
     // this admission re-routes from scratch.
     this.#continuationTiers.delete(sessionID)
     this.#promptAdmission.delete(sessionID)
+    this.#escalations.delete(sessionID)
     // A pending probe ticket from an earlier prompt admission (or a failed
     // recovery) can only be carried by the unit the ORIGINAL prompt opens;
     // a fresh admission means that episode never ran, so the ticket is
@@ -811,9 +818,9 @@ export class Supervisor {
     const unit = this.#tracker.active(report.sessionID)
     const model = unit?.model ?? this.#tracker.lastModel(report.sessionID)?.model
     const unitID = unit?.id
-    // Budget and tier are read before the close clears the per-unit maps.
+    // The tier is read before the close clears the per-unit maps.
     const admissionTier = unitID !== undefined ? this.#admissionTiers.get(unitID) : undefined
-    const escalationUsed = unitID !== undefined ? (this.#escalations.get(unitID) ?? 0) : 0
+    const escalationUsed = this.#escalations.get(report.sessionID) ?? 0
     // Tool evidence is captured pre-close like the other per-unit maps.
     const toolEvidence = unitID !== undefined ? (this.#escalationEvidence.get(unitID) ?? []) : []
     const probeTicket = this.#takeProbeTicket(unitID)
@@ -931,11 +938,11 @@ export class Supervisor {
       currentTier: admissionTier,
       nextTierResources: eligible,
       evidence,
-      budget: { used: escalationUsed, max: MAX_ESCALATIONS_PER_UNIT },
+      budget: { used: escalationUsed, max: MAX_ESCALATIONS_PER_TASK },
     })
     const wrapped = schedulerForMode(plan, this.#modeFor(report.sessionID, settings))
     if (wrapped.kind === "escalate") {
-      this.#escalations.set(unitID, escalationUsed + 1)
+      this.#escalations.set(report.sessionID, escalationUsed + 1)
       // Recorded unit-less on purpose: the receipt describes the CONTINUATION
       // decision, so the continuation unit adopts it and its outcome attaches
       // here (the failed unit's own outcome attaches to its apply receipt).
@@ -1022,7 +1029,6 @@ export class Supervisor {
     const unitID = closedUnitID(closed)
     if (unitID !== undefined) {
       this.#vetoes.delete(unitID)
-      this.#escalations.delete(unitID)
       this.#admissionTiers.delete(unitID)
       this.#escalationEvidence.delete(unitID)
       const leftover = this.#probeTickets.get(unitID)
@@ -1269,6 +1275,7 @@ export class Supervisor {
         this.#continuationTiers.delete(sessionID)
         this.#promptAdmission.delete(sessionID)
         this.#continuationPending.delete(sessionID)
+        this.#escalations.delete(sessionID)
         if (this.#sessionModes.get(sessionID) !== null) {
           try {
             await this.#sessionModes.set(sessionID, null)

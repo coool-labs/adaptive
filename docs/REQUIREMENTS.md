@@ -24,7 +24,7 @@ Every requirement is objectively testable. IDs are stable; tests declare `covers
 
 - **ADP-013** — Infrastructure failure (429, quota, timeout, 503, outage) never escalates capability tier; it triggers horizontal recovery within the required tier.
 - **ADP-014** — Horizontal recovery prefers OpenCode-native retry/model-switch; Adaptive never aborts and replays the original user request once tool side effects exist; completed side effects are treated as durable.
-- **ADP-015** — Capability escalation (variant → stronger variant → stronger tier) happens only on structured evidence, prefers same-model stronger variant first, and uses finite per-work-unit budgets with no escalation loops.
+- **ADP-015** — Capability escalation (variant → stronger variant → stronger tier) happens only on structured evidence, prefers same-model stronger variant first, and uses a finite per-task budget (one user prompt and the continuations it spawns) with no escalation loops.
 - **ADP-016** — Routing happens fresh at each safe work-unit boundary; there is no de-escalation engine and Adaptive never pulls a healthy resource away mid-work to save cost.
 - **ADP-017** — A compatibility gate (context capacity, tool use, modalities, model/variant/provider availability) filters candidates before health/preference ranking; only user-configured resources are ever eligible.
 - **ADP-018** — Preferred-resource recovery: configured order is unchanged; a recovered preferred resource becomes eligible at the next safe boundary; healthy running work is never interrupted for failback.

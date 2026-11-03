@@ -45,7 +45,7 @@ Dependency rules: `core` imports nothing from `adapters`/`ui`/`state`; `schedule
 1. **Admission / routing.** `session.execution.started` opens a work unit. The scheduler runs: required tier ← priority ladder (pin > tier request > role hint > deterministic evidence > `standard`, or `defer`); candidates ← tier list; compatibility gate; health/preference ranking. In CONTROL the chosen model is applied (`session.switchModel`) at this safe boundary; in OBSERVE the identical decision is only recorded as a receipt. `defer`/`OFF`/internal failure ⇒ OpenCode's own choice stands.
 2. **Supervision.** Tool continuations stay in-unit (`step.*` events do not close the unit). Subagents are separate units sharing health.
 3. **Failure.** `classifier` turns the structured error into scope/category/retry-hint/confidence/source. The `retry` hook decides: infra failure with a healthy same-tier candidate → veto native retry (`{retry:false}`) and perform native continuation (`session.wait` → inventory re-check → `switchModel` → resume within the session, never a replayed original prompt); otherwise leave OpenCode's native retry decision untouched.
-4. **Escalation.** Only structured capability evidence escalates: same model / current variant → same model / stronger variant → next tier, within finite per-unit budgets.
+4. **Escalation.** Only structured capability evidence escalates: same model / current variant → same model / stronger variant → next tier, within a finite per-task budget (one user prompt and its continuations).
 5. **Termination.** `succeeded`/`failed`/`interrupted` close the unit; receipts are written; parking/recovery evaluate at this safe boundary. `interrupted{reason:'user'}` never triggers failover.
 
 ## Resource-health model

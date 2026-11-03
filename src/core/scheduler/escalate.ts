@@ -3,10 +3,11 @@
  *
  * Escalation is justified only by non-empty structured evidence, follows the
  * ladder same model / current effort → same model / stronger effort → next
- * tier, and is bounded by a finite per-unit budget. Every output either moves
- * strictly up the ladder or refuses — the planner can never produce a loop,
- * because each accepted step strictly increases a well-founded measure
- * (variant index within the ladder, then tier index).
+ * tier, and is bounded by the caller's finite budget. Every output either
+ * moves strictly up the ladder or refuses: the planner itself never steps
+ * sideways or down. Termination across steps rests on the budget, which the
+ * caller must carry across every unit of one task (each escalation continues
+ * on a new unit).
  */
 import { nextTier } from "../tier-policy/types.js"
 import type { ModelRef } from "../work-unit/types.js"
