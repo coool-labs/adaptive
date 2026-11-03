@@ -1329,6 +1329,75 @@ describe("supervisor", () => {
       expect(receipts[1]?.tier).toBe("advanced")
     })
 
+    it("never escalates onto the resource that failed when the host reports it as variant 'default'", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = new KeyFailStorage("unused")
+      seed(
+        storage,
+        SETTINGS_KEY,
+        settingsJSON("active", {
+          standard: [wireRef("prov", "a")],
+          advanced: [wireRef("prov", "a"), wireRef("prov", "b")],
+        }),
+      )
+      const supervisor = makeSupervisor({ storage, session })
+      await supervisor.handleReport(STARTED)
+      // The host names base-model calls variant "default" (2.2.5): that is
+      // still prov/a, so the advanced tier's own prov/a is no stronger target.
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: "s1",
+        at: 15,
+        model: { providerID: "prov", id: "a", variant: "default" },
+      })
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 20,
+        error: CONTEXT_OVERFLOW,
+      })
+      await flush()
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts[1]?.decision).toMatchObject({
+        kind: "escalate",
+        target: ref("prov", "b"),
+        tier: "advanced",
+      })
+    })
+
+    it("escalates onto a variant-carrying target listed in the inventory", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = new KeyFailStorage("unused")
+      seed(
+        storage,
+        SETTINGS_KEY,
+        settingsJSON("active", {
+          standard: [wireRef("prov", "a")],
+          advanced: [wireRef("prov", "b", "high")],
+        }),
+      )
+      const supervisor = makeSupervisor({
+        storage,
+        session,
+        infos: [makeInfo("prov", "a"), makeInfo("prov", "b", { variants: ["high"] })],
+      })
+      await supervisor.handleReport(STARTED)
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: "s1",
+        at: 15,
+        model: ref("prov", "a"),
+      })
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 20,
+        error: CONTEXT_OVERFLOW,
+      })
+      await flush()
+      expect(session.log).toContain("switch:s1:prov/b@high")
+    })
+
     it("records an observe-only escalation decision without switching", async () => {
       const session = new FakeSupervisorSession()
       const storage = escalateStorage("observe")
@@ -1914,9 +1983,8 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     return storage
   }
 
-  /** One-candidate standard tier: the only tier shape where a due breaker's
-   * half-open probe is the admission's choice rather than a passed-over
-   * sibling (the scheduler prefers a ready candidate over a probe). */
+  /** One-candidate standard tier: a due breaker's probe has no ready sibling
+   * to fall back on, so a released probe shows up as the next admission. */
   function singleStorage(): KeyFailStorage {
     const storage = new KeyFailStorage("unused")
     seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
@@ -2279,20 +2347,45 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     errors.restore()
   })
 
-  it("a passed-over due breaker's probe is re-armed instead of wedging half-open", async () => {
+  // Regression (ADP-018/019): a due preferred resource used to lose its probe
+  // to a ready later sibling and was re-armed with a fresh window on every
+  // admission, so it never returned while the sibling stayed healthy.
+  it("a due preferred resource gets its probe over a ready sibling and returns on success", async () => {
     let now = 0
     const clock = (): number => now
     const session = new FakeSupervisorSession()
     const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session, clock })
     await trip(supervisor, now)
-    // a's probe is due; the ready sibling wins, so the assessment's probe
-    // ticket is never dispatched by this admission.
     now = 40_000
     await supervisor.handleReport(PROMPT_S1)
-    expect(session.log).toEqual(["switch:s1:prov/b"])
-    // Trip b as well, then advance to where BOTH breakers are due again: a
-    // (re-armed at 40_000 with the same 30s window) and b (opened at 40_000).
+    expect(session.log).toEqual(["switch:s1:prov/a"])
+    expect(parseReceiptsPayload(storedReceipts(storage)).at(-1)?.decision).toMatchObject({
+      kind: "apply",
+      reason: "probe",
+      model: ref("prov", "a"),
+    })
+    await supervisor.handleReport(STARTED_S1)
+    await supervisor.handleReport({ kind: "execution-succeeded", sessionID: "s1", at: now })
+    now = 41_000
+    await supervisor.handleReport(PROMPT_S1)
+    expect(parseReceiptsPayload(storedReceipts(storage)).at(-1)?.decision).toEqual({
+      kind: "apply",
+      model: ref("prov", "a"),
+      tier: "standard",
+      reason: "preferred",
+      evidence: { skipped: [] },
+    })
+  })
+
+  // Regression: releasing a passed-over probe used to restart its backoff
+  // window, pushing the resource back on every admission that skipped it.
+  it("a passed-over due probe stays due instead of restarting its backoff", async () => {
+    let now = 0
+    const clock = (): number => now
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session, clock })
     await supervisor.handleReport({
       kind: "model-selected",
       sessionID: "s1",
@@ -2302,19 +2395,24 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     for (let i = 0; i < 5; i += 1) {
       await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
     }
-    now = 70_000
+    // b's probe is due, but the ready preferred a wins this admission.
+    now = 40_000
     await supervisor.handleReport(PROMPT_S1)
-    const receipts = parseReceiptsPayload(storedReceipts(storage))
-    // A wedged a would report probe-in-flight and push the probe onto b; the
-    // re-armed a is due and wins the probe as the first candidate.
-    expect(receipts.at(-1)?.decision).toMatchObject({
+    expect(session.log).toEqual(["switch:s1:prov/a"])
+    await trip(supervisor, now)
+    // a is now breaker-open; b was released still due, so it is probed at
+    // once rather than after another 30s window.
+    now = 40_001
+    await supervisor.handleReport(PROMPT_S1)
+    expect(parseReceiptsPayload(storedReceipts(storage)).at(-1)?.decision).toMatchObject({
       kind: "apply",
       reason: "probe",
-      model: ref("prov", "a"),
+      model: ref("prov", "b"),
+      evidence: { skipped: [{ ref: ref("prov", "a"), why: "breaker-open" }] },
     })
   })
 
-  it("observe mode re-arms a probe its wrapped decision never dispatched", async () => {
+  it("observe mode releases a probe its wrapped decision never dispatched", async () => {
     let now = 0
     const clock = (): number => now
     const session = new FakeSupervisorSession()
@@ -2331,18 +2429,18 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
       kind: "observe-only",
       would: { kind: "apply", reason: "probe" },
     })
-    // The next admission must see the breaker re-armed (open), not a probe
-    // stuck in flight with an unowned ticket.
+    // The next admission must see the probe due again, not stuck in flight
+    // with an unowned ticket (which would park as probe-in-flight).
     now = 50_000
     await supervisor.handleReport(STARTED_S1)
     receipts = parseReceiptsPayload(storedReceipts(storage))
     expect(receipts.at(-1)?.decision).toMatchObject({
       kind: "observe-only",
-      would: { kind: "park", reason: "all-blocked", detail: "breaker-open" },
+      would: { kind: "apply", reason: "probe" },
     })
   })
 
-  it("a recovery probe is re-armed when the veto never happens", async () => {
+  it("a recovery probe is released when the veto never happens", async () => {
     let now = 0
     const clock = (): number => now
     const session = new FakeSupervisorSession()
@@ -2358,25 +2456,30 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     await flush()
     expect(session.log).toEqual([])
     // The recovery admission consumed the due probe, but without a veto no
-    // episode ever carries the ticket: it must re-arm, not wedge half-open.
+    // episode ever carries the ticket: it must be released (still due), not
+    // wedge half-open.
     now = 50_000
     await supervisor.handleReport(PROMPT_S1)
     const receipts = parseReceiptsPayload(storedReceipts(storage))
-    expect(receipts.at(-1)?.decision).toEqual({
-      kind: "park",
-      reason: "all-blocked",
-      detail: "breaker-open",
+    expect(receipts.at(-1)?.decision).toMatchObject({
+      kind: "apply",
+      reason: "probe",
+      model: ref("prov", "a"),
     })
   })
 
-  it("a failed prompt-admission switch re-arms the probe it admitted", async () => {
+  it("a failed prompt-admission switch releases the probe it admitted", async () => {
     const errors = spyErrors()
+    let switches = 0
     let now = 0
     const clock = (): number => now
     const source = {
       get: () => Promise.resolve({ sessionID: "s1" }),
       wait: () => Promise.resolve(),
-      switchModel: () => Promise.reject(new Error("switch failed")),
+      switchModel: () => {
+        switches += 1
+        return switches === 1 ? Promise.reject(new Error("switch failed")) : Promise.resolve()
+      },
       prompt: () => Promise.resolve({ sessionID: "s1" }),
     }
     const session = { source } as unknown as FakeSupervisorSession
@@ -2385,35 +2488,38 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     await trip(supervisor, now)
     now = 40_000
     await supervisor.handleReport(PROMPT_S1)
-    // Fail-open: the admission defers and the opened unit re-routes itself.
-    await supervisor.handleReport(STARTED_S1)
+    // Fail-open: the admission defers to OpenCode's own model.
     const receipts = parseReceiptsPayload(storedReceipts(storage))
     expect(receipts[0]?.decision).toEqual({
       kind: "defer",
       reason: "routing-defer",
       detail: "internal error",
     })
-    // The admitted-but-never-dispatched probe re-armed the breaker's same
-    // window instead of wedging the resource half-open.
+    // The admitted-but-never-dispatched probe is released (still due)
+    // instead of wedging the resource half-open.
     now = 50_000
     await supervisor.handleReport(PROMPT_S1)
     const after = parseReceiptsPayload(storedReceipts(storage))
-    expect(after.at(-1)?.decision).toEqual({
-      kind: "park",
-      reason: "all-blocked",
-      detail: "breaker-open",
+    expect(after.at(-1)?.decision).toMatchObject({
+      kind: "apply",
+      reason: "probe",
+      model: ref("prov", "a"),
     })
     errors.restore()
   })
 
-  it("a failed unit-admission switch re-arms the probe it admitted", async () => {
+  it("a failed unit-admission switch releases the probe it admitted", async () => {
     const errors = spyErrors()
+    let switches = 0
     let now = 0
     const clock = (): number => now
     const source = {
       get: () => Promise.resolve({ sessionID: "s1" }),
       wait: () => Promise.resolve(),
-      switchModel: () => Promise.reject(new Error("switch failed")),
+      switchModel: () => {
+        switches += 1
+        return switches === 1 ? Promise.reject(new Error("switch failed")) : Promise.resolve()
+      },
       prompt: () => Promise.resolve({ sessionID: "s1" }),
     }
     const session = { source } as unknown as FakeSupervisorSession
@@ -2429,20 +2535,20 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
       reason: "routing-defer",
       detail: "internal error",
     })
-    // The probe was admitted for this unit but its model never applied — the
-    // breaker re-arms instead of wedging half-open.
+    // The admitted-but-never-dispatched probe is released (still due)
+    // instead of wedging the resource half-open.
     now = 50_000
     await supervisor.handleReport(PROMPT_S1)
     const after = parseReceiptsPayload(storedReceipts(storage))
-    expect(after.at(-1)?.decision).toEqual({
-      kind: "park",
-      reason: "all-blocked",
-      detail: "breaker-open",
+    expect(after.at(-1)?.decision).toMatchObject({
+      kind: "apply",
+      reason: "probe",
+      model: ref("prov", "a"),
     })
     errors.restore()
   })
 
-  it("a stale session probe ticket is re-armed, never adopted by a later unit", async () => {
+  it("a stale session probe ticket is released, never adopted by a later unit", async () => {
     let now = 0
     const clock = (): number => now
     const session = new FakeSupervisorSession()
@@ -2463,30 +2569,56 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     now = 40_000
     await supervisor.handleReport(PROMPT_S1)
     expect(session.log).toEqual(["switch:s1:prov/a"])
-    // A second prompt re-admits: the stale ticket must re-arm here instead of
-    // waiting to be adopted by whichever unit opens next.
+    // A second prompt re-admits: the stale ticket must be released here
+    // instead of waiting to be adopted by whichever unit opens next — a
+    // held ticket would read probe-in-flight and push the probe onto b.
     now = 41_000
     await supervisor.handleReport(PROMPT_S1)
     let receipts = parseReceiptsPayload(storedReceipts(storage))
-    expect(receipts.at(-1)?.decision).toEqual({
-      kind: "park",
-      reason: "all-blocked",
-      detail: "breaker-open,breaker-open",
-    })
-    // The turn that finally opens runs on b; its success says nothing about
-    // a, so a must still be breaker-blocked afterwards.
+    const fresh = receipts.at(-1)?.decision
+    expect(fresh).toMatchObject({ kind: "apply", reason: "probe", model: ref("prov", "a") })
+    const stale = receipts.at(-2)?.decision
+    expect(stale).toMatchObject({ kind: "apply", reason: "probe" })
+    // The opened unit carries the fresh ticket, so its success closes a.
+    expect(fresh).not.toEqual(stale)
     await supervisor.handleReport(STARTED_S1)
     await supervisor.handleReport({ kind: "execution-succeeded", sessionID: "s1", at: now })
-    now = 50_000
+    now = 42_000
     await supervisor.handleReport(PROMPT_S1)
     receipts = parseReceiptsPayload(storedReceipts(storage))
     expect(receipts.at(-1)?.decision).toMatchObject({
       kind: "apply",
-      model: ref("prov", "b"),
+      model: ref("prov", "a"),
+      reason: "preferred",
     })
   })
 
-  it("a failed recovery re-arms the probe it admitted for the continuation", async () => {
+  it("a failed probe episode backs the breaker off further instead of re-arming its window", async () => {
+    let now = 0
+    const clock = (): number => now
+    const session = new FakeSupervisorSession()
+    const storage = singleStorage()
+    const supervisor = makeSupervisor({ storage, session, clock })
+    await trip(supervisor, now)
+    now = 40_000
+    await supervisor.handleReport(PROMPT_S1)
+    await supervisor.handleReport(STARTED_S1)
+    await supervisor.handleReport({
+      kind: "execution-failed",
+      sessionID: "s1",
+      at: now,
+      error: { type: "UnknownError", message: "", status: 503 },
+    })
+    // The probe's real failure is evidence: the breaker re-opens with a
+    // longer backoff. Treating it as a lost ticket (user_cancelled) would
+    // re-arm the same 30s window and probe the failing resource again.
+    now = 70_001
+    await supervisor.handleReport(PROMPT_S1)
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts.at(-1)?.decision).toMatchObject({ kind: "park" })
+  })
+
+  it("a failed recovery releases the probe it admitted for the continuation", async () => {
     let now = 0
     const clock = (): number => now
     const session = new FakeSupervisorSession({ failPrompt: true })
@@ -2500,19 +2632,20 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     expect(input.decision).toEqual({ retry: false })
     await flush()
     // The recovery consumed a's due probe but its continuation prompt failed:
-    // no unit will ever carry the ticket, so it must re-arm — otherwise a
-    // stays half-open forever and every later admission reads probe-in-flight.
+    // no unit will ever carry the ticket, so it must be released — otherwise
+    // a stays half-open forever and every later admission reads
+    // probe-in-flight.
     now = 50_000
     await supervisor.handleReport(PROMPT_S1)
     const receipts = parseReceiptsPayload(storedReceipts(storage))
-    expect(receipts.at(-1)?.decision).toEqual({
-      kind: "park",
-      reason: "all-blocked",
-      detail: "breaker-open",
+    expect(receipts.at(-1)?.decision).toMatchObject({
+      kind: "apply",
+      reason: "probe",
+      model: ref("prov", "a"),
     })
   })
 
-  it("a new veto re-arms the probe ticket whose continuation it replaces", async () => {
+  it("a new veto releases the probe ticket whose continuation it replaces", async () => {
     let now = 0
     const clock = (): number => now
     const gates: (() => void)[] = []
@@ -2559,8 +2692,8 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     // The owned continuation's prompt hook fires and is skipped (the marker
     // carries the continuation tier); the opened unit carries b's probe
     // ticket and its success closes b. A later user-prompt admission must
-    // then read a as breaker-open (its ticket was re-armed at the second
-    // veto), not a probe stuck in flight with a dropped ticket.
+    // then probe a again (its ticket was released at the second veto), not
+    // read a probe stuck in flight with a dropped ticket.
     now = 71_000
     await supervisor.handleReport(PROMPT_S1)
     await supervisor.handleReport(STARTED_S1)
@@ -2568,12 +2701,12 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     now = 72_000
     await supervisor.handleReport(PROMPT_S1)
     const receipts = parseReceiptsPayload(storedReceipts(storage))
-    expect(receipts.at(-1)?.decision).toEqual({
+    expect(receipts.at(-1)?.decision).toMatchObject({
       kind: "apply",
-      model: ref("prov", "b"),
+      model: ref("prov", "a"),
       tier: "standard",
-      reason: "fallback",
-      evidence: { skipped: [{ ref: ref("prov", "a"), why: "breaker-open" }] },
+      reason: "probe",
+      evidence: { skipped: [] },
     })
   })
 

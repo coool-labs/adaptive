@@ -17,6 +17,7 @@ import {
   expireProbe,
   recordProbeFailure,
   recordProbeSuccess,
+  releaseProbe,
 } from "../circuit-breaker/breaker.js"
 import { resourceChain, resourceKeyID } from "./key.js"
 import { applyHealthEvent, initialRecord, sweepRecord } from "./transitions.js"
@@ -304,6 +305,25 @@ export class ResourceHealthRegistry {
       ? recordProbeSuccess(breaker)
       : recordProbeFailure(breaker, outcome.category, now, this.#config.breaker)
     this.#records.set(id, { ...record, breaker: next, updatedAt: now })
+    return true
+  }
+
+  /**
+   * Returns an admitted-but-never-dispatched probe ticket: the breaker
+   * reopens still due, so the next admission can issue a fresh probe. Same
+   * stale-ticket rule as `reportProbe`.
+   */
+  releaseProbe(ticket: ProbeTicket): boolean {
+    const id = resourceKeyID(ticket.key)
+    const record = this.#records.get(id)
+    if (record?.breaker.state !== "half_open" || record.breaker.probeId !== ticket.id) {
+      return false
+    }
+    this.#records.set(id, {
+      ...record,
+      breaker: releaseProbe(record.breaker),
+      updatedAt: this.#clock(),
+    })
     return true
   }
 

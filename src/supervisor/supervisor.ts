@@ -551,12 +551,12 @@ export class Supervisor {
     this.#promptAdmission.delete(sessionID)
     // A pending probe ticket from an earlier prompt admission (or a failed
     // recovery) can only be carried by the unit the ORIGINAL prompt opens;
-    // a fresh admission means that episode never ran, so the ticket re-arms
-    // here instead of being adopted by whichever unit opens next.
+    // a fresh admission means that episode never ran, so the ticket is
+    // released here instead of being adopted by whichever unit opens next.
     const stale = this.#sessionProbeTickets.get(sessionID)
     if (stale !== undefined) {
       this.#sessionProbeTickets.delete(sessionID)
-      this.#reportProbeOutcome(stale, { success: false, category: "user_cancelled" })
+      this.#health.releaseProbe(stale)
     }
     let probeTicket: ProbeTicket | undefined
     try {
@@ -580,9 +580,9 @@ export class Supervisor {
       }
     } catch (error) {
       // A probe admitted for this turn is lost when the admission fails (the
-      // switch threw): no unit will ever carry the ticket, so re-arm it.
+      // switch threw): no unit will ever carry the ticket, so release it.
       if (probeTicket !== undefined) {
-        this.#reportProbeOutcome(probeTicket, { success: false, category: "user_cancelled" })
+        this.#health.releaseProbe(probeTicket)
       }
       // Fail-open: no marker → execution-started re-routes the unit itself.
       logFailOpen("admission", error)
@@ -679,10 +679,13 @@ export class Supervisor {
     await this.#capacity.refresh()
     const health: Record<string, Assessment> = {}
     const capacity: Record<string, CapacitySignals> = {}
-    // Tickets issued by this assessment sweep (see the re-arm below).
+    // Tickets issued by this assessment sweep (see the release below).
     const issued: ProbeTicket[] = []
-    for (const candidate of inventory) {
-      const ref = candidateRef(candidate)
+    // Only the routed candidates are assessed: assess flips a due breaker to
+    // half_open, and admitting a quick unit has no business touching an
+    // advanced-tier resource's breaker.
+    const routed = routing.kind === "pin" ? [routing.model] : tierCandidates
+    for (const ref of routed) {
       const mapKey = schedulerHealthKey(ref)
       const assessment = this.#health.assess(refKey(ref))
       health[mapKey] = assessment
@@ -704,19 +707,19 @@ export class Supervisor {
     }
     const decision = admit(input)
     // Assess admits a half-open probe for every due breaker it touches —
-    // including candidates this decision passed over (a ready sibling wins)
-    // or dispatched nothing for (defer/park). An issued-but-undispatched
-    // probe would wedge its resource in half_open: no unit ever carries the
-    // ticket, so nothing reports it and the resource never recovers. Re-arm
-    // each unselected ticket with the breaker's same backoff window — a
-    // probe that never ran is no health evidence.
+    // including candidates this decision passed over (an earlier ready
+    // candidate wins) or dispatched nothing for (defer/park). An
+    // issued-but-undispatched probe would wedge its resource in half_open:
+    // no unit ever carries the ticket. Release each unselected ticket — it
+    // stays due, because a probe that never ran is no health evidence and
+    // restarting its backoff would push it back on every admission.
     const selectedId = decision.kind === "apply" ? decision.evidence.probeId : undefined
     let probeTicket: ProbeTicket | undefined
     for (const ticket of issued) {
       if (selectedId !== undefined && ticket.id === selectedId) {
         probeTicket = ticket
       } else {
-        this.#health.reportProbe(ticket, { success: false, category: "user_cancelled" })
+        this.#health.releaseProbe(ticket)
       }
     }
     return { routing, decision, ...(probeTicket !== undefined ? { probeTicket } : {}) }
@@ -740,9 +743,9 @@ export class Supervisor {
         await this.#applyModel(unit, wrapped)
       } catch (error) {
         // The episode cannot carry the probe when the switch itself failed —
-        // re-arm the ticket instead of wedging the resource half-open.
+        // release the ticket instead of wedging the resource half-open.
         if (probeTicket !== undefined) {
-          this.#reportProbeOutcome(probeTicket, { success: false, category: "user_cancelled" })
+          this.#health.releaseProbe(probeTicket)
         }
         throw error
       }
@@ -751,8 +754,8 @@ export class Supervisor {
     }
     if (probeTicket !== undefined) {
       // OBSERVE wraps an apply — including a probe admission — without
-      // running it: no episode will ever report the ticket, so re-arm it.
-      this.#reportProbeOutcome(probeTicket, { success: false, category: "user_cancelled" })
+      // running it: no episode will ever report the ticket, so release it.
+      this.#health.releaseProbe(probeTicket)
     }
     // Observe-only records the identical decision; defer and park leave the
     // episode on OpenCode's own model (admission cannot hold an episode).
@@ -783,7 +786,7 @@ export class Supervisor {
   ): Promise<void> {
     const unit = this.#tracker.active(report.sessionID)
     const model = unit?.model ?? this.#tracker.lastModel(report.sessionID)?.model
-    const probeTicket = unit !== undefined ? this.#probeTickets.get(unit.id) : undefined
+    const probeTicket = this.#takeProbeTicket(unit?.id)
     const closed = this.#tracker.apply({
       kind: "execution-succeeded",
       sessionID: report.sessionID,
@@ -795,7 +798,6 @@ export class Supervisor {
     }
     if (unit !== undefined) {
       if (probeTicket !== undefined) {
-        this.#probeTickets.delete(unit.id)
         this.#reportProbeOutcome(probeTicket, { success: true })
       }
       await this.#attachOutcome(unit, { status: "succeeded" })
@@ -814,7 +816,7 @@ export class Supervisor {
     const escalationUsed = unitID !== undefined ? (this.#escalations.get(unitID) ?? 0) : 0
     // Tool evidence is captured pre-close like the other per-unit maps.
     const toolEvidence = unitID !== undefined ? (this.#escalationEvidence.get(unitID) ?? []) : []
-    const probeTicket = unitID !== undefined ? this.#probeTickets.get(unitID) : undefined
+    const probeTicket = this.#takeProbeTicket(unitID)
     const closed = this.#tracker.apply({
       kind: "execution-failed",
       sessionID: report.sessionID,
@@ -841,7 +843,6 @@ export class Supervisor {
     if (unit !== undefined) {
       await this.#attachOutcome(unit, { status: "failed", category: classification.category })
       if (probeTicket !== undefined) {
-        this.#probeTickets.delete(unit.id)
         this.#reportProbeOutcome(probeTicket, { success: false, category: classification.category })
       }
     }
@@ -880,8 +881,11 @@ export class Supervisor {
       return []
     }
     const eligible: ModelRef[] = []
+    // Compared by resource key: the host reports base-model calls as variant
+    // "default", which is the same resource as the bare tier entry.
+    const failedID = resourceKeyID(refKey(failed))
     for (const ref of refs) {
-      if (sameModelRef(ref, failed)) continue
+      if (resourceKeyID(refKey(ref)) === failedID) continue
       const candidate = inventory.find((entry) => sameModelRef(candidateRef(entry), ref))
       if (candidate === undefined) continue
       if (!checkCompatibility(candidate, {} satisfies Demand).compatible) continue
@@ -968,7 +972,7 @@ export class Supervisor {
       return
     }
     const unit = this.#tracker.active(report.sessionID)
-    const probeTicket = unit !== undefined ? this.#probeTickets.get(unit.id) : undefined
+    const probeTicket = this.#takeProbeTicket(unit?.id)
     const closed = this.#tracker.apply({
       kind: "execution-interrupted",
       sessionID: report.sessionID,
@@ -982,7 +986,6 @@ export class Supervisor {
       // An interrupted probe is no evidence about resource health: re-arm the
       // breaker's same window rather than doubling it.
       if (probeTicket !== undefined) {
-        this.#probeTickets.delete(unit.id)
         this.#reportProbeOutcome(probeTicket, { success: false, category: "user_cancelled" })
       }
       await this.#attachOutcome(unit, { status: "interrupted", reason })
@@ -1001,6 +1004,19 @@ export class Supervisor {
     this.#health.reportProbe(ticket, outcome)
   }
 
+  /**
+   * Hands a closing unit's probe ticket to its explicit outcome reporter.
+   * Taken BEFORE the close: #afterUnitClose treats any ticket still held as
+   * lost and re-opens the breaker, which would turn a probe's real outcome
+   * into a stale report.
+   */
+  #takeProbeTicket(unitID: string | undefined): ProbeTicket | undefined {
+    if (unitID === undefined) return undefined
+    const ticket = this.#probeTickets.get(unitID)
+    this.#probeTickets.delete(unitID)
+    return ticket
+  }
+
   /** Bounded per-unit bookkeeping once the tracker closed the unit. */
   #afterUnitClose(closed: ApplyResult): void {
     const unitID = closedUnitID(closed)
@@ -1011,8 +1027,9 @@ export class Supervisor {
       this.#escalationEvidence.delete(unitID)
       const leftover = this.#probeTickets.get(unitID)
       if (leftover !== undefined) {
-        // The explicit outcome reporters run before this cleanup; reaching
-        // here means the unit ended without one (superseded or lost).
+        // The explicit outcome reporters take their ticket before this
+        // cleanup; reaching here means the unit ended without one
+        // (superseded or lost).
         this.#reportProbeOutcome(leftover, { success: false, category: "user_cancelled" })
         this.#probeTickets.delete(unitID)
       }
@@ -1107,10 +1124,10 @@ export class Supervisor {
     const wrapped = retryForMode(core, this.#modeFor(input.sessionID, settings))
     if (wrapped.kind !== "veto") {
       // OBSERVE (and a declined veto) never runs the recovery episode, so an
-      // admitted probe has no continuation to report it — re-arm it here or
+      // admitted probe has no continuation to report it — release it here or
       // the resource wedges half-open.
       if (probeTicket !== undefined) {
-        this.#reportProbeOutcome(probeTicket, { success: false, category: "user_cancelled" })
+        this.#health.releaseProbe(probeTicket)
       }
       return
     }
@@ -1123,10 +1140,10 @@ export class Supervisor {
     if (probeTicket !== undefined) {
       // The session holds one pending probe slot. A still-pending older
       // ticket belongs to a recovery whose continuation has not started (its
-      // episode can no longer claim this slot) — re-arm it before replacing.
+      // episode can no longer claim this slot) — release it before replacing.
       const stale = this.#sessionProbeTickets.get(input.sessionID)
       if (stale !== undefined && stale !== probeTicket) {
-        this.#reportProbeOutcome(stale, { success: false, category: "user_cancelled" })
+        this.#health.releaseProbe(stale)
       }
       this.#sessionProbeTickets.set(input.sessionID, probeTicket)
     }
@@ -1148,14 +1165,14 @@ export class Supervisor {
       .catch(async (error: unknown) => {
         logFailOpen("recovery-ops", error)
         // The recovery rejected before (or while) delivering its continuation
-        // prompt, so no unit will ever carry the probe it admitted — re-arm
+        // prompt, so no unit will ever carry the probe it admitted — release
         // it instead of wedging the resource half-open.
         if (
           probeTicket !== undefined &&
           this.#sessionProbeTickets.get(input.sessionID) === probeTicket
         ) {
           this.#sessionProbeTickets.delete(input.sessionID)
-          this.#reportProbeOutcome(probeTicket, { success: false, category: "user_cancelled" })
+          this.#health.releaseProbe(probeTicket)
         }
         if (unitID === undefined || routingTier === undefined) return
         try {

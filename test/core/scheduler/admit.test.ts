@@ -352,7 +352,10 @@ describe("admit — tier routing", () => {
     })
   })
 
-  it("prefers a ready candidate over an earlier probe offering, recorded as evidence", () => {
+  // Regression: a due probe at the preferred position used to lose to a later
+  // ready sibling, so the preferred resource never got its probe and never
+  // returned while the sibling stayed healthy (ADP-018/019).
+  it("probes an earlier due candidate instead of falling back to a later ready one", () => {
     const a = ref("p", "a")
     const b = ref("p", "b")
     const decision = admit(
@@ -366,10 +369,53 @@ describe("admit — tier routing", () => {
     )
     expect(decision).toEqual({
       kind: "apply",
+      model: a,
+      tier: "standard",
+      reason: "probe",
+      evidence: { skipped: [], probeId: "probe-7" },
+    })
+  })
+
+  it("keeps an earlier ready candidate over a later due probe", () => {
+    const a = ref("p", "a")
+    const b = ref("p", "b")
+    const decision = admit(
+      inputOf({
+        inventory: [candidateOf(a), candidateOf(b)],
+        tierCandidates: [a, b],
+        health: {
+          [schedulerHealthKey(b)]: { kind: "probe", ticket: { id: "probe-7", key: keyOf(b) } },
+        },
+      }),
+    )
+    expect(decision).toEqual({
+      kind: "apply",
+      model: a,
+      tier: "standard",
+      reason: "preferred",
+      evidence: { skipped: [] },
+    })
+  })
+
+  it("probes past an earlier draining candidate, recorded as evidence", () => {
+    const a = ref("p", "a")
+    const b = ref("p", "b")
+    const decision = admit(
+      inputOf({
+        inventory: [candidateOf(a), candidateOf(b)],
+        tierCandidates: [a, b],
+        health: {
+          [schedulerHealthKey(a)]: { kind: "blocked", reason: "draining", key: keyOf(a) },
+          [schedulerHealthKey(b)]: { kind: "probe", ticket: { id: "probe-7", key: keyOf(b) } },
+        },
+      }),
+    )
+    expect(decision).toEqual({
+      kind: "apply",
       model: b,
       tier: "standard",
-      reason: "fallback",
-      evidence: { skipped: [{ ref: a, why: "probe-in-flight" }] },
+      reason: "probe",
+      evidence: { skipped: [{ ref: a, why: "draining" }], probeId: "probe-7" },
     })
   })
 

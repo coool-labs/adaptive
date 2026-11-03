@@ -161,6 +161,25 @@ export function expireProbe(
 }
 
 /**
+ * Returns an admitted probe that was never dispatched (the admission picked
+ * another resource, only observed, or failed to switch). No request ran, so
+ * this is no evidence at all: the breaker goes back to open with the window
+ * it was admitted under — still due — instead of restarting the backoff,
+ * which would push a passed-over resource back on every admission.
+ */
+export function releaseProbe(record: BreakerRecord): BreakerRecord {
+  if (record.state !== "half_open") {
+    return record
+  }
+  return {
+    state: "open",
+    failures: record.failures,
+    openCount: record.openCount,
+    ...(record.probeAt !== undefined ? { reopenAt: record.probeAt } : {}),
+  }
+}
+
+/**
  * Records a failed probe. A non-exempt failure reopens the breaker with a
  * doubled backoff. An exempt failure (the probe was rate limited or quota
  * blocked) re-arms the same backoff window without escalation: the resource

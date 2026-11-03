@@ -12,6 +12,7 @@ import {
   recordBreakerSuccess,
   recordProbeFailure,
   recordProbeSuccess,
+  releaseProbe,
 } from "../../../src/health/circuit-breaker/breaker.js"
 import {
   BREAKER_EXEMPT_CATEGORIES,
@@ -206,6 +207,30 @@ describe("circuit breaker state machine", () => {
       const unstamped: BreakerRecord = { state: "open", failures: 3, openCount: 1 }
       expect(breakerWait(unstamped, 0)).toBeUndefined()
       expect(breakerBlockWait(unstamped, 0)).toBe(0)
+    })
+  })
+
+  describe("probe release (an admitted probe that was never dispatched)", () => {
+    it("reopens still due at the admission time, without restarting the backoff", () => {
+      const open = tripBreaker(0)
+      const halfOpen = { ...admitProbe(open, 1_500).record, probeAt: 1_500 }
+      const released = releaseProbe(halfOpen)
+      expect(released).toEqual({ state: "open", failures: 3, openCount: 1, reopenAt: 1_500 })
+      expect(admitProbe(released, 1_500).kind).toBe("admitted")
+    })
+
+    it("releases an unstamped probe as immediately due", () => {
+      const halfOpen = admitProbe(tripBreaker(0), 1_000).record
+      const released = releaseProbe(halfOpen)
+      expect(released).toEqual({ state: "open", failures: 3, openCount: 1 })
+      expect(admitProbe(released, 0).kind).toBe("admitted")
+    })
+
+    it("leaves a record with no probe in flight untouched", () => {
+      const open = tripBreaker(0)
+      expect(releaseProbe(open)).toBe(open)
+      const closed = initialBreaker()
+      expect(releaseProbe(closed)).toBe(closed)
     })
   })
 

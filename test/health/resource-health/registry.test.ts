@@ -344,6 +344,28 @@ describe("ResourceHealthRegistry", () => {
       ).toBe(true)
     })
 
+    it("releases a never-dispatched probe still due, and rejects stale release tickets", () => {
+      const { now, advance } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      expect(registry.releaseProbe({ id: "1", key: PROVIDER_KEY })).toBe(false)
+      tripBreaker(registry, PROVIDER_KEY)
+      advance(DEFAULT_HEALTH_CONFIG.breaker.baseOpenMs + 1)
+      const assessment = registry.assess(PROVIDER_KEY)
+      if (assessment.kind !== "probe") {
+        throw new Error("expected a probe admission")
+      }
+      advance(5_000)
+      expect(registry.releaseProbe(assessment.ticket)).toBe(true)
+      expect(registry.releaseProbe(assessment.ticket)).toBe(false)
+      const fresh = registry.assess(PROVIDER_KEY)
+      expect(fresh.kind).toBe("probe")
+      if (fresh.kind !== "probe") {
+        throw new Error("expected a probe admission")
+      }
+      expect(fresh.ticket.id).not.toBe(assessment.ticket.id)
+      expect(registry.releaseProbe(assessment.ticket)).toBe(false)
+    })
+
     it("expires a probe whose outcome never arrives and re-arms the same window", () => {
       const { now, advance } = fakeClock()
       const registry = new ResourceHealthRegistry(now)

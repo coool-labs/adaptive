@@ -2,11 +2,13 @@
  * Admission routing (ADP-013/016/022): pick the model for a fresh work unit,
  * or decide to defer (OpenCode's choice stands) or park (wait for recovery).
  *
- * Selection order, after the compatibility gate (ADP-017) filters candidates:
- * ready → probe → draining. Rationale: a half-open breaker candidate is one
- * single-flight admission away from verified recovery; a draining resource is
- * being retired, so depending on it is the last resort. Breaker single-flight
- * is enforced by the resource-health registry, not here.
+ * Selection, after the compatibility gate (ADP-017) filters candidates: the
+ * first candidate in user order that is ready or due for its half-open probe
+ * wins; draining only when none is. Rationale: a due probe at a preferred
+ * position is how that resource returns (ADP-018/019) — passing it over for a
+ * later ready sibling would keep it out forever; a draining resource is being
+ * retired, so depending on it is the last resort. Breaker single-flight is
+ * enforced by the resource-health registry, not here.
  */
 import { checkCompatibility } from "../compatibility/gate.js"
 import type { CandidateModel } from "../compatibility/types.js"
@@ -108,10 +110,11 @@ function admitTier(input: SchedulerInput, tier: TierName): AdmissionDecision {
     // discrepancy; park rather than invent resources (ADP-005).
     return { kind: "park", reason: "no-candidates" }
   }
-  const seen: { ref: ModelRef; bucket: Bucket }[] = []
+  // Candidates passed over before the winner (or all of them, when none won).
+  const seen: { ref: ModelRef; bucket: Extract<Bucket, { kind: "draining" | "skip" }> }[] = []
   let gateSkipped = 0
   const skipWhys: string[] = []
-  let readyRef: ModelRef | undefined
+  let chosen: { ref: ModelRef; bucket: Extract<Bucket, { kind: "ready" | "probe" }> } | undefined
   for (const ref of input.tierCandidates) {
     const entry = lookup(input.inventory, ref)
     if (entry === undefined) {
@@ -133,10 +136,11 @@ function admitTier(input: SchedulerInput, tier: TierName): AdmissionDecision {
     }
     const key = schedulerHealthKey(ref)
     const bucket = classify(input.health[key], input.capacity[key])
-    if (bucket.kind === "ready") {
-      // First ready candidate wins; later candidates are irrelevant, so the
-      // scan stops and the evidence stays an honest prefix of the user order.
-      readyRef = ref
+    if (bucket.kind === "ready" || bucket.kind === "probe") {
+      // The first ready or probe candidate wins; later candidates are
+      // irrelevant, so the scan stops and the evidence stays an honest prefix
+      // of the user order.
+      chosen = { ref, bucket }
       break
     }
     seen.push({ ref, bucket })
@@ -146,28 +150,20 @@ function admitTier(input: SchedulerInput, tier: TierName): AdmissionDecision {
   }
   const first = input.tierCandidates[0]
   const evidenceBefore = (until: number): SkippedCandidate[] =>
-    seen.slice(0, until).map((e): SkippedCandidate => {
-      if (e.bucket.kind === "skip") return { ref: e.ref, why: e.bucket.why }
-      return { ref: e.ref, why: e.bucket.kind === "draining" ? "draining" : "probe-in-flight" }
-    })
-  if (readyRef !== undefined) {
+    seen.slice(0, until).map((e): SkippedCandidate => ({
+      ref: e.ref,
+      why: e.bucket.kind === "skip" ? e.bucket.why : "draining",
+    }))
+  if (chosen?.bucket.kind === "probe") {
+    return apply(chosen.ref, tier, "probe", evidenceBefore(seen.length), chosen.bucket.probeId)
+  }
+  if (chosen !== undefined) {
     return apply(
-      readyRef,
+      chosen.ref,
       tier,
-      first !== undefined && sameModelRef(readyRef, first) ? "preferred" : "fallback",
+      first !== undefined && sameModelRef(chosen.ref, first) ? "preferred" : "fallback",
       evidenceBefore(seen.length),
       undefined,
-    )
-  }
-  const probeIndex = seen.findIndex((e) => e.bucket.kind === "probe")
-  const probeEntry = probeIndex >= 0 ? seen[probeIndex] : undefined
-  if (probeEntry?.bucket.kind === "probe") {
-    return apply(
-      probeEntry.ref,
-      tier,
-      "probe",
-      evidenceBefore(probeIndex),
-      probeEntry.bucket.probeId,
     )
   }
   const drainIndex = seen.findIndex((e) => e.bucket.kind === "draining")
