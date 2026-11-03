@@ -940,8 +940,12 @@ test(
           // one row per model (tier order, priority order within tiers).
           // The dialog is widened to xlarge precisely so the row fits on
           // one line: the full row (health, windowed state, clock deadline)
-          // must render without wrapping.
-          await openStatusPage(app, /rate_limited\s+windowed until \d{4}-\d{2}-\d{2} \d{2}:\d{2}/)
+          // must render without wrapping. The 429 body says the billing
+          // quota is spent, so the window is a quota window, not a rate limit.
+          await openStatusPage(
+            app,
+            /quota_exhausted\s+windowed until \d{4}-\d{2}-\d{2} \d{2}:\d{2}/,
+          )
           // The dialog body is padded and carries the esc hint in the title
           // row's right corner.
           await app.waitForText("esc", { timeout: 10_000 })
