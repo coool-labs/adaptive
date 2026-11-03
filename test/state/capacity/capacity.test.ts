@@ -118,6 +118,11 @@ describe("capacity payload parser", () => {
       raw({}),
       raw({ providerID: 7 }),
       raw({ providerID: "openai", variantID: "v" }),
+      raw({ providerID: "" }),
+      raw({ providerID: "x".repeat(129) }),
+      raw({ providerID: "openai", modelID: "" }),
+      raw({ providerID: "openai", accountID: 7 }),
+      raw({ providerID: "openai", modelID: "m", variantID: "v".repeat(129) }),
     ]
     expect(parseCapacityPayload(payload(...cases))).toEqual([])
   })
@@ -166,19 +171,15 @@ describe("capacity payload parser", () => {
     ])
   })
 
-  it("truncates evidence and identifiers to 128 characters and omits empty evidence", () => {
+  it("truncates evidence to 128 characters and omits empty evidence", () => {
     const long = "x".repeat(300)
     const parsed = parseCapacityPayload(
       payload(
-        raw(
-          { providerID: long },
-          { usedRatio: 0.5, confidence: "high", observedAt: 1, evidence: long },
-        ),
+        raw(undefined, { usedRatio: 0.5, confidence: "high", observedAt: 1, evidence: long }),
         raw(undefined, { usedRatio: 0.5, confidence: "high", observedAt: 1, evidence: "" }),
         raw(undefined, { usedRatio: 0.5, confidence: "high", observedAt: 1, evidence: 5 }),
       ),
     )
-    expect(parsed[0]?.key.providerID).toHaveLength(128)
     expect(parsed[0]?.reading.evidence).toHaveLength(128)
     expect(parsed[1]?.reading).not.toHaveProperty("evidence")
     expect(parsed[2]?.reading).not.toHaveProperty("evidence")

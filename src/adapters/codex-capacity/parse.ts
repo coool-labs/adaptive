@@ -1,7 +1,8 @@
 /**
  * Untrusted-header validation. Header values arrive from provider responses
  * (or relays); every field is parsed defensively and a window is admitted only
- * when its usage percentage is trustworthy. Reset fields that fail validation
+ * when its usage percentage is trustworthy. A usage above 100% voids the
+ * snapshot rather than leaving the other window to speak for it. Reset fields that fail validation
  * are dropped field-wise — they cannot invalidate a valid percentage.
  */
 import type { CodexUsage, CodexWindow, CodexWindowKind } from "./types.js"
@@ -26,6 +27,8 @@ export function isCodexHeaderName(lowercaseName: string): boolean {
 
 interface WindowAccumulator {
   usedPercent?: number | undefined
+  /** A usage above 100% was reported: the window is exhausted, not absent. */
+  overshoot?: boolean | undefined
   resetAfterSeconds?: number | undefined
   resetAtSeconds?: number | undefined
 }
@@ -44,7 +47,12 @@ function finiteAtLeast(value: string, min: number): number | undefined {
 }
 
 function emptyAccumulator(): WindowAccumulator {
-  return { usedPercent: undefined, resetAfterSeconds: undefined, resetAtSeconds: undefined }
+  return {
+    usedPercent: undefined,
+    overshoot: undefined,
+    resetAfterSeconds: undefined,
+    resetAtSeconds: undefined,
+  }
 }
 
 function takenValue(accumulator: WindowAccumulator, suffix: string): number | undefined {
@@ -70,9 +78,14 @@ function applyField(accumulator: WindowAccumulator, suffix: string, value: strin
       // The percentage is the window's existence test: out of range or
       // unparseable values never admit a window.
       const usedPercent = finiteAtLeast(value, 0)
-      if (usedPercent !== undefined && usedPercent <= 100) {
-        accumulator.usedPercent = usedPercent
+      if (usedPercent === undefined) {
+        return
       }
+      if (usedPercent > 100) {
+        accumulator.overshoot = true
+        return
+      }
+      accumulator.usedPercent = usedPercent
       return
     }
     case "reset-after-seconds": {
@@ -137,6 +150,12 @@ export function parseCodexUsage(captured: Readonly<Record<string, string>>): Cod
     const accumulator = accumulators[key] ?? emptyAccumulator()
     applyField(accumulator, rest.slice(separator + 1), value)
     accumulators[key] = accumulator
+  }
+  // An overshooting window is exhausted, yet its percentage is not
+  // trustworthy: dropping just that window would let the other one present
+  // the subscription as usable, so the whole snapshot is void.
+  if (accumulators.primary?.overshoot === true || accumulators.secondary?.overshoot === true) {
+    return null
   }
   const primary = windowOf(accumulators.primary ?? emptyAccumulator())
   const secondary = windowOf(accumulators.secondary ?? emptyAccumulator())

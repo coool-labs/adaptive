@@ -22,6 +22,7 @@ import {
 const CONFIG: ResourceHealthConfig = {
   breaker: { failureThreshold: 3, baseOpenMs: 1_000, maxBackoffMs: 8_000, probeTimeoutMs: 600_000 },
   defaultRateLimitWindowMs: 20_000,
+  defaultQuotaWindowMs: 50_000,
 }
 
 function record(
@@ -177,7 +178,7 @@ describe("resource health transitions", () => {
       expect(result.window).toEqual({ kind: "quota", until: 60_100 })
     })
 
-    it("sets the state without a window when no reset delay is known", () => {
+    it("bounds the state with the default quota window when no reset delay is known", () => {
       const result = applyHealthEvent(
         record("healthy"),
         {
@@ -190,7 +191,7 @@ describe("resource health transitions", () => {
         CONFIG,
       )
       expect(result.health).toBe("quota_exhausted")
-      expect(result.window).toBeUndefined()
+      expect(result.window).toEqual({ kind: "quota", until: 100 + CONFIG.defaultQuotaWindowMs })
     })
 
     it("never downgrades an unavailable state", () => {
@@ -494,7 +495,7 @@ describe("resource health transitions", () => {
       }
     })
 
-    it("exhaustion without a reset delay sets no window", () => {
+    it("exhaustion without a reset delay is bounded by the default quota window", () => {
       const result = applyHealthEvent(
         record("healthy"),
         { kind: "capacity", key: { providerID: "p" }, exhausted: true, retryAfterMs: -1 },
@@ -502,7 +503,7 @@ describe("resource health transitions", () => {
         CONFIG,
       )
       expect(result.health).toBe("quota_exhausted")
-      expect(result.window).toBeUndefined()
+      expect(result.window).toEqual({ kind: "quota", until: CONFIG.defaultQuotaWindowMs })
     })
 
     it("never overrides an unavailable state", () => {

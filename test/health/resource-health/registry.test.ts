@@ -64,8 +64,10 @@ describe("ResourceHealthRegistry", () => {
       })
     })
 
-    it("blocks quota exhaustion without a known reset indefinitely", () => {
-      const { now } = fakeClock()
+    it("bounds quota exhaustion without a known reset by the default quota window", () => {
+      // Regression: a windowless quota state was permanent (persisted and
+      // rehydrated across restarts) with no producer able to lift it.
+      const { now, advance } = fakeClock()
       const registry = new ResourceHealthRegistry(now)
       registry.observe({
         kind: "failure",
@@ -77,7 +79,10 @@ describe("ResourceHealthRegistry", () => {
         kind: "blocked",
         reason: "quota-exhausted",
         key: PROVIDER_KEY,
+        retryAtMs: DEFAULT_HEALTH_CONFIG.defaultQuotaWindowMs,
       })
+      advance(DEFAULT_HEALTH_CONFIG.defaultQuotaWindowMs)
+      expect(registry.assess(MODEL_KEY)).toEqual({ kind: "available" })
     })
 
     it("blocks a provider-wide rate limit for all of its models", () => {

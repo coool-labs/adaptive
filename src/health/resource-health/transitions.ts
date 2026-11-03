@@ -5,7 +5,8 @@
  * resource record: total, synchronous, and clock-free (`now` is injected).
  *
  * Policy notes:
- * - Rate limiting and quota exhaustion set their own windowed states;
+ * - Rate limiting and quota exhaustion set their own windowed states, always
+ *   bounded (a default window when the evidence names no reset);
  *   a windowed state is never downgraded by weaker evidence (a 429 while
  *   quota-exhausted does not erase the quota signal).
  * - Outage, overload, and timeout count toward the circuit breaker and mark
@@ -42,9 +43,8 @@ export function initialRecord(key: ResourceKey, now: number): ResourceRecord {
 
 /**
  * Elapses time-bounded windows: once a window's `until` passes, the windowed
- * state (rate limited, quota exhausted with a known reset) lifts back to
- * healthy. Records without a window, or with one still in the future, pass
- * through unchanged.
+ * state (rate limited, quota exhausted) lifts back to healthy. Records
+ * without a window, or with one still in the future, pass through unchanged.
  */
 export function sweepRecord(record: ResourceRecord, now: number): ResourceRecord {
   const window = record.window
@@ -65,6 +65,16 @@ function touched(record: ResourceRecord, now: number): ResourceRecord {
  */
 function validRetryAfterMs(value: number | undefined): number | undefined {
   return value !== undefined && Number.isInteger(value) && value >= 0 ? value : undefined
+}
+
+function quotaExhausted(
+  record: ResourceRecord,
+  retryAfterMs: number | undefined,
+  now: number,
+  config: ResourceHealthConfig,
+): ResourceRecord {
+  const until = now + (validRetryAfterMs(retryAfterMs) ?? config.defaultQuotaWindowMs)
+  return { ...record, health: "quota_exhausted", window: { kind: "quota", until }, updatedAt: now }
 }
 
 function failureEvent(
@@ -91,14 +101,7 @@ function failureEvent(
       if (record.health === "unavailable") {
         return touched(record, now)
       }
-      const retryAfterMs = validRetryAfterMs(event.retryAfterMs)
-      return {
-        ...record,
-        health: "quota_exhausted",
-        window:
-          retryAfterMs === undefined ? undefined : { kind: "quota", until: now + retryAfterMs },
-        updatedAt: now,
-      }
+      return quotaExhausted(record, event.retryAfterMs, now, config)
     }
     case "outage":
     case "overload":
@@ -169,14 +172,7 @@ export function applyHealthEvent(
         if (record.health === "unavailable") {
           return touched(record, now)
         }
-        const retryAfterMs = validRetryAfterMs(event.retryAfterMs)
-        return {
-          ...record,
-          health: "quota_exhausted",
-          window:
-            retryAfterMs === undefined ? undefined : { kind: "quota", until: now + retryAfterMs },
-          updatedAt: now,
-        }
+        return quotaExhausted(record, event.retryAfterMs, now, config)
       }
       const health = record.health === "quota_exhausted" ? "healthy" : record.health
       return {

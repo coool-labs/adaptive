@@ -95,11 +95,19 @@ export interface ResourceHealthConfig {
   readonly breaker: BreakerConfig
   /** Window applied to rate-limited evidence that carries no Retry-After. */
   readonly defaultRateLimitWindowMs: number
+  /**
+   * Window applied to quota exhaustion that carries no reset delay. Without
+   * one the state would be permanent (it is persisted and rehydrated), so an
+   * unknown reset re-admits the resource after this window and lets fresh
+   * evidence re-mark it (ADP-012).
+   */
+  readonly defaultQuotaWindowMs: number
 }
 
 export const DEFAULT_HEALTH_CONFIG: ResourceHealthConfig = {
   breaker: DEFAULT_BREAKER_CONFIG,
   defaultRateLimitWindowMs: 30_000,
+  defaultQuotaWindowMs: 15 * 60_000,
 }
 
 /** Injected monotonic clock, milliseconds. */

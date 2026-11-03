@@ -95,6 +95,17 @@ describe("parseCodexUsage", () => {
     expect(parseCodexUsage({ "x-codex-primary-used-percent": "" })).toBeNull()
   })
 
+  it("voids the snapshot when a window reports usage above 100%", () => {
+    // Regression: an overshooting primary window was dropped and the healthy
+    // secondary window alone made an exhausted subscription look usable.
+    expect(
+      parseCodexUsage({
+        "x-codex-primary-used-percent": "100.4",
+        "x-codex-secondary-used-percent": "20",
+      }),
+    ).toBeNull()
+  })
+
   it("keeps a valid window when the other window is invalid", () => {
     const usage = parseCodexUsage({
       "x-codex-primary-used-percent": "30",

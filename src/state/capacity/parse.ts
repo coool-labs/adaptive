@@ -17,9 +17,14 @@ function isFiniteNumber(raw: unknown): raw is number {
   return typeof raw === "number" && Number.isFinite(raw)
 }
 
+/**
+ * A non-empty bounded identifier. Over-long values are rejected, not
+ * truncated: the writer stores keys as-is, so a truncated key would name a
+ * different resource.
+ */
 function parseIdentifier(raw: unknown): string | undefined {
-  if (typeof raw !== "string") return undefined
-  return raw.length > 128 ? raw.slice(0, 128) : raw
+  if (typeof raw !== "string" || raw === "" || raw.length > 128) return undefined
+  return raw
 }
 
 function parseKey(raw: unknown): ResourceKey | undefined {
@@ -29,6 +34,10 @@ function parseKey(raw: unknown): ResourceKey | undefined {
   const accountID = parseIdentifier(raw["accountID"])
   const modelID = parseIdentifier(raw["modelID"])
   const variantID = parseIdentifier(raw["variantID"])
+  // A present-but-unusable scope field would silently widen the key.
+  if (raw["accountID"] !== undefined && accountID === undefined) return undefined
+  if (raw["modelID"] !== undefined && modelID === undefined) return undefined
+  if (raw["variantID"] !== undefined && variantID === undefined) return undefined
   // Scope fields must form a valid prefix: a variant without a model is not
   // addressable against a model inventory and is not a real resource.
   if (variantID !== undefined && modelID === undefined) return undefined

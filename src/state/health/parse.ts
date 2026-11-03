@@ -37,11 +37,14 @@ function parseVocab<V extends readonly string[]>(
   return vocabulary.find((entry) => entry === raw)
 }
 
-/** A non-empty bounded identifier string (provider/model/variant/account ids). */
+/**
+ * A non-empty bounded identifier string (provider/model/variant/account ids).
+ * Over-long values are rejected, not truncated: the writer stores keys as-is,
+ * so a truncated key would name a different resource.
+ */
 function parseIdentifier(raw: unknown): string | undefined {
-  if (typeof raw !== "string") return undefined
-  const value = raw.length > 128 ? raw.slice(0, 128) : raw
-  return value === "" ? undefined : value
+  if (typeof raw !== "string" || raw === "" || raw.length > 128) return undefined
+  return raw
 }
 
 function parseKey(raw: unknown): ResourceKey | undefined {
@@ -51,6 +54,10 @@ function parseKey(raw: unknown): ResourceKey | undefined {
   const accountID = parseIdentifier(raw["accountID"])
   const modelID = parseIdentifier(raw["modelID"])
   const variantID = parseIdentifier(raw["variantID"])
+  // A present-but-unusable scope field would silently widen the key.
+  if (raw["accountID"] !== undefined && accountID === undefined) return undefined
+  if (raw["modelID"] !== undefined && modelID === undefined) return undefined
+  if (raw["variantID"] !== undefined && variantID === undefined) return undefined
   // Scope fields must form a valid prefix: a variant without a model, or a
   // model without its variant's provider context, is not a real resource.
   if (variantID !== undefined && modelID === undefined) return undefined
@@ -99,6 +106,12 @@ function parseRecord(raw: unknown): ResourceRecord | undefined {
   if (key === undefined || health === undefined || breaker === undefined) return undefined
   if (!isFiniteNumber(updatedAt)) return undefined
   const window = parseWindow(raw["window"])
+  // Windowed states lift only when their window elapses: without a valid
+  // window the record would block the resource permanently, so it is dropped
+  // (the resource reads as healthy until fresh evidence arrives).
+  if ((health === "rate_limited" || health === "quota_exhausted") && window === undefined) {
+    return undefined
+  }
   return {
     key,
     health,

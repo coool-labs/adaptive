@@ -83,6 +83,15 @@ describe("health record store", () => {
       { version: HEALTH_VERSION, records: [record({ health: "fibonacci" as never })] },
       { version: HEALTH_VERSION, records: [record({ key: { providerID: "" } })] },
       { version: HEALTH_VERSION, records: [record({ key: { providerID: "p", variantID: "v" } })] },
+      {
+        version: HEALTH_VERSION,
+        records: [record({ key: { providerID: "p", accountID: 7 } as never })],
+      },
+      { version: HEALTH_VERSION, records: [record({ key: { providerID: "p", modelID: "" } })] },
+      {
+        version: HEALTH_VERSION,
+        records: [record({ key: { providerID: "p", modelID: "m", variantID: "v".repeat(129) } })],
+      },
       { version: HEALTH_VERSION, records: [record({ updatedAt: Number.NaN })] },
       { version: HEALTH_VERSION, records: [record({ breaker: { state: "broken" } as never })] },
       {
@@ -152,30 +161,47 @@ describe("health record store", () => {
     expect(reloaded.snapshot()).toEqual([full])
   })
 
-  it("truncates over-long identifiers on read", async () => {
+  it("drops records whose identifiers exceed the bound instead of truncating them", async () => {
+    // Regression: truncation hydrated the record under a different key (the
+    // writer never truncates), orphaning it and colliding shared prefixes.
     const longID = "p".repeat(200)
     const storage = new FakeHealthStorage({
       version: HEALTH_VERSION,
-      records: [record({ key: { providerID: longID, modelID: "a" } })],
+      records: [record({ key: { providerID: longID, modelID: "a" } }), record()],
     })
     const store = new HealthRecordStore(storage)
     await store.load()
-    expect(store.snapshot()[0]?.key.providerID).toHaveLength(128)
+    expect(store.snapshot()).toEqual([record()])
   })
 
-  it("drops an invalid window instead of the record", async () => {
+  it("drops a windowed state whose window is invalid", async () => {
+    // Regression: dropping only the window left a windowless rate limit,
+    // which blocks the resource with nothing able to lift it.
     const storage = new FakeHealthStorage({
       version: HEALTH_VERSION,
       records: [
         record({ window: "nope" as never }),
         record({ window: { kind: "weird", until: 5 } as never }),
-        record({ window: { kind: "quota", until: Number.NaN } as never }),
+        record({
+          health: "quota_exhausted",
+          window: { kind: "quota", until: Number.NaN } as never,
+        }),
+        record({ health: "rate_limited", window: undefined }),
       ],
     })
     const store = new HealthRecordStore(storage)
     await store.load()
-    expect(store.snapshot()).toHaveLength(3)
-    for (const entry of store.snapshot()) expect(entry.window).toBeUndefined()
+    expect(store.snapshot()).toEqual([])
+  })
+
+  it("drops an invalid window from a state that needs none", async () => {
+    const storage = new FakeHealthStorage({
+      version: HEALTH_VERSION,
+      records: [record({ health: "degraded", window: "nope" as never })],
+    })
+    const store = new HealthRecordStore(storage)
+    await store.load()
+    expect(store.snapshot()).toEqual([record({ health: "degraded", window: undefined })])
   })
 
   it("drops records with malformed scope shapes and typed fields", async () => {
@@ -183,6 +209,15 @@ describe("health record store", () => {
       { version: HEALTH_VERSION, records: [record({ key: 7 as never })] },
       { version: HEALTH_VERSION, records: [record({ key: { providerID: 7 } as never })] },
       { version: HEALTH_VERSION, records: [record({ key: { providerID: "p", variantID: "v" } })] },
+      {
+        version: HEALTH_VERSION,
+        records: [record({ key: { providerID: "p", accountID: 7 } as never })],
+      },
+      { version: HEALTH_VERSION, records: [record({ key: { providerID: "p", modelID: "" } })] },
+      {
+        version: HEALTH_VERSION,
+        records: [record({ key: { providerID: "p", modelID: "m", variantID: "v".repeat(129) } })],
+      },
       { version: HEALTH_VERSION, records: [record({ health: 7 as never })] },
       { version: HEALTH_VERSION, records: [record({ breaker: "broken" as never })] },
       {
