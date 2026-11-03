@@ -175,21 +175,28 @@ describe("decision review", () => {
       error: { type: "UnknownError", message: "", status: 429 },
     })
     await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
-    // The pick stands: no admission switch, and the defer receipt records why.
+    // The 429 was attributed to b (the picked model) and quarantined it, so
+    // the suppression yields to health: the configured fallback takes over
+    // instead of keeping the session on the dead pick.
     const receipts = parseReceiptsPayload(storedReceipts(storage))
     expect(receipts[0]?.decision).toEqual({
       kind: "defer",
       reason: "routing-defer",
       detail: "manual-selection",
     })
-    expect(session.log).toEqual([])
-    // The 429 was attributed to b (the picked model): once the user asks
-    // Adaptive back, a — not blamed for the failure — is still preferred.
+    expect(receipts.at(-1)?.decision).toMatchObject({
+      kind: "apply",
+      model: ref("prov", "a"),
+      reason: "preferred",
+    })
+    expect(session.log).toEqual(["switch:s1:prov/a"])
+    // The user asking Adaptive back re-enables routing for later units too
+    // (the fallback switch already cleared the manual mark).
     supervisor.noteTierRequest("s1", "standard")
     await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 40 })
     const reEnabled = parseReceiptsPayload(storedReceipts(storage)).at(-1)
     expect(reEnabled?.decision).toMatchObject({ kind: "apply", model: ref("prov", "a") })
-    expect(session.log).toEqual(["switch:s1:prov/a"])
+    expect(session.log).toEqual(["switch:s1:prov/a", "switch:s1:prov/a"])
   })
 
   it("applies a draining candidate when no ready equivalent exists", async () => {

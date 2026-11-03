@@ -416,6 +416,20 @@ export class Supervisor {
   }
 
   /**
+   * The manual-pick suppression actually applied at an admission. It yields
+   * when the picked model is health-blocked: keeping the session on a
+   * quarantined resource does not honor the pick — the configured fallback
+   * takes over instead (the pick is re-honored only if the user picks again).
+   * Uses the non-mutating evaluation, never a probe admission.
+   */
+  #manualSuppressionHolds(sessionID: string, settings: SettingsV1): boolean {
+    if (!this.#manuallySelected(sessionID, settings)) return false
+    const current = this.#tracker.lastModel(sessionID)?.model
+    if (current === undefined) return true
+    return this.#health.evaluate(refKey(current)).kind !== "blocked"
+  }
+
+  /**
    * Handle one `retry` hook invocation. On a veto this mutates
    * `input.decision` to `{ retry: false }`; otherwise the decision is left
    * untouched and OpenCode's native retry policy stands.
@@ -676,10 +690,11 @@ export class Supervisor {
       this.#sessionProbeTickets.delete(sessionID)
       this.#health.releaseProbe(stale)
     }
-    if (this.#manuallySelected(sessionID, settings)) {
-      // ADP-028: the user's own model pick stands. Recording the defer (no
-      // switch, no marker) leaves OpenCode's choice — the picked model — in
-      // place; execution-started will skip routing the same way.
+    if (this.#manualSuppressionHolds(sessionID, settings)) {
+      // ADP-028: the user's own model pick stands (yielded to health if the
+      // picked resource is quarantined). Recording the defer (no switch, no
+      // marker) leaves OpenCode's choice — the picked model — in place;
+      // execution-started will skip routing the same way.
       await this.#recordReceipt({
         sessionID,
         decision: { kind: "defer", reason: "routing-defer", detail: "manual-selection" },
@@ -866,8 +881,9 @@ export class Supervisor {
     settings: SettingsV1,
     mode: OperatingMode,
   ): Promise<void> {
-    if (this.#manuallySelected(unit.sessionID, settings)) {
-      // ADP-028: the session runs on the user's own pick — no re-route.
+    if (this.#manualSuppressionHolds(unit.sessionID, settings)) {
+      // ADP-028: the session runs on the user's own pick (yielded to health
+      // if the picked resource is quarantined) — no re-route.
       await this.#recordReceipt({
         sessionID: unit.sessionID,
         unitID: unit.id,

@@ -829,7 +829,7 @@ describe("supervisor", () => {
   describe("work-unit model tracking", () => {
     // ADP-028: the pick is the user's (external selection, no pending own
     // note), so admission is suppressed and the unit seeds from the pick.
-    it("a user pick seeds the unit's model and suppresses admission until re-enabled", async () => {
+    it("a user pick seeds the unit's model and suppresses admission while it stays usable", async () => {
       const session = new FakeSupervisorSession()
       const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
@@ -854,19 +854,23 @@ describe("supervisor", () => {
         at: 20,
         error: { type: "UnknownError", message: "", status: 429 },
       })
-      // The 429 was attributed to b (the unit's seeded model)...
+      // The 429 was attributed to b (the unit's seeded model) and quarantined
+      // it: the next admission yields the suppression to health and falls
+      // back to the configured sibling instead of the dead pick.
       await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
+      expect(session.log).toEqual(["switch:s1:prov/a"])
       const after = parseReceiptsPayload(storedReceipts(storage))
-      expect(after[1]?.decision).toEqual({
-        kind: "defer",
-        reason: "routing-defer",
-        detail: "manual-selection",
+      expect(after[1]?.decision).toMatchObject({
+        kind: "apply",
+        model: ref("prov", "a"),
+        reason: "preferred",
       })
-      // ...and once the user asks Adaptive back, a (not blamed for the
-      // failure) is still the preferred resource.
+      // The user asking Adaptive back re-enables routing for later units too
+      // (the fallback switch already cleared the manual mark — adaptive
+      // routing continues, so the prompt re-admits onto a).
       supervisor.noteTierRequest("s1", "standard")
       await supervisor.handleReport({ kind: "prompt", sessionID: "s1" })
-      expect(session.log).toEqual(["switch:s1:prov/a"])
+      expect(session.log).toEqual(["switch:s1:prov/a", "switch:s1:prov/a"])
     })
   })
 
@@ -3854,6 +3858,36 @@ describe("manual model selection (ADP-028: Adaptive never fights manual model ch
     expect(receipts[1]?.decision).toMatchObject({ kind: "apply", model: ref("prov", "a") })
   })
 
+  it("a health-blocked manual pick yields: the configured fallback takes over", async () => {
+    // Regression (user-reported): a manually picked model that hits a usage
+    // limit kept the session pinned to the dead resource — every admission
+    // deferred with detail "manual-selection" and no configured fallback
+    // ever ran. Suppression honors the pick only while it is usable.
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    // The user picks b (an external selection event, no pending own note).
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 5,
+      model: ref("prov", "b"),
+    })
+    // The picked model then fails until its breaker opens.
+    for (let i = 0; i < 5; i += 1) {
+      await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
+    }
+    await supervisor.handleReport(PROMPT_S1)
+    // The fallback the user configured takes over (ready sibling a wins).
+    expect(session.log).toEqual(["switch:s1:prov/a"])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts.at(-1)?.decision).toMatchObject({
+      kind: "apply",
+      model: ref("prov", "a"),
+      reason: "preferred",
+    })
+  })
+
   it("a standing settings pin overrides manual-selection suppression", async () => {
     const session = new FakeSupervisorSession()
     const storage = new KeyFailStorage("unused")
@@ -3898,6 +3932,33 @@ describe("manual model selection (ADP-028: Adaptive never fights manual model ch
     // ...while a recent manual pick is still suppressed.
     await supervisor.handleReport({ kind: "prompt", sessionID: "s-new" })
     expect(session.log).toEqual(["switch:s0:prov/a"])
+  })
+
+  it("suppression holds when the picked model is no longer tracked (evicted)", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 5,
+      model: ref("prov", "b"),
+    })
+    // model-request events seed lastModel without manual selections, so the
+    // tracker's map evicts earlier: enough of them from fresh sessions push
+    // s1's lastModel out while its manual pick survives.
+    for (let i = 0; i < 1024; i += 1) {
+      await supervisor.handleReport({
+        kind: "model-request",
+        sessionID: `x${String(i)}`,
+        agent: "build",
+        model: ref("prov", "a"),
+        requestKind: "primary",
+      })
+    }
+    await supervisor.handleReport(PROMPT_S1)
+    // No tracked model to evaluate: the pick is honored conservatively.
+    expect(session.log).toEqual([])
   })
 })
 
