@@ -55,15 +55,21 @@ export default define({
   id: PLUGIN_ID,
   setup(context: Context) {
     const client = context.client.rpc(adaptiveRpc)
+    // RPC handlers resolve per location: a location-less call never reaches a
+    // project-local plugin's handlers ("RPC is unavailable", verified live in
+    // the sibling @coool plugins), so every call carries the TUI's location.
+    const at = () => ({ location: context.location })
     const api: AdaptiveApi = {
-      settings: () => client["settings.get"](),
-      setSettings: (patch) => client["settings.set"](patch),
-      status: () => client["status.get"](),
-      receipts: () => client["receipts.list"](),
-      sessionMode: (sessionID) => client["session-mode.get"]({ sessionID }).then((out) => out.mode),
-      setSessionMode: (sessionID, mode) => client["session-mode.set"]({ sessionID, mode }),
-      tierRequest: (sessionID) => client["tier-request.get"]({ sessionID }).then((out) => out.tier),
-      setTierRequest: (sessionID, tier) => client["tier-request.set"]({ sessionID, tier }),
+      settings: () => client["settings.get"](undefined, at()),
+      setSettings: (patch) => client["settings.set"](patch, at()),
+      status: () => client["status.get"](undefined, at()),
+      receipts: () => client["receipts.list"](undefined, at()),
+      sessionMode: (sessionID) =>
+        client["session-mode.get"]({ sessionID }, at()).then((out) => out.mode),
+      setSessionMode: (sessionID, mode) => client["session-mode.set"]({ sessionID, mode }, at()),
+      tierRequest: (sessionID) =>
+        client["tier-request.get"]({ sessionID }, at()).then((out) => out.tier),
+      setTierRequest: (sessionID, tier) => client["tier-request.set"]({ sessionID, tier }, at()),
     }
     const view: AdaptiveView = {
       select: (options) => context.ui.dialog.select(options),

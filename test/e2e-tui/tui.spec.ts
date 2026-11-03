@@ -88,7 +88,16 @@ interface Launched {
 async function launchTui(
   tw: TermwrightFixture,
   terminal: TerminalFixture,
-  options: { failAfterTitle?: boolean; paths?: { home: string; project: string } } = {},
+  options: {
+    failAfterTitle?: boolean
+    paths?: { home: string; project: string }
+    /**
+     * Where the plugin is installed: the global config (default) or the
+     * project's own opencode.json — the install shape whose rpc calls are
+     * only reachable when they carry the TUI location.
+     */
+    install?: "global" | "project"
+  } = {},
 ): Promise<Launched> {
   // Bundle the sidecar entry to plain JS: the termwright host node has no TS
   // loader, and vite-node is not shipped by this dependency tree.
@@ -157,10 +166,12 @@ async function launchTui(
       "probe-codex": { name: "Codex Probe" },
     },
   }
+  const projectInstall = options.install === "project"
   const opencodeJson = JSON.stringify({
     $schema: "https://opencode.ai/config.json",
     model: "fake/fake-model",
     provider: { fake: fakeProvider, openai: openaiProvider },
+    ...(projectInstall ? { plugins: [REPO_ROOT] } : {}),
   })
   // The plugin must be configured in the GLOBAL config for the TUI to mount
   // its bundle: a project-local plugins entry registers the palette command
@@ -181,7 +192,7 @@ async function launchTui(
   const globalJsonXdg = JSON.stringify({
     $schema: "https://opencode.ai/config.json",
     provider: { fake: fakeProvider, openai: openaiProvider },
-    plugins: [REPO_ROOT],
+    ...(projectInstall ? {} : { plugins: [REPO_ROOT] }),
   })
   const globalJsonHome = JSON.stringify({
     $schema: "https://opencode.ai/config.json",
@@ -571,6 +582,31 @@ test(
       await app.press("Escape")
       await app.waitForText("Ask anything", { timeout: 15_000 })
     })
+    await app.close()
+    await closeLaunched(launched)
+  },
+)
+
+test(
+  "a project-local install reaches the plugin's rpc handlers from the tui",
+  { timeout: 120_000 },
+  async ({ termwright: tw, terminal }) => {
+    // Regression: rpc handlers resolve per location, and the TUI's calls
+    // carried none — with the plugin listed only in the project's config the
+    // palette command mounted but every rpc call failed with rpc.unavailable.
+    const launched = await launchTui(tw, terminal, { install: "project" })
+    const app = launched.app
+    await bootTui(launched)
+    await step("the invitation loads and saves through rpc", async () => {
+      await runAdaptiveCommand(app)
+      await app.waitForText("Adaptive starts in Observe mode", { timeout: 15_000 })
+      await app.press("Enter")
+      await app.waitForText("Open the menu now", { timeout: 30_000 })
+      await app.press("Enter")
+      await app.waitForText("Settings saved", { timeout: 30_000 })
+      await app.waitForText("Adaptive (observe)", { timeout: 30_000 })
+    })
+    await app.press("Escape")
     await app.close()
     await closeLaunched(launched)
   },

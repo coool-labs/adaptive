@@ -52,6 +52,10 @@ export function fakeTuiContext(options: {
   tierRequestPatches?: { sessionID: string; tier: string | null }[]
   /** Receipts the fake rpc serves for receipts.list (empty when absent). */
   receipts?: unknown[]
+  /** The TUI location the context carries (location-less when absent). */
+  location?: unknown
+  /** Records the call options every rpc method received. */
+  rpcCalls?: { method: string; options: unknown }[]
 }): {
   context: Context
   dialogs: DialogRecord
@@ -133,59 +137,77 @@ export function fakeTuiContext(options: {
   }
   const sessionModePatches = options.sessionModePatches ?? []
   const tierRequestPatches = options.tierRequestPatches ?? []
+  const rpcCalls = options.rpcCalls ?? []
+  // Wraps every rpc method so tests can assert the call options (the TUI
+  // location) each request carried; `events` passes through untouched.
+  const recordCalls = <Methods extends Record<string, unknown>>(methods: Methods): Methods =>
+    Object.fromEntries(
+      Object.entries(methods).map(([method, value]) =>
+        typeof value === "function"
+          ? [
+              method,
+              (input: unknown, callOptions: unknown) => {
+                rpcCalls.push({ method, options: callOptions })
+                return (value as (input: unknown) => unknown)(input)
+              },
+            ]
+          : [method, value],
+      ),
+    ) as Methods
   const context = {
     client: {
-      rpc: () => ({
-        "settings.get": () => {
-          counts.settingsGets += 1
-          return options.failSettingsGet
-            ? Promise.reject(new Error("boom"))
-            : Promise.resolve(options.settings)
-        },
-        "settings.set": (patch: Record<string, unknown>) => {
-          options.clientPatches.push(patch)
-          return Promise.resolve({ ok: true, settings: options.settings })
-        },
-        "status.get": () =>
-          Promise.resolve(
-            options.status ?? {
-              mode: "observe",
-              pin: null,
-              tiers: { quick: [], standard: [], advanced: [] },
-              parked: 0,
-              receipts: 0,
-            },
-          ),
-        "receipts.list": () => Promise.resolve(options.receipts ?? []),
-        "session-mode.get": (input: { sessionID: string }) => {
-          counts.sessionModeGets += 1
-          return options.failSessionModeGet
-            ? Promise.reject(new Error("boom"))
-            : Promise.resolve({ mode: options.sessionMode ?? null, sessionID: input.sessionID })
-        },
-        "session-mode.set": (input: { sessionID: string; mode: OperatingMode | null }) => {
-          sessionModePatches.push(input)
-          return Promise.resolve({ ok: true })
-        },
-        "tier-request.get": (input: { sessionID: string }) => {
-          counts.tierRequestGets += 1
-          return options.failTierRequestGet
-            ? Promise.reject(new Error("boom"))
-            : Promise.resolve({ tier: options.tierRequest ?? null, sessionID: input.sessionID })
-        },
-        "tier-request.set": (input: { sessionID: string; tier: string | null }) => {
-          tierRequestPatches.push(input)
-          return Promise.resolve({ ok: true })
-        },
-        events: {
-          on: (name: string, handler: (event: unknown) => void) => {
-            events.push({ name, handler })
-            return () => {
-              counts.eventDisposals += 1
-            }
+      rpc: () =>
+        recordCalls({
+          "settings.get": () => {
+            counts.settingsGets += 1
+            return options.failSettingsGet
+              ? Promise.reject(new Error("boom"))
+              : Promise.resolve(options.settings)
           },
-        },
-      }),
+          "settings.set": (patch: Record<string, unknown>) => {
+            options.clientPatches.push(patch)
+            return Promise.resolve({ ok: true, settings: options.settings })
+          },
+          "status.get": () =>
+            Promise.resolve(
+              options.status ?? {
+                mode: "observe",
+                pin: null,
+                tiers: { quick: [], standard: [], advanced: [] },
+                parked: 0,
+                receipts: 0,
+              },
+            ),
+          "receipts.list": () => Promise.resolve(options.receipts ?? []),
+          "session-mode.get": (input: { sessionID: string }) => {
+            counts.sessionModeGets += 1
+            return options.failSessionModeGet
+              ? Promise.reject(new Error("boom"))
+              : Promise.resolve({ mode: options.sessionMode ?? null, sessionID: input.sessionID })
+          },
+          "session-mode.set": (input: { sessionID: string; mode: OperatingMode | null }) => {
+            sessionModePatches.push(input)
+            return Promise.resolve({ ok: true })
+          },
+          "tier-request.get": (input: { sessionID: string }) => {
+            counts.tierRequestGets += 1
+            return options.failTierRequestGet
+              ? Promise.reject(new Error("boom"))
+              : Promise.resolve({ tier: options.tierRequest ?? null, sessionID: input.sessionID })
+          },
+          "tier-request.set": (input: { sessionID: string; tier: string | null }) => {
+            tierRequestPatches.push(input)
+            return Promise.resolve({ ok: true })
+          },
+          events: {
+            on: (name: string, handler: (event: unknown) => void) => {
+              events.push({ name, handler })
+              return () => {
+                counts.eventDisposals += 1
+              }
+            },
+          },
+        }),
     },
     ui: {
       slot: (claim: { append: string; render: () => unknown }) => {
@@ -238,7 +260,7 @@ export function fakeTuiContext(options: {
         return Promise.resolve({ dispose: () => Promise.resolve() })
       },
     },
-    location: undefined,
+    location: options.location,
   } as unknown as Context
   return { context, dialogs, layers, slots, events, counts }
 }

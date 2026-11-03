@@ -354,6 +354,53 @@ describe("tui entry: session-scoped flows (ADP-054)", () => {
     expect(tierPatches).toEqual([{ sessionID: "ses_1", tier: "quick" }])
     expect(patches).toEqual([])
   })
+
+  it("carries the TUI location on every rpc call (project-local installs)", async () => {
+    // Regression: rpc handlers resolve per location, so a location-less call
+    // never reaches a project-local plugin's handlers ("RPC is unavailable").
+    const location = { directory: "/work/project" }
+    const rpcCalls: { method: string; options: unknown }[] = []
+    const { context, dialogs, layers } = fakeTuiContext({
+      settings: observedSettings("observe"),
+      clientPatches: [],
+      route: { type: "session", sessionID: "ses_1" },
+      location,
+      rpcCalls,
+    })
+    await tuiPlugin.setup(context)
+    const run = (layers[0] as { commands: { run: () => void }[] }).commands[0]?.run
+    if (run === undefined) throw new Error("slash command was not registered")
+    dialogs.selectQueue.push(
+      "status",
+      "receipts",
+      "mode",
+      "session",
+      { kind: "mode", mode: "active" },
+      "tier",
+      { kind: "tier", tier: "quick" },
+      "mode",
+      "global",
+      "active",
+      undefined,
+    )
+    run()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(new Set(rpcCalls.map((call) => call.method))).toEqual(
+      new Set([
+        "settings.get",
+        "settings.set",
+        "status.get",
+        "receipts.list",
+        "session-mode.get",
+        "session-mode.set",
+        "tier-request.get",
+        "tier-request.set",
+      ]),
+    )
+    expect(
+      rpcCalls.every((call) => JSON.stringify(call.options) === JSON.stringify({ location })),
+    ).toBe(true)
+  })
 })
 
 describe("chipFor", () => {
