@@ -380,28 +380,58 @@ async function runTierEditor(env: AdaptiveEnv, feedback: SaveFeedback): Promise<
   // when the editor closes so the menu view stays in sync with the server.
   let saved: SettingsV1 | undefined
   for (;;) {
-    // The server is the single source of truth (ADP-036): settings are
-    // re-fetched on every editor pass — entering the editor and after each
-    // save — so the rows pair fresh settings with fresh status and an edit
-    // can never clobber a change made outside this dialog.
+    // The server is the single source of truth (ADP-036): settings and
+    // status are re-fetched on every tier-list pass — entering the editor
+    // and after each Escape out of a tier page — so an edit can never
+    // clobber a change made outside this dialog. A failed read toasts and
+    // closes the editor: the tier list cannot render meaningfully without
+    // them.
     const settings = await tryApi(env, () => env.api.settings())
     if (settings === undefined) return saved
     const status = await tryApi(env, () => env.api.status())
     if (status === undefined) return saved
     const tier = await env.view.select({ title: "Tier", options: tierMenuOptions(status) })
     if (tier === undefined) return saved
-    const choice = await env.view.select({
-      title: `Tier: ${tier}`,
-      options: tierEditorOptions(settings, tier, status),
-    })
-    if (choice === undefined) continue
-    if (choice.kind === "add") {
-      const next = await runAddModel(env, settings, tier, feedback)
-      if (next !== undefined) saved = next
-      continue
+    let pageStatus = status
+    let pageSettings = settings
+    // The tier page owns the loop until Escape: an add, move, or remove
+    // re-opens this page instead of bouncing back to the tier list, so
+    // consecutive edits on one tier stay in context. The page's settings
+    // and status carry across iterations: each action's save response
+    // updates them for the next render.
+    for (;;) {
+      const choice = await env.view.select({
+        title: `Tier: ${tier}`,
+        options: tierEditorOptions(pageSettings, tier, pageStatus),
+      })
+      if (choice === undefined) break
+      if (choice.kind === "add") {
+        const next = await runAddModel(env, pageSettings, tier, feedback)
+        if (next !== undefined) {
+          saved = next
+          pageSettings = next
+        }
+      } else {
+        const next = await runResourceMenu(env, pageSettings, tier, choice.index, feedback)
+        if (next !== undefined) {
+          saved = next
+          pageSettings = next
+        }
+      }
+      // The rows re-pair with the server after every action; a failed read
+      // keeps the last known values so the page still renders (the save
+      // already reported itself — a failed cosmetic refresh must neither
+      // spam a toast nor bounce the page).
+      const [freshSettings, freshStatus] = await Promise.all([
+        env.api.settings().catch(() => undefined),
+        env.api.status().catch(() => undefined),
+      ])
+      if (freshSettings !== undefined) {
+        saved = freshSettings
+        pageSettings = freshSettings
+      }
+      if (freshStatus !== undefined) pageStatus = freshStatus
     }
-    const next = await runResourceMenu(env, settings, tier, choice.index, feedback)
-    if (next !== undefined) saved = next
   }
 }
 

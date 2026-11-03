@@ -903,11 +903,11 @@ describe("controller: tiers branch", () => {
         "standard",
         { kind: "add" },
         { providerID: "prov", modelID: "b" },
-        ...(failStatus ? [] : [undefined]),
-        "models",
+        undefined, // Escape the tier page: back to the tier list.
         "quick",
         { kind: "add" },
         { providerID: "prov", modelID: "b" },
+        undefined,
         undefined,
         "pin",
         undefined,
@@ -919,7 +919,7 @@ describe("controller: tiers branch", () => {
       const menu = e.view.selectOptions.find(
         (options) =>
           options.some((option) => option.value === "mode") &&
-          options.some((option) => option.description === "quick: 0 · standard: 1 · advanced: 0"),
+          options.some((option) => option.description === "quick: 1 · standard: 1 · advanced: 0"),
       )
       expect(menu).toBeDefined()
       const pinIndex = e.view.selects.indexOf("Pin")
@@ -1052,6 +1052,84 @@ describe("controller: tiers branch", () => {
     e.view.selectQueue.push("models", "standard", undefined, ...EXIT)
     await runAdaptive(e)
     expect(e.view.selectQueue.length).toBe(0)
+  })
+
+  it("re-opens the tier page after a save instead of the tier list", async () => {
+    // An add (like a move or a remove) returns to the tier page with the
+    // saved rows: consecutive edits on one tier never bounce back to the
+    // tier list — only Escape does.
+    let current = settings()
+    const api = fakeApi({
+      settings: () => Promise.resolve(current),
+      setSettings: (patch) => {
+        current = patched(current, patch)
+        return Promise.resolve({ ok: true, settings: current } satisfies PatchResult)
+      },
+    })
+    const e = env({ api })
+    e.view.selectQueue.push(
+      "models",
+      "standard",
+      { kind: "add" },
+      { providerID: "prov", modelID: "b" },
+      undefined, // Escape the tier page: back to the tier list.
+      undefined, // Leave the editor.
+      undefined, // Leave the menu.
+    )
+    await runAdaptive(e)
+    const pages = e.view.selects
+      .map((title, index) => (title === "Tier: standard" ? index : -1))
+      .filter((index) => index >= 0)
+    expect(pages).toHaveLength(2)
+    const first = pages[0]
+    const second = pages[1]
+    if (first === undefined || second === undefined) {
+      throw new Error("the tier page never re-rendered")
+    }
+    // Between the two page renders only the add flow appears — never the
+    // tier list ("Tier").
+    expect(e.view.selects.slice(first + 1, second)).not.toContain("Tier")
+    expect(e.view.selectOptions[second]?.map((option) => option.title)).toContain("prov/b")
+  })
+
+  it("a failed post-save refresh keeps the tier page silently", async () => {
+    // The page re-render after a save re-reads the server silently: a
+    // failed read keeps the last known rows (the save response) and never
+    // toasts — the save itself already reported.
+    let current = settings()
+    let settingsCalls = 0
+    const api = fakeApi({
+      settings: () => {
+        settingsCalls += 1
+        if (settingsCalls === 4) return Promise.reject(new Error("settings down"))
+        return Promise.resolve(current)
+      },
+      setSettings: (patch) => {
+        current = patched(current, patch)
+        return Promise.resolve({ ok: true, settings: current } satisfies PatchResult)
+      },
+    })
+    const e = env({ api })
+    e.view.selectQueue.push(
+      "models",
+      "standard",
+      { kind: "add" },
+      { providerID: "prov", modelID: "b" },
+      undefined,
+      undefined,
+      undefined,
+    )
+    await runAdaptive(e)
+    // The save itself reports ("Settings saved"); the failed refresh after
+    // it must add no error toast.
+    expect(e.view.toasts).toEqual([{ message: "Settings saved", variant: "success" }])
+    expect(current.tiers.standard).toEqual([{ providerID: "prov", id: "b" }])
+    const pages = e.view.selects
+      .map((title, index) => (title === "Tier: standard" ? index : -1))
+      .filter((index) => index >= 0)
+    const second = pages[1]
+    if (second === undefined) throw new Error("the tier page never re-rendered")
+    expect(e.view.selectOptions[second]?.map((option) => option.title)).toContain("prov/b")
   })
 
   it("adds a model with a chosen variant", async () => {

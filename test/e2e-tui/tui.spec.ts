@@ -914,7 +914,7 @@ test(
       await pressAll(app, ["ArrowDown"])
       await app.press("Enter")
       await app.waitForText("Tier: standard", { timeout: 30_000 })
-      await addHighlightedModel(app, ["f", "a", "k", "e"], 1, "standard")
+      await addHighlightedModel(app, ["f", "a", "k", "e"], "standard")
       // Back out to the base screen: tier menu -> main menu -> base. The
       // helpers self-correct against dropped Escape keystrokes.
       await backToAdaptiveMenu(app)
@@ -984,7 +984,6 @@ test(
       await addHighlightedModel(
         app,
         ["p", "r", "o", "b", "e"],
-        1,
         "standard",
         /Variant: openai\/probe-codex/,
       )
@@ -1098,15 +1097,15 @@ async function openQuickEditor(app: TerminalApp): Promise<void> {
  * the `Variant: <model>` select (variants are host-reported), where Enter
  * accepts the highlighted "(model default)" and keeps the resource label
  * variant-free (`variant` overrides the expected `Variant: <model>` title when
- * the picked model is not fake/fake-model). The flow lands back on the tier
- * menu, verified by the tier's
- * count growing to `newCount` (`tier` defaults to quick, whose editor is
- * entered without any ArrowDown moves).
+ * the picked model is not fake/fake-model). The save re-opens the tier PAGE
+ * (`Tier: <tier>`, not the tier list), with the saved resource among its rows;
+ * the second add in a seed journey can therefore start right here, because
+ * "Add model…" is the highlighted first option again. The tier count is
+ * verified where the journey next escapes to the tier list (`quick (N)`).
  */
 async function addHighlightedModel(
   app: TerminalApp,
   keys: string[],
-  newCount: number,
   tier: "quick" | "standard" | "advanced" = "quick",
   variant = /Variant: fake\/fake-model/,
 ): Promise<void> {
@@ -1117,7 +1116,8 @@ async function addHighlightedModel(
   await app.press("Enter")
   await app.waitForText(variant, { timeout: 30_000 })
   await app.press("Enter")
-  await app.waitForText(`${tier} (${String(newCount)})`, { timeout: 30_000 })
+  await app.waitForText(`Tier: ${tier}`, { timeout: 30_000 })
+  await app.waitForQuiet({ quietMs: 500 })
 }
 
 test(
@@ -1151,10 +1151,10 @@ test(
       await app.press("Enter")
       await app.waitForText(/Variant: fake\/fake-model/, { timeout: 30_000 })
       await app.press("Enter")
-      await app.waitForText("quick (1)", { timeout: 30_000 })
+      // The save re-opens the tier page (not the tier list).
+      await app.waitForText("Tier: quick", { timeout: 30_000 })
     })
-    await step("reopening the editor lists the saved resource", async () => {
-      await openQuickEditor(app)
+    await step("the re-opened page lists the saved resource", async () => {
       await app.waitForText(/fake\/fake-model-2\s/, { timeout: 15_000 })
     })
     await step("escape back out to home", async () => {
@@ -1184,32 +1184,41 @@ test(
       // The "fake" filter narrows the picker to the two fake models in
       // catalog order (fake-model first), so the highlighted entry is
       // fake-model; one ArrowDown then lands on fake-model-2.
-      await addHighlightedModel(app, ["f", "a", "k", "e"], 1)
-      await openQuickEditor(app)
-      await addHighlightedModel(app, ["f", "a", "k", "e", "ArrowDown"], 2)
+      await addHighlightedModel(app, ["f", "a", "k", "e"])
+      // The save re-opened the tier page, so the highlighted first option
+      // is "Add model…" again — the second add starts right here.
+      await addHighlightedModel(app, ["f", "a", "k", "e", "ArrowDown"])
     })
     await step("move the second resource to the top", async () => {
-      await openQuickEditor(app)
+      // Still on the tier page after the second add; "Add model…" is the
+      // highlighted first row, so two ArrowDowns land on the second
+      // resource row.
       await pressAll(app, ["ArrowDown", "ArrowDown"])
       await app.press("Enter")
       await app.waitForText(/Resource: fake\/fake-model-2\s/, { timeout: 30_000 })
       // The resource menu offers "Move to top" (make this the primary
       // resource), "Move up", "Move down" and "Remove"; "Move to top" is
-      // highlighted first and moves fake-model-2 ahead of fake-model.
+      // highlighted first and moves fake-model-2 ahead of fake-model. The
+      // save re-opens the tier page with the reordered rows.
       await app.waitForText("Make this the primary resource", { timeout: 15_000 })
       await app.press("Enter")
-      await app.waitForText("quick (2)", { timeout: 30_000 })
+      await app.waitForText("Tier: quick", { timeout: 30_000 })
+      await app.waitForQuiet({ quietMs: 500 })
     })
-    await step("the reordered editor puts fake-model-2 first", async () => {
-      await openQuickEditor(app)
+    await step("the reordered page puts fake-model-2 first", async () => {
+      // The page highlight reset to "Add model…"; one ArrowDown must land
+      // on fake-model-2 — if the reorder had not applied, this opens the
+      // resource menu of fake-model instead and the wait below fails.
       await pressAll(app, ["ArrowDown"])
       await app.press("Enter")
       await app.waitForText(/Resource: fake\/fake-model-2\s/, { timeout: 30_000 })
     })
     await step("escaping the remove confirm keeps the resource", async () => {
+      // Escape on the resource menu returns to the tier page (not the
+      // tier list), with the highlight reset to "Add model…".
       await app.press("Escape")
-      await app.waitForText("quick (2)", { timeout: 15_000 })
-      await openQuickEditor(app)
+      await app.waitForText("Tier: quick", { timeout: 15_000 })
+      await app.waitForQuiet({ quietMs: 500 })
       await pressAll(app, ["ArrowDown"])
       await app.press("Enter")
       await app.waitForText(/Resource: fake\/fake-model-2\s/, { timeout: 30_000 })
@@ -1219,8 +1228,9 @@ test(
       await app.press("Enter")
       await app.waitForText("Remove fake/fake-model-2 from quick?", { timeout: 30_000 })
       await app.press("Escape")
-      await app.waitForText("quick (2)", { timeout: 30_000 })
-      await openQuickEditor(app)
+      // The cancelled remove re-opens the tier page with both rows kept.
+      await app.waitForText("Tier: quick", { timeout: 30_000 })
+      await app.waitForQuiet({ quietMs: 500 })
       await app.waitForText(/fake\/fake-model\s/, { timeout: 15_000 })
       await app.waitForText(/fake\/fake-model-2\s/, { timeout: 15_000 })
     })
@@ -1234,8 +1244,9 @@ test(
       await app.press("Enter")
       await app.waitForText("Remove fake/fake-model-2 from quick?", { timeout: 30_000 })
       await app.press("Enter")
-      await app.waitForText("quick (1)", { timeout: 30_000 })
-      await openQuickEditor(app)
+      // The save re-opens the tier page; only fake-model remains.
+      await app.waitForText("Tier: quick", { timeout: 30_000 })
+      await app.waitForQuiet({ quietMs: 500 })
       await pressAll(app, ["ArrowDown"])
       await app.press("Enter")
       // Only fake-model remains: entering the first resource row must name
@@ -1243,6 +1254,10 @@ test(
       await app.waitForText(/Resource: fake\/fake-model\s/, { timeout: 30_000 })
     })
     await step("escape back out to home", async () => {
+      // The resource menu is still open; the tier page sits one layer
+      // below it, then the tier list, then the main menu, then the base.
+      await app.press("Escape")
+      await app.waitForText("Tier: quick", { timeout: 15_000 })
       await app.press("Escape")
       await app.waitForText("quick (1)", { timeout: 15_000 })
       await app.press("Escape")
@@ -1266,11 +1281,13 @@ test(
       await openAdaptiveMenu(app)
       await openTierMenu(app, 0)
       await openQuickEditor(app)
-      await addHighlightedModel(app, ["f", "a", "k", "e"], 1)
-      // The controller loads settings once per /adaptive run and the tier
-      // editor never returns its updates to the main-menu loop, so a
-      // just-added resource is invisible to the pin menu until the flow is
-      // re-entered (the re-open reads the server truth afresh).
+      await addHighlightedModel(app, ["f", "a", "k", "e"])
+      // A fresh /adaptive run re-reads the server truth, so the just-added
+      // resource is visible to the pin menu; the toast-wait below also
+      // needs this to be the new dialog session's first save. Escape out:
+      // tier page -> tier list -> main menu -> base.
+      await app.press("Escape")
+      await app.waitForText("quick (1)", { timeout: 15_000 })
       await app.press("Escape")
       await app.waitForText(MENU_TITLE, { timeout: 15_000 })
       await app.press("Escape")
