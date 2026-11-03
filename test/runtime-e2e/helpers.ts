@@ -123,6 +123,8 @@ export async function startHost(
   options: {
     script?: FakeProviderScript
     models?: Record<string, { name: string }>
+    /** Distinct configured providers sharing the fixture transport, for cross-provider recovery. */
+    additionalProviderIDs?: readonly string[]
     /** Reuse an existing home/project pair (restart scenarios). The caller
      * owns cleanup for reused paths; close() then only stops the host. */
     paths?: { home: string; project: string }
@@ -147,14 +149,17 @@ export async function startHost(
     JSON.stringify(
       {
         model: "fake/fake-model",
-        provider: {
-          fake: {
-            npm: "@ai-sdk/openai-compatible",
-            name: "Fake",
-            options: { baseURL: `${provider.url}/v1`, apiKey: "fake" },
-            models: options.models ?? { "fake-model": { name: "Fake Model" } },
-          },
-        },
+        provider: Object.fromEntries(
+          ["fake", ...(options.additionalProviderIDs ?? [])].map((id) => [
+            id,
+            {
+              npm: "@ai-sdk/openai-compatible",
+              name: "Fake",
+              options: { baseURL: `${provider.url}/v1`, apiKey: "fake" },
+              models: options.models ?? { "fake-model": { name: "Fake Model" } },
+            },
+          ]),
+        ),
         plugins: [REPO_ROOT],
       },
       null,

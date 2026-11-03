@@ -7,6 +7,11 @@ import type { ErrorEvidence, FailureCategory, FailureClassification, RetryAdvice
  */
 const TEXT_BOUND = 512
 
+// These messages describe the subscription's shared allowance or balance,
+// unlike a generic quota error or a named model-family limit (ADP-007).
+const SHARED_QUOTA_PATTERN =
+  /\byou['’]ve hit your (?:session|usage|weekly) limit(?=\s*(?:$|[·.,;(:]|resets?\b))|\b(?:out of credits|insufficient credits|credit balance)\b/i
+
 /**
  * Retry/failover policy per category (ADP-010, ADP-011).
  *
@@ -183,6 +188,7 @@ function classification(
   layer: FailureClassification["layer"],
   definitive: boolean,
   retryAfterMs: number | undefined,
+  quotaScope?: "provider",
 ): FailureClassification {
   const policy = CATEGORY_POLICY[category]
   return {
@@ -191,6 +197,7 @@ function classification(
     definitive,
     retry: retryAdvice(category, retryAfterMs),
     failoverEligible: policy.failoverEligible,
+    ...(quotaScope !== undefined ? { quotaScope } : {}),
   }
 }
 
@@ -295,7 +302,11 @@ export function classifyFailure(evidence: ErrorEvidence): FailureClassification 
   if (text !== undefined) {
     const category = classifyText(text)
     if (category !== undefined) {
-      return classification(category, "textual", false, structuredRetryAfterMs)
+      const quotaScope =
+        category === "quota_exhausted" && SHARED_QUOTA_PATTERN.test(text.slice(0, TEXT_BOUND))
+          ? "provider"
+          : undefined
+      return classification(category, "textual", false, structuredRetryAfterMs, quotaScope)
     }
   }
 

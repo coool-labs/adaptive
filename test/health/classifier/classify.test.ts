@@ -1,4 +1,4 @@
-// covers: ["ADP-008", "ADP-009"]
+// covers: ["ADP-007", "ADP-008", "ADP-009"]
 import fc from "fast-check"
 import { describe, expect, it } from "vitest"
 
@@ -53,6 +53,33 @@ function expectConsistentPolicy(c: FailureClassification): void {
     expect(c.definitive).toBe(false)
   }
 }
+
+describe("classifyFailure: quota scope", () => {
+  it.each([
+    "You've hit your session limit · resets 6:10pm (Europe/Budapest)",
+    "You've hit your weekly limit",
+    "You've hit your usage limit",
+    "Insufficient credits",
+    "Out of credits",
+    "Credit balance is too low",
+  ])("identifies a shared subscription or balance limit: %s", (text) => {
+    expect(classifyFailure({ text })).toMatchObject({
+      category: "quota_exhausted",
+      quotaScope: "provider",
+    })
+  })
+
+  it.each([
+    "Model quota exhausted",
+    "Sonnet weekly limit reached",
+    "quota exceeded",
+    "You've hit your weekly limit for Sonnet",
+    "You've hit your usage limit on model X",
+  ])("does not widen model-specific or ambiguous quota evidence: %s", (text) => {
+    expect(classifyFailure({ text }).category).toBe("quota_exhausted")
+    expect(classifyFailure({ text })).not.toHaveProperty("quotaScope")
+  })
+})
 
 describe("classifyFailure: interruption evidence", () => {
   it("maps a user interruption to user_cancelled with no retry and no failover", () => {

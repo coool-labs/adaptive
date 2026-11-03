@@ -204,6 +204,8 @@ export class Supervisor {
    * the stale decision instead of acting after it.
    */
   readonly #recoveryPending = new Set<string>()
+  /** Snapshot-sized budget shared by a task's terminal quota continuations. */
+  readonly #quotaRecoveriesRemaining = new Map<string, number>()
   /** Interruptions observed while a recovery was pending on the session. */
   readonly #recoveryInterrupted = new Set<string>()
   /**
@@ -426,7 +428,9 @@ export class Supervisor {
     if (!this.#manuallySelected(sessionID, settings)) return false
     const current = this.#tracker.lastModel(sessionID)?.model
     if (current === undefined) return true
-    return this.#health.evaluate(refKey(current)).kind !== "blocked"
+    if (this.#health.evaluate(refKey(current)).kind !== "blocked") return true
+    this.#manualSelections.delete(sessionID)
+    return false
   }
 
   /**
@@ -676,11 +680,16 @@ export class Supervisor {
       this.#promptAdmission.set(sessionID, tier !== undefined ? { tier } : {})
       return
     }
+    // Prompt hooks also admit steering messages into an active episode. They
+    // are not routing boundaries: switching here interrupts productive work
+    // and resets its recovery budget before the host consumes the steering.
+    if (this.#tracker.active(sessionID) !== undefined) return
     // A fresh user prompt cancels any stale continuation intent and marker:
     // this admission re-routes from scratch.
     this.#continuationTiers.delete(sessionID)
     this.#promptAdmission.delete(sessionID)
     this.#escalations.delete(sessionID)
+    this.#quotaRecoveriesRemaining.delete(sessionID)
     // A pending probe ticket from an earlier prompt admission (or a failed
     // recovery) can only be carried by the unit the ORIGINAL prompt opens;
     // a fresh admission means that episode never ran, so the ticket is
@@ -1012,6 +1021,14 @@ export class Supervisor {
         this.#reportProbeOutcome(probeTicket, { success: false, category: classification.category })
       }
     }
+    if (
+      unit !== undefined &&
+      model !== undefined &&
+      classification.category === "quota_exhausted"
+    ) {
+      await this.#recoverTerminalQuota(unit, admissionTier, settings)
+      return
+    }
     await this.#escalateOnFailure(
       report,
       unitID,
@@ -1022,6 +1039,71 @@ export class Supervisor {
       toolEvidence,
       settings,
     )
+  }
+
+  async #recoverTerminalQuota(
+    unit: ActiveUnit,
+    requiredTier: TierName | undefined,
+    settings: SettingsV1,
+  ): Promise<void> {
+    const sessionID = unit.sessionID
+    // A retry veto already owns the continuation; its terminal echo must not
+    // start another. OBSERVE computes the same admission without applying it.
+    const mode = this.#modeFor(sessionID, settings)
+    if (
+      mode === "off" ||
+      this.#recoveryPending.has(sessionID) ||
+      this.#continuationTiers.has(sessionID) ||
+      this.#continuationPending.has(sessionID)
+    )
+      return
+    if (mode === "active") this.#manualSuppressionHolds(sessionID, settings)
+    const { routing, decision, probeTicket } = await this.#admit(settings, sessionID, requiredTier)
+    const tier = routingTier(routing)
+    if (mode === "observe") {
+      if (probeTicket !== undefined) this.#health.releaseProbe(probeTicket)
+      await this.#recordReceipt({ sessionID, tier, decision: schedulerForMode(decision, mode) })
+      return
+    }
+    // Quota windows can expire while session.wait is pending. Snapshot the
+    // configured ladder length once so even those recoveries cannot loop.
+    const remaining =
+      this.#quotaRecoveriesRemaining.get(sessionID) ??
+      (tier === undefined ? 0 : settings.tiers[tier].length)
+    if (decision.kind === "apply" && remaining === 0) {
+      if (probeTicket !== undefined) this.#health.releaseProbe(probeTicket)
+      return
+    }
+    await this.#recordReceipt({ sessionID, tier, decision })
+    if (decision.kind !== "apply") {
+      if (decision.kind === "park" && tier !== undefined) {
+        await this.#parked.park({
+          id: unit.id,
+          sessionID,
+          tier,
+          reason: "all-blocked",
+          detail: "quota exhausted",
+          parkedAt: this.#options.clock(),
+        })
+      }
+      return
+    }
+    this.#quotaRecoveriesRemaining.set(sessionID, remaining - 1)
+    if (probeTicket !== undefined) this.#sessionProbeTickets.set(sessionID, probeTicket)
+    // The host rejected this attempt without invoking its retry hook. Continue
+    // from durable session state rather than waiting for another user message.
+    void this.#ownRecovery(
+      sessionID,
+      decision.model,
+      tier,
+      () => this.#modeFor(sessionID, this.#settings.get()) === "active",
+    ).catch((error: unknown) => {
+      if (probeTicket !== undefined && this.#sessionProbeTickets.get(sessionID) === probeTicket) {
+        this.#sessionProbeTickets.delete(sessionID)
+        this.#health.releaseProbe(probeTicket)
+      }
+      if (!(error instanceof RecoveryAbortedError)) logFailOpen("quota-recovery", error)
+    })
   }
 
   /**
@@ -1557,6 +1639,7 @@ export class Supervisor {
         this.#promptAdmission.delete(sessionID)
         this.#continuationPending.delete(sessionID)
         this.#escalations.delete(sessionID)
+        this.#quotaRecoveriesRemaining.delete(sessionID)
         if (this.#sessionModes.get(sessionID) !== null) {
           try {
             await this.#sessionModes.set(sessionID, null)
@@ -1787,11 +1870,23 @@ function refKey(ref: ModelRef): ResourceKey {
   }
 }
 
+/** Quota survives variantless host resolution; only shared-limit evidence blocks siblings. */
+function failureKey(key: ResourceKey, classification: FailureClassification): ResourceKey {
+  if (classification.quotaScope === "provider") {
+    // Host model refs expose the configured provider, not a credential/account id.
+    return { providerID: key.providerID }
+  }
+  if (classification.category === "quota_exhausted" && key.variantID !== undefined) {
+    return { providerID: key.providerID, modelID: key.modelID }
+  }
+  return key
+}
+
 /** Health failure event from a classification (bounded structured evidence). */
 function failureEvent(key: ResourceKey, classification: FailureClassification): HealthEvent {
   return {
     kind: "failure",
-    key,
+    key: failureKey(key, classification),
     category: classification.category,
     definitive: classification.definitive,
     ...(classification.retry.retryAfterMs !== undefined

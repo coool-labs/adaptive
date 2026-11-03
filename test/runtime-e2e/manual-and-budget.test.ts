@@ -1,4 +1,4 @@
-// covers: ["ADP-015", "ADP-019", "ADP-028"]
+// covers: ["ADP-001", "ADP-007", "ADP-015", "ADP-019", "ADP-028"]
 /**
  * Runtime E2E on a real OpenCode host: manual selection wins (ADP-028),
  * single-failure counting toward the circuit breaker (ADP-019), and the
@@ -461,6 +461,245 @@ describe("runtime e2e: manual selection, breaker counting, escalation budget", (
         ).length,
       ).toBeGreaterThan(before)
       await stop(host, again.sessionID)
+    },
+  )
+
+  it(
+    "steering an in-flight turn preserves its model and completes the steering work",
+    { timeout: 180_000 },
+    async () => {
+      const host = await startHost({ models })
+      hosts.push(host)
+      await rpc(host).settings.set({
+        version: 1,
+        mode: "active",
+        tiers: {
+          quick: [],
+          standard: [{ providerID: "fake", id: "fake-model" }],
+          advanced: [{ providerID: "fake", id: "fake-model-2" }],
+        },
+      })
+      host.provider.setModelScripts({
+        "fake-model": { behaviors: reply("warmup").behaviors },
+        "fake-model-2": { behaviors: reply("next episode").behaviors },
+      })
+      const session = await host.run({ text: "warm up a titled session" })
+      host.provider.setModelScripts({
+        "fake-model": {
+          behaviors: [{ ...reply("initial work").behaviors[0], delayMs: 4_000 }],
+        },
+        "fake-model-2": { behaviors: reply("next episode").behaviors },
+      })
+      const before = host.provider.requestCount()
+      await host.client.session.prompt({
+        sessionID: session.sessionID,
+        text: "original in-flight work",
+      })
+      const deadline = Date.now() + 30_000
+      while (host.provider.requestCount() === before && Date.now() < deadline) await settle(50)
+      expect(host.provider.requestCount()).toBeGreaterThan(before)
+      const prior = (await receipts(host)).filter((r) => r.sessionID === session.sessionID).length
+      await rpc(host).tierRequest.set(session.sessionID, "advanced")
+      await host.client.session.prompt({
+        sessionID: session.sessionID,
+        text: "steering-marker: finish this too",
+        delivery: "steer",
+      })
+      await host.client.session.wait({ sessionID: session.sessionID })
+      const list = await pollReceipts(
+        host,
+        (all) =>
+          all.some(
+            (r) =>
+              r.sessionID === session.sessionID && r.outcome?.status === "succeeded" && r.id > 1,
+          ),
+        30_000,
+      )
+      expect(list.filter((r) => r.sessionID === session.sessionID)).toHaveLength(prior)
+      const calls = host.provider.calls.slice(before)
+      expect(calls.every((call) => callModel(call) === "fake-model")).toBe(true)
+      expect(calls.some((call) => call.body.includes("steering-marker"))).toBe(true)
+      expect(
+        list
+          .filter((r) => r.sessionID === session.sessionID)
+          .every((r) => r.outcome?.status === "succeeded"),
+      ).toBe(true)
+      // The deferred tier request applies only at the next fresh boundary.
+      await host.run({ text: "a new episode", sessionID: session.sessionID })
+      expect(host.provider.calls.some((call) => callModel(call) === "fake-model-2")).toBe(true)
+    },
+  )
+
+  it(
+    "continues through two exhausted models to the third without another user prompt",
+    { timeout: 180_000 },
+    async () => {
+      const host = await startHost({ models })
+      hosts.push(host)
+      await rpc(host).settings.set({
+        version: 1,
+        mode: "active",
+        tiers: {
+          quick: [],
+          standard: ["fake-model", "fake-model-2", "fake-model-3"].map((id) => ({
+            providerID: "fake",
+            id,
+          })),
+          advanced: [],
+        },
+      })
+      const exhausted: FakeProviderScript = {
+        behaviors: [
+          {
+            status: 400,
+            body: JSON.stringify({
+              error: { message: "Model quota exhausted", type: "quota_error" },
+            }),
+          },
+        ],
+      }
+      host.provider.setModelScripts({
+        "fake-model": exhausted,
+        "fake-model-2": exhausted,
+        "fake-model-3": reply("third model completed the task"),
+      })
+      const run = await host.run({ text: "original-task-marker: complete this once" })
+      const list = await pollReceipts(
+        host,
+        (all) =>
+          all.some(
+            (r) =>
+              r.sessionID === run.sessionID &&
+              r.decision.kind === "apply" &&
+              r.decision.model.id === "fake-model-3" &&
+              r.outcome?.status === "succeeded",
+          ),
+        60_000,
+      )
+      const applied = list
+        .filter((r) => r.sessionID === run.sessionID && r.decision.kind === "apply")
+        .sort((left, right) => left.id - right.id)
+      expect(applied.map((r) => (r.decision.kind === "apply" ? r.decision.model.id : ""))).toEqual([
+        "fake-model",
+        "fake-model-2",
+        "fake-model-3",
+      ])
+      expect(applied.map((r) => r.outcome?.status)).toEqual(["failed", "failed", "succeeded"])
+      expect(
+        host.provider.calls.some(
+          (call) =>
+            callModel(call) === "fake-model-3" &&
+            JSON.stringify(call.body).includes("original-task-marker"),
+        ),
+      ).toBe(true)
+      await stop(host, run.sessionID)
+    },
+  )
+
+  it.each([
+    {
+      message: "Model quota exhausted",
+      target: "fake-model",
+      providerID: "fake",
+      reason: "preferred",
+    },
+    {
+      message: "You've hit your session limit · resets 6:10pm (Europe/Budapest)",
+      target: "fake-model-3",
+      providerID: "other",
+      reason: "fallback",
+    },
+  ])(
+    "a picked model that fails while deferred recovers with the correct quota scope: $message",
+    { timeout: 180_000 },
+    async ({ message, target, providerID, reason }) => {
+      // A shared subscription limit must skip healthy-looking siblings on
+      // the same provider; model-only quota must leave those siblings usable.
+      const host = await startHost({ models, additionalProviderIDs: ["other"] })
+      hosts.push(host)
+      await rpc(host).settings.set({
+        version: 1,
+        mode: "active",
+        tiers: {
+          quick: [],
+          standard: [
+            { providerID: "fake", id: "fake-model" },
+            { providerID: "fake", id: "fake-model-2" },
+            { providerID: "other", id: "fake-model-3" },
+          ],
+          advanced: [],
+        },
+      })
+      host.provider.setModelScripts({
+        "fake-model": { behaviors: scenarioScript("success").behaviors },
+        "fake-model-2": {
+          behaviors: [
+            { status: 400, body: JSON.stringify({ error: { message, type: "quota_error" } }) },
+          ],
+        },
+        "fake-model-3": { behaviors: reply("recovered across providers").behaviors },
+      })
+
+      const session = await host.client.session.create()
+      await host.client.session.switchModel({
+        sessionID: session.id,
+        model: { providerID: "fake", id: "fake-model-2" },
+      })
+      await settle(2_000)
+
+      // A terminal subscription error, not a bare 429 (which means rate limiting).
+      await host.run({ text: "on the user's pick", sessionID: session.id })
+      const failedList = await pollReceipts(
+        host,
+        (all) =>
+          all.some(
+            (r) =>
+              r.sessionID === session.id &&
+              r.decision.kind === "defer" &&
+              r.decision.reason === "routing-defer" &&
+              r.decision.detail === "manual-selection" &&
+              r.outcome?.status === "failed" &&
+              r.outcome.category === "quota_exhausted",
+          ),
+        60_000,
+      )
+      expect(
+        failedList.some(
+          (r) =>
+            r.sessionID === session.id &&
+            r.decision.kind === "defer" &&
+            r.decision.reason === "routing-defer" &&
+            r.decision.detail === "manual-selection" &&
+            r.outcome?.status === "failed" &&
+            r.outcome.category === "quota_exhausted",
+        ),
+      ).toBe(true)
+
+      // No second user prompt: the terminal failure must continue the same
+      // work from durable session state on the first usable tier resource.
+      const recoveredList = await pollReceipts(
+        host,
+        (all) =>
+          all.some(
+            (r) =>
+              r.sessionID === session.id &&
+              r.decision.kind === "apply" &&
+              r.decision.model.id === target &&
+              r.decision.model.providerID === providerID &&
+              r.outcome?.status === "succeeded",
+          ),
+        60_000,
+      )
+      const applied = recoveredList.find(
+        (r) =>
+          r.sessionID === session.id &&
+          r.decision.kind === "apply" &&
+          r.decision.model.id === target &&
+          r.decision.model.providerID === providerID,
+      )
+      expect(applied).toBeDefined()
+      if (applied?.decision.kind === "apply") expect(applied.decision.reason).toBe(reason)
+      await stop(host, session.id)
     },
   )
 })

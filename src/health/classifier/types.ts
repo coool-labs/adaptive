@@ -88,6 +88,8 @@ export interface RetryAdvice {
 export interface FailureClassification {
   readonly category: FailureCategory
   readonly layer: EvidenceLayer
+  /** Explicit shared subscription/balance evidence; absent means keep the model scope. */
+  readonly quotaScope?: "provider"
   /**
    * True when the evidence conclusively identifies the failure. Textual
    * classifications are always non-definitive; scheduling treats

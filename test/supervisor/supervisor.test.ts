@@ -869,6 +869,7 @@ describe("supervisor", () => {
       // (the fallback switch already cleared the manual mark — adaptive
       // routing continues, so the prompt re-admits onto a).
       supervisor.noteTierRequest("s1", "standard")
+      await supervisor.handleReport({ kind: "execution-succeeded", sessionID: "s1", at: 40 })
       await supervisor.handleReport({ kind: "prompt", sessionID: "s1" })
       expect(session.log).toEqual(["switch:s1:prov/a", "switch:s1:prov/a"])
     })
@@ -2482,6 +2483,32 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     expect(done[0]?.outcome).toEqual({ status: "succeeded" })
   })
 
+  it("steering an active unit neither switches models nor consumes the next tier request", async () => {
+    const storage = new KeyFailStorage("unused")
+    seed(
+      storage,
+      SETTINGS_KEY,
+      settingsJSON("active", {
+        standard: [wireRef("prov", "a")],
+        advanced: [wireRef("prov", "b")],
+      }),
+    )
+    const session = new FakeSupervisorSession()
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.handleReport(PROMPT_S1)
+    await supervisor.handleReport(STARTED_S1)
+    supervisor.noteTierRequest("s1", "advanced")
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual(["switch:s1:prov/a"])
+    expect(parseReceiptsPayload(storedReceipts(storage))).toHaveLength(1)
+    await supervisor.handleReport({ kind: "execution-succeeded", sessionID: "s1", at: 20 })
+    expect(parseReceiptsPayload(storedReceipts(storage))[0]?.outcome).toEqual({
+      status: "succeeded",
+    })
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual(["switch:s1:prov/a", "switch:s1:prov/b"])
+  })
+
   it("observe mode ignores the prompt report entirely", async () => {
     const session = new FakeSupervisorSession()
     const storage = observeStorage()
@@ -3009,6 +3036,12 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     // The admitted-but-never-dispatched probe is released (still due)
     // instead of wedging the resource half-open.
     now = 50_000
+    await supervisor.handleReport({
+      kind: "execution-interrupted",
+      sessionID: "s1",
+      at: now,
+      reason: "user",
+    })
     await supervisor.handleReport(PROMPT_S1)
     const after = parseReceiptsPayload(storedReceipts(storage))
     expect(after.at(-1)?.decision).toMatchObject({
@@ -3832,6 +3865,7 @@ describe("manual model selection (ADP-028: Adaptive never fights manual model ch
     // applied again.
     await supervisor.handleReport(PROMPT_S1)
     await supervisor.handleReport(STARTED_S1)
+    await supervisor.handleReport({ kind: "execution-succeeded", sessionID: "s1", at: 20 })
     await supervisor.handleReport(PROMPT_S1)
     const receipts = parseReceiptsPayload(storedReceipts(storage))
     expect(receipts.at(-1)?.decision).toMatchObject({ kind: "apply", reason: "preferred" })
@@ -3886,6 +3920,218 @@ describe("manual model selection (ADP-028: Adaptive never fights manual model ch
       model: ref("prov", "a"),
       reason: "preferred",
     })
+  })
+
+  it("a terminal quota failure continues without another user prompt", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 5,
+      model: ref("prov", "b"),
+    })
+    await supervisor.handleReport(PROMPT_S1)
+    await supervisor.handleReport(STARTED_S1)
+    await supervisor.handleReport({
+      kind: "execution-failed",
+      sessionID: "s1",
+      at: 20,
+      error: { type: "UnknownError", message: "Model quota exhausted" },
+    })
+    await flush()
+    expect(session.log).toEqual([
+      "wait:s1",
+      "switch:s1:prov/a",
+      "prompt:s1:Continue the interrupted work from the current session state. Do not repeat completed work; resume from what the session already produced.",
+    ])
+    expect(parseReceiptsPayload(storedReceipts(storage)).at(-1)?.decision).toMatchObject({
+      kind: "apply",
+      model: ref("prov", "a"),
+    })
+  })
+
+  it("a shared quota skips sibling models and restores the preferred provider after reset", async () => {
+    let now = 1000
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    seed(
+      storage,
+      SETTINGS_KEY,
+      settingsJSON("active", {
+        standard: [wireRef("prov", "a"), wireRef("prov", "b"), wireRef("other", "b")],
+      }),
+    )
+    const supervisor = makeSupervisor({
+      storage,
+      session,
+      clock: () => now,
+      infos: [makeInfo("prov", "a"), makeInfo("prov", "b"), makeInfo("other", "b")],
+    })
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 5,
+      model: { providerID: "prov", id: "b", variant: "high" },
+    })
+    await supervisor.handleReport(PROMPT_S1)
+    await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 10 })
+    await supervisor.handleReport({
+      kind: "execution-failed",
+      sessionID: "s1",
+      at: 20,
+      error: { type: "UnknownError", message: "You've hit your session limit" },
+    })
+    await supervisor.handleReport({
+      kind: "model-request",
+      sessionID: "s1",
+      model: ref("prov", "b"),
+      requestKind: "primary",
+    })
+    await supervisor.handleReport(PROMPT_S1)
+    // The same model id remains usable through a separately configured provider.
+    expect(session.log.filter((entry) => entry.startsWith("switch:"))).toEqual([
+      "switch:s1:other/b",
+    ])
+    expect(parseReceiptsPayload(storedReceipts(storage)).at(-1)?.decision).toMatchObject({
+      kind: "apply",
+      model: ref("other", "b"),
+      reason: "fallback",
+    })
+    await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
+    await supervisor.handleReport({ kind: "execution-succeeded", sessionID: "s1", at: 40 })
+    now += 15 * 60 * 1000
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log.filter((entry) => entry.startsWith("switch:"))).toEqual([
+      "switch:s1:other/b",
+      "switch:s1:prov/a",
+    ])
+  })
+
+  it("a manual pick that fails while deferred yields on the next admission", async () => {
+    // Regression (user-reported, web GUI): the pick was healthy at the first
+    // admission (defer manual-selection), then failed with a session-limit
+    // error while deferred — the NEXT admission still deferred instead of
+    // yielding to the configured fallback.
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    seed(
+      storage,
+      SETTINGS_KEY,
+      settingsJSON("active", { standard: [wireRef("prov", "a"), wireRef("prov", "b")] }),
+    )
+    const supervisor = makeSupervisor({
+      storage,
+      session,
+      infos: [makeInfo("prov", "a"), makeInfo("prov", "b")],
+    })
+    // The user picks b (an external selection event, no pending own note).
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 5,
+      model: ref("prov", "b"),
+    })
+    // First admission defers while the pick is healthy — at the prompt hook
+    // and again at execution-started (that receipt carries the unit).
+    await supervisor.handleReport(PROMPT_S1)
+    await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 10 })
+    const receipts1 = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts1[0]?.decision).toMatchObject({
+      kind: "defer",
+      reason: "routing-defer",
+      detail: "manual-selection",
+    })
+    expect(receipts1.at(-1)?.decision).toMatchObject({
+      kind: "defer",
+      reason: "routing-defer",
+      detail: "manual-selection",
+    })
+    expect(receipts1.at(-1)?.unitID).toBeDefined()
+    // A model-only quota leaves a healthy sibling available.
+    await supervisor.handleReport({
+      kind: "execution-failed",
+      sessionID: "s1",
+      at: 20,
+      error: {
+        type: "UnknownError",
+        message: "Model quota exhausted",
+      },
+    })
+    await flush()
+    expect(
+      parseReceiptsPayload(storedReceipts(storage)).find((receipt) => receipt.unitID === "s1#1")
+        ?.outcome,
+    ).toEqual({
+      status: "failed",
+      category: "quota_exhausted",
+    })
+    // The next admission must yield: the fallback the user configured takes
+    // over instead of re-deferring onto the quarantined pick. The preferred
+    // healthy candidate wins the re-admission.
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log.filter((entry) => entry.startsWith("switch:"))).toEqual(["switch:s1:prov/a"])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts.at(-1)?.decision).toMatchObject({
+      kind: "apply",
+      model: ref("prov", "a"),
+      reason: "preferred",
+    })
+  })
+
+  it("a variantless tier entry for the failed pick is skipped during automatic recovery", async () => {
+    // Discriminator (user-reported, web GUI): the pick and its failure carry
+    // variant "high", but the host re-resolves the session model as a
+    // variantless ref during recovery. That first tier entry must not read
+    // as healthy: the quarantined variant is the same resource.
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    seed(
+      storage,
+      SETTINGS_KEY,
+      settingsJSON("active", { standard: [wireRef("prov", "b"), wireRef("prov", "a")] }),
+    )
+    const supervisor = makeSupervisor({
+      storage,
+      session,
+      infos: [makeInfo("prov", "a"), makeInfo("prov", "b")],
+    })
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 5,
+      model: { providerID: "prov", id: "b", variant: "high" },
+    })
+    await supervisor.handleReport(PROMPT_S1)
+    await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 10 })
+    await supervisor.handleReport({
+      kind: "execution-failed",
+      sessionID: "s1",
+      at: 20,
+      error: {
+        type: "UnknownError",
+        message: "Model quota exhausted",
+      },
+    })
+    await flush()
+    expect(
+      parseReceiptsPayload(storedReceipts(storage)).find((receipt) => receipt.unitID === "s1#1")
+        ?.outcome,
+    ).toEqual({
+      status: "failed",
+      category: "quota_exhausted",
+    })
+    // The host re-resolves the same model without the variant before the
+    // user's next turn.
+    await supervisor.handleReport({
+      kind: "model-request",
+      sessionID: "s1",
+      model: ref("prov", "b"),
+      requestKind: "primary",
+    })
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log.filter((entry) => entry.startsWith("switch:"))).toEqual(["switch:s1:prov/a"])
   })
 
   it("a standing settings pin overrides manual-selection suppression", async () => {
