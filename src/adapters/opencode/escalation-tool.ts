@@ -20,9 +20,11 @@ export type EscalationRecorder = (sessionID: string, reason: string, evidence: s
 
 const TOOL_DESCRIPTION =
   "Request stronger model capability for the current work unit. Provide a short reason and " +
-  "the concrete evidence (what failed or was blocked). Adaptive records the request and " +
-  "applies it at the next safe boundary within a finite budget. This is not a planning or " +
-  "task-management tool."
+  "the concrete evidence (what failed or was blocked). Adaptive records the request as " +
+  "structured evidence and weighs it when a failure on this unit is already classified as a " +
+  "capability gap (for example context overflow or a content-policy rejection), within a " +
+  "finite budget; recording alone does not force a tier escalation. This is not a planning " +
+  "or task-management tool."
 
 /** The tool's input schema in JSON Schema form (host-convertible). */
 const escalationInputSchema = {

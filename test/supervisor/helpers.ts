@@ -56,7 +56,7 @@ export class FakeSupervisorSession {
     this.source = {
       hook,
       get: (input: { sessionID: string }) => {
-        if (this.failGet) return Promise.reject(new Error("session gone"))
+        if (this.failGet) return Promise.reject(new Error("session not found"))
         return Promise.resolve({ sessionID: input.sessionID })
       },
       wait: (input: { sessionID: string }) => {

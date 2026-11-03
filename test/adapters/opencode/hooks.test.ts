@@ -1,5 +1,5 @@
 // covers: ["ADP-001", "ADP-014"]
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { SessionRetry } from "@opencode/plugin/promise/session"
 import { registerSessionHooks } from "../../../src/adapters/opencode/hooks.js"
 import { FakeHookSession, wireRef } from "./helpers.js"
@@ -14,6 +14,34 @@ const HOOK_NAMES = [
 ] as const
 
 describe("registerSessionHooks", () => {
+  it.each(HOOK_NAMES)(
+    "rolls back acquired hooks when %s registration fails",
+    async (failedHook) => {
+      const session = new FakeHookSession()
+      const failure = new Error("hook registration failed")
+      const disposed: string[] = []
+      vi.spyOn(session.source, "hook").mockImplementation((name) => {
+        if (name === failedHook) return Promise.reject(failure)
+        return Promise.resolve({
+          dispose: () => {
+            disposed.push(name)
+            return Promise.reject(new Error("disposal failed"))
+          },
+        })
+      })
+      await expect(
+        registerSessionHooks(session.source, {
+          onRetry: () => undefined,
+          onModelRequest: () => undefined,
+          onHttpResponse: () => undefined,
+          onIdle: () => undefined,
+          onPrompt: () => undefined,
+        }),
+      ).rejects.toBe(failure)
+      expect(disposed).toEqual(HOOK_NAMES.slice(0, HOOK_NAMES.indexOf(failedHook)))
+    },
+  )
+
   it("registers exactly the five supervisor hooks", async () => {
     const session = new FakeHookSession()
     const registrations = await registerSessionHooks(session.source, {

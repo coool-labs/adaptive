@@ -232,7 +232,6 @@ describe("WorkUnitTracker", () => {
     expect(tracker.active(SID_A)?.model).toEqual(M1)
     expect(tracker.active(SID_B)?.id).toBe(`${SID_B}#2`)
     expect(tracker.active(SID_B)?.model).toBeUndefined()
-    expect(tracker.activeAll().map((unit) => unit.id)).toEqual([`${SID_A}#2`, `${SID_B}#2`])
     expect(tracker.lastModel(SID_B)).toBeUndefined()
   })
 
@@ -487,11 +486,63 @@ describe("WorkUnitTracker properties", () => {
         const firstResults: ApplyResult[] = events.map((event) => first.apply(event))
         const secondResults: ApplyResult[] = events.map((event) => second.apply(event))
         expect(secondResults).toEqual(firstResults)
-        expect(second.activeAll()).toEqual(first.activeAll())
         for (const sessionID of sessionIDs) {
+          expect(second.active(sessionID)).toEqual(first.active(sessionID))
           expect(second.lastModel(sessionID)).toEqual(first.lastModel(sessionID))
         }
       }),
     )
+  })
+
+  // covers: ["ADP-037"]
+  describe("bounded per-session maps (long-lived host)", () => {
+    it("evicts the oldest last-model past the cap instead of growing forever", () => {
+      const tracker = new WorkUnitTracker()
+      for (let index = 0; index < WorkUnitTracker.MAX_TRACKED_SESSIONS; index += 1) {
+        tracker.apply({
+          kind: "model-request",
+          sessionID: `s${String(index)}`,
+          at: index,
+          model: M1,
+        })
+      }
+      expect(tracker.lastModel("s0")).toBeDefined()
+      // One more session pushes the oldest (s0) out; the newest still rides.
+      tracker.apply({ kind: "model-request", sessionID: "s-new", at: 1, model: M1 })
+      expect(tracker.lastModel("s0")).toBeUndefined()
+      expect(tracker.lastModel("s-new")).toBeDefined()
+      expect(
+        tracker.lastModel(`s${String(WorkUnitTracker.MAX_TRACKED_SESSIONS - 1)}`),
+      ).toBeDefined()
+    })
+
+    it("evicts the oldest pending own-switch note past the cap (safe direction: looks external)", () => {
+      const tracker = new WorkUnitTracker()
+      for (let index = 0; index < WorkUnitTracker.MAX_TRACKED_SESSIONS; index += 1) {
+        tracker.noteOwnSwitch(`s${String(index)}`, M1)
+      }
+      tracker.noteOwnSwitch("s-new", M1)
+      // The evicted note can no longer claim its selection event: the switch
+      // is attributed external (manual) — never the reverse (ADP-028).
+      expect(tracker.apply({ kind: "model-selected", sessionID: "s0", at: 1, model: M1 })).toEqual({
+        kind: "model-noted",
+        transition: { at: 1, model: M1, source: "selected-external" },
+      })
+    })
+
+    it("keeps last models of sessions tracked after an eviction wave", () => {
+      const tracker = new WorkUnitTracker()
+      for (let index = 0; index < WorkUnitTracker.MAX_TRACKED_SESSIONS + 1; index += 1) {
+        tracker.apply({
+          kind: "model-request",
+          sessionID: `s${String(index)}`,
+          at: index,
+          model: M1,
+        })
+      }
+      expect(tracker.lastModel(`s${String(WorkUnitTracker.MAX_TRACKED_SESSIONS)}`)).toMatchObject({
+        model: M1,
+      })
+    })
   })
 })

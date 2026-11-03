@@ -31,9 +31,8 @@ import {
 import { INTERRUPT_REASONS } from "../core/work-unit/interruption.js"
 import type { InterruptReason } from "../core/work-unit/interruption.js"
 import { resolveRouting } from "../core/tier-policy/resolve.js"
-import { TIERS, nextTier } from "../core/tier-policy/types.js"
-import type { RoutingDecision, TierName } from "../core/tier-policy/types.js"
-import type { TierRequest } from "../core/tier-policy/types.js"
+import { isTierName, nextTier } from "../core/tier-policy/types.js"
+import type { RoutingDecision, TierName, TierRequest } from "../core/tier-policy/types.js"
 import {
   admit,
   forMode as schedulerForMode,
@@ -72,6 +71,7 @@ import { SettingsStore, SETTINGS_KEY } from "../state/settings/index.js"
 import type { SettingsV1 } from "../state/settings/index.js"
 import type { PatchResult, SettingsPatch } from "../state/settings/types.js"
 import { SessionModeStore, SESSION_MODES_KEY } from "../state/session-modes/index.js"
+import { TierRequestStore, TIER_REQUESTS_KEY } from "../state/tier-requests/index.js"
 import { ReceiptStore, RECEIPTS_KEY } from "../state/receipts/index.js"
 import type { Receipt, ReceiptInput, ReceiptOutcome } from "../state/receipts/types.js"
 import { buildStatus } from "../rpc/status.js"
@@ -95,12 +95,9 @@ import { logFailOpen } from "./log.js"
 import type { RetryHookInput, SupervisorOptions } from "./types.js"
 import { CODEX_PROVIDER_ID } from "./types.js"
 
-/** Which tiers currently have configured resources (ADP-005). */
-/** Vocabulary guard without a cast: strict member equality. */
-function isTierName(tier: string): tier is TierName {
-  return TIERS.some((name) => name === tier)
-}
+import { TIERS } from "../core/tier-policy/types.js"
 
+/** Which tiers currently have configured resources (ADP-005). */
 function configuredTiers(settings: SettingsV1): TierName[] {
   return TIERS.filter((tier) => settings.tiers[tier].length > 0)
 }
@@ -124,6 +121,19 @@ const CAPABILITY_EVIDENCE_CATEGORIES: readonly FailureCategory[] = [
 
 /** Finite per-task escalation budget (ADP-017). */
 const MAX_ESCALATIONS_PER_TASK = 2
+
+/**
+ * The recovery's post-settle guard aborted it (the session went OFF or the
+ * user interrupted while the host settle was in flight). Callers use it to
+ * skip the ordinary ops-failure degradation (parking) — an aborted recovery
+ * is a steering change, not an infrastructure failure.
+ */
+export class RecoveryAbortedError extends Error {
+  constructor(sessionID: string) {
+    super(`recovery aborted for session ${sessionID}`)
+    this.name = "RecoveryAbortedError"
+  }
+}
 
 export class Supervisor {
   readonly #options: SupervisorOptions
@@ -158,10 +168,20 @@ export class Supervisor {
    * Per-session tier requests (agent-declared via the adaptive_tier tool):
    * the request is STICKY — it steers the session's next and following
    * admissions until cleared or the session dies — because an agent works
-   * across many units in one task. Insertion order gives the eviction.
+   * across many units in one task. Persisted like the session-mode
+   * overrides: the host's double plugin instance (hooks vs RPC) must not
+   * strand a request on the instance that never routes.
    */
-  static readonly MAX_TIER_REQUESTS = 1024
-  readonly #tierRequests = new Map<string, TierRequest>()
+  readonly #tierRequests: TierRequestStore
+  /**
+   * Sessions whose last model change was the user's own pick
+   * (`selected-external`): prompt admission does not re-route them —
+   * switching would undo the user's `/model` choice (ADP-028). Cleared by an
+   * adaptive switch, a tier request, or a mode change; a standing settings
+   * pin overrides the suppression (the pin is manual intent too).
+   */
+  static readonly MAX_MANUAL_SELECTIONS = 1024
+  readonly #manualSelections = new Map<string, true>()
   /**
    * Sessions with an owned continuation prompt in flight: the prompt hook
    * will fire for it, but that prompt belongs to the active unit — it must
@@ -178,6 +198,15 @@ export class Supervisor {
    */
   readonly #continuationsInFlight = new Map<string, number>()
   /**
+   * Sessions with an owned recovery in flight (between veto/resume and the
+   * delivered continuation prompt). The host settle inside it can take
+   * unbounded time; an interruption arriving during that window must abort
+   * the stale decision instead of acting after it.
+   */
+  readonly #recoveryPending = new Set<string>()
+  /** Interruptions observed while a recovery was pending on the session. */
+  readonly #recoveryInterrupted = new Set<string>()
+  /**
    * Half-open probe tickets by session: a probe admitted while computing the
    * recovery for a veto belongs to the continuation episode that follows, so
    * the ticket is parked here until that unit opens and takes it.
@@ -190,6 +219,28 @@ export class Supervisor {
    * it — otherwise a lost probe would wedge the resource in half_open.
    */
   readonly #probeTickets = new Map<string, ProbeTicket>()
+  /**
+   * Per-unit dedup for breaker failure evidence (ADP-019). One failed attempt
+   * surfaces through up to three host signals — the pumped `http.response`
+   * event, the `retry` hook (the same request), and the terminal
+   * `execution-failed` (the last attempt) — and counting each would trip the
+   * breaker after ~2 real failures instead of `failureThreshold`. The exact
+   * arrival order of a pair is not guaranteed (the retry hook runs in the
+   * request lifecycle, the event pump lags), so the dedup is order-symmetric:
+   * the first signal of a pair counts and arms, the matching counterpart
+   * consumes it, a completed pair closes the attempt, and the terminal
+   * repeats only when the last attempt left no live evidence. A same-category
+   * observation with nothing armed is a NEW attempt (consecutive http-only
+   * failures each count). Cleared at unit close.
+   */
+  readonly #attemptFailures = new Map<
+    string,
+    {
+      http?: FailureCategory | undefined
+      retry?: FailureCategory | undefined
+      closed?: FailureCategory | undefined
+    }
+  >()
   /**
    * Session → tier admitted by the prompt hook for the unit that is about to
    * open. Consumed by execution-started, which then skips re-routing (the
@@ -222,6 +273,10 @@ export class Supervisor {
     this.#capacityStore = new CapacityReadingStore(storageSeam(CAPACITY_KEY, options.storage))
     this.#sessionModes = new SessionModeStore(
       storageSeam(SESSION_MODES_KEY, options.storage),
+      options.clock,
+    )
+    this.#tierRequests = new TierRequestStore(
+      storageSeam(TIER_REQUESTS_KEY, options.storage),
       options.clock,
     )
     this.#ops = sessionOps(options.session, {
@@ -292,6 +347,10 @@ export class Supervisor {
       // host's double-instance reconciliation) must keep steering sessions
       // under the modes the user set for them.
       await this.#sessionModes.load()
+      // Tier requests hydrate the same way: a tier request recorded through
+      // the host's other plugin instance (or before a restart) must still
+      // steer this instance's admissions.
+      await this.#tierRequests.load()
       await this.#capacityStore.load()
       return this.#settings.load()
     }
@@ -331,6 +390,31 @@ export class Supervisor {
     }
   }
 
+  /** Marks the session's manual-selection state from an external selection event. */
+  #noteManualSelection(sessionID: string): void {
+    if (
+      !this.#manualSelections.has(sessionID) &&
+      this.#manualSelections.size >= Supervisor.MAX_MANUAL_SELECTIONS
+    ) {
+      // The guard above ensures the map is at its cap (>= 1 entries), so the
+      // first key always exists; the assertion avoids a branch the coverage
+      // gate would reject as unreachable.
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const oldest = this.#manualSelections.keys().next().value!
+      this.#manualSelections.delete(oldest)
+    }
+    this.#manualSelections.set(sessionID, true)
+  }
+
+  /**
+   * True while the session's last model change was the user's own pick.
+   * A standing settings pin is explicit manual intent as well (ADP-002):
+   * honoring it does not fight the pick, so suppression is skipped there.
+   */
+  #manuallySelected(sessionID: string, settings: SettingsV1): boolean {
+    return settings.pin === null && this.#manualSelections.has(sessionID)
+  }
+
   /**
    * Handle one `retry` hook invocation. On a veto this mutates
    * `input.decision` to `{ retry: false }`; otherwise the decision is left
@@ -368,35 +452,38 @@ export class Supervisor {
    * tool). STICKY: it steers the session's next and following admissions
    * until cleared — an agent works across many units in one task. Returns
    * false on an unknown tier (the tool re-validates before calling).
+   *
+   * Fire-and-forget persistence: the recorder signature is sync on both the
+   * tool and the RPC source interfaces, so the write is enqueued without
+   * awaiting it. Readers (routing, getTierRequest, the idle sweep) flush the
+   * store's queue before reading, which makes the record visible
+   * deterministically; a write failure drops the record fail-open (the tool
+   * told the agent "recorded", the persisted mirror simply never sees it —
+   * the same degradation the in-memory map had on restart).
    */
   noteTierRequest(sessionID: string, tier: string): boolean {
     if (!isTierName(tier)) return false
-    if (
-      !this.#tierRequests.has(sessionID) &&
-      this.#tierRequests.size >= Supervisor.MAX_TIER_REQUESTS
-    ) {
-      // The map is non-empty here (size >= MAX_TIER_REQUESTS > 0): Map
-      // preserves insertion order, so the first key is the oldest request.
-      for (const oldest of this.#tierRequests.keys()) {
-        this.#tierRequests.delete(oldest)
-        break
-      }
-    }
-    this.#tierRequests.set(sessionID, { tier, via: "manual-command" })
+    void this.#tierRequests.set(sessionID, tier).catch(() => undefined)
+    // The user/agent explicitly asked Adaptive to route again (ADP-028).
+    this.#manualSelections.delete(sessionID)
     return true
   }
 
   /** The session's tier request, or `null` when it follows the routing ladder. */
   async getTierRequest(sessionID: string): Promise<TierName | null> {
     await this.#ready
-    return this.#tierRequests.get(sessionID)?.tier ?? null
+    // A fire-and-forget note may still be in the queue: flush before reading.
+    await this.#tierRequests.flush()
+    return this.#tierRequests.get(sessionID)
   }
 
   /** Clear one session's tier request (`null` is the only valid input). */
   async setTierRequest(sessionID: string, tier: TierName | null): Promise<void> {
     await this.#ready
     if (tier !== null) throw new Error("only null clears a tier request")
-    this.#tierRequests.delete(sessionID)
+    await this.#tierRequests.set(sessionID, null)
+    // Clearing through the control surface is the user asking Adaptive back.
+    this.#manualSelections.delete(sessionID)
   }
 
   // ---------- state API for the control surfaces (ADP-033/034/036) ----------
@@ -409,7 +496,13 @@ export class Supervisor {
   /** Validate and persist a settings patch; returns per-field errors. */
   async updateSettings(patch: SettingsPatch): Promise<PatchResult> {
     await this.#ready
-    return this.#settings.update(patch)
+    const result = await this.#settings.update(patch)
+    if (result.ok && patch.mode !== undefined) {
+      // A global mode change is the user steering Adaptive explicitly
+      // (ADP-028): manual-selection suppression lifts for every session.
+      this.#manualSelections.clear()
+    }
+    return result
   }
 
   /** The session's mode override, or `null` when it follows the global mode. */
@@ -426,6 +519,8 @@ export class Supervisor {
   async setSessionMode(sessionID: string, mode: OperatingMode | null): Promise<void> {
     await this.#ready
     await this.#sessionModes.set(sessionID, mode)
+    // A mode change is the user steering Adaptive explicitly (ADP-028).
+    this.#manualSelections.delete(sessionID)
   }
 
   /**
@@ -487,14 +582,22 @@ export class Supervisor {
       case "execution-interrupted":
         await this.#onExecutionInterrupted(report)
         return
-      case "model-selected":
-        this.#tracker.apply({
+      case "model-selected": {
+        const result = this.#tracker.apply({
           kind: "model-selected",
           sessionID: report.sessionID,
           at: report.at,
           model: report.model,
         })
+        // Whether the change was the user's pick or Adaptive's own switch
+        // decides who controls the session's model (ADP-028); the result
+        // carries the attribution the tracker resolved. Only the two
+        // selection sources reach this event kind.
+        const { source } = result.transition
+        if (source === "selected-adaptive") this.#manualSelections.delete(report.sessionID)
+        else this.#noteManualSelection(report.sessionID)
         return
+      }
       case "model-request":
         if (report.agent !== undefined) {
           if (
@@ -510,12 +613,20 @@ export class Supervisor {
           }
           this.#agents.set(report.sessionID, report.agent)
         }
-        this.#tracker.apply({
-          kind: "model-request",
-          sessionID: report.sessionID,
-          at: this.#options.clock(),
-          model: report.model,
-        })
+        // Only the agent loop's own request reports the model actually
+        // executing the unit's work. An auxiliary request (title, compaction,
+        // generate — ADP-027) carries the host's own cheap pick for that side
+        // request; adopting it as the session's model would misattribute the
+        // primary unit's health evidence and leave the next admission
+        // believing the unit runs on the wrong resource.
+        if (report.requestKind === "primary") {
+          this.#tracker.apply({
+            kind: "model-request",
+            sessionID: report.sessionID,
+            at: this.#options.clock(),
+            model: report.model,
+          })
+        }
         return
       case "http-response":
         await this.#onHttpResponse(report)
@@ -564,6 +675,16 @@ export class Supervisor {
     if (stale !== undefined) {
       this.#sessionProbeTickets.delete(sessionID)
       this.#health.releaseProbe(stale)
+    }
+    if (this.#manuallySelected(sessionID, settings)) {
+      // ADP-028: the user's own model pick stands. Recording the defer (no
+      // switch, no marker) leaves OpenCode's choice — the picked model — in
+      // place; execution-started will skip routing the same way.
+      await this.#recordReceipt({
+        sessionID,
+        decision: { kind: "defer", reason: "routing-defer", detail: "manual-selection" },
+      })
+      return
     }
     let probeTicket: ProbeTicket | undefined
     try {
@@ -661,18 +782,26 @@ export class Supervisor {
   async #admit(
     settings: SettingsV1,
     sessionID: string,
+    requiredTier?: TierName,
   ): Promise<{
     routing: RoutingDecision
     decision: ReturnType<typeof admit>
     probeTicket?: ProbeTicket
   }> {
+    // The agent-declared tier request (adaptive_tier tool) outranks the
+    // role hints but stays below the pin (ADP-002 ladder). The note is
+    // recorded fire-and-forget, so flush the store's queue before reading.
+    await this.#tierRequests.flush()
+    const tierRequest = this.#tierRequests.get(sessionID)
+    let routedTier: TierRequest | undefined
+    if (requiredTier !== undefined) {
+      routedTier = { tier: requiredTier, via: "manual-command" as const }
+    } else if (tierRequest !== null) {
+      routedTier = { tier: tierRequest, via: "manual-command" as const }
+    }
     const routing = resolveRouting({
       ...(settings.pin !== null ? { pin: settings.pin } : {}),
-      // The agent-declared tier request (adaptive_tier tool) outranks the
-      // role hints but stays below the pin (ADP-002 ladder).
-      ...(this.#tierRequests.has(sessionID)
-        ? { tierRequest: this.#tierRequests.get(sessionID) }
-        : {}),
+      ...(routedTier !== undefined ? { tierRequest: routedTier } : {}),
       // The agent-role hint is the session's last observed agent — the host
       // reports it on every model request (ADP-002 level 3).
       ...(this.#agents.has(sessionID) ? { agent: this.#agents.get(sessionID) } : {}),
@@ -737,6 +866,15 @@ export class Supervisor {
     settings: SettingsV1,
     mode: OperatingMode,
   ): Promise<void> {
+    if (this.#manuallySelected(unit.sessionID, settings)) {
+      // ADP-028: the session runs on the user's own pick — no re-route.
+      await this.#recordReceipt({
+        sessionID: unit.sessionID,
+        unitID: unit.id,
+        decision: { kind: "defer", reason: "routing-defer", detail: "manual-selection" },
+      })
+      return
+    }
     const { routing, decision, probeTicket } = await this.#admit(settings, unit.sessionID)
     // The tier the unit was admitted under is escalation context (ADP-015);
     // recorded for every tiered routing outcome (including a defer, which
@@ -824,13 +962,10 @@ export class Supervisor {
     // Tool evidence is captured pre-close like the other per-unit maps.
     const toolEvidence = unitID !== undefined ? (this.#escalationEvidence.get(unitID) ?? []) : []
     const probeTicket = this.#takeProbeTicket(unitID)
-    const closed = this.#tracker.apply({
-      kind: "execution-failed",
-      sessionID: report.sessionID,
-      at: report.at,
-      error: report.error,
-    })
-    this.#afterUnitClose(closed)
+    // The terminal classifies and dedups BEFORE the close: the close clears
+    // the unit's attempt-failure entry, and the terminal must consult it —
+    // it repeats the episode's last attempt, which an attempt signal
+    // (http-response or retry hook) already counted.
     const classification = classifyFailure({
       structured: {
         type: report.error.type,
@@ -844,7 +979,15 @@ export class Supervisor {
       // The retry hook deliberately omits text: it must stay conservative.
       text: report.error.message,
     })
-    if (model !== undefined) {
+    const countTerminal = this.#countTerminalFailure(unitID, classification.category)
+    const closed = this.#tracker.apply({
+      kind: "execution-failed",
+      sessionID: report.sessionID,
+      at: report.at,
+      error: report.error,
+    })
+    this.#afterUnitClose(closed)
+    if (model !== undefined && countTerminal) {
       this.#observeHealth(failureEvent(refKey(model), classification))
     }
     if (unit !== undefined) {
@@ -954,9 +1097,14 @@ export class Supervisor {
       // Continue the interrupted work on the escalated resource; the unit is
       // terminally failed, so an ops failure is only logged (never parked).
       try {
-        await this.#ownRecovery(report.sessionID, wrapped.target, wrapped.tier)
+        await this.#ownRecovery(
+          report.sessionID,
+          wrapped.target,
+          wrapped.tier,
+          () => this.#modeFor(report.sessionID, settings) !== "off",
+        )
       } catch (error) {
-        logFailOpen("escalation-ops", error)
+        if (!(error instanceof RecoveryAbortedError)) logFailOpen("escalation-ops", error)
       }
       return
     }
@@ -980,6 +1128,12 @@ export class Supervisor {
     }
     const unit = this.#tracker.active(report.sessionID)
     const probeTicket = this.#takeProbeTicket(unit?.id)
+    // An interruption while a recovery is pending on this session aborts it
+    // at its post-settle guard (the pending recovery's decision predates the
+    // interruption and must not act after it).
+    if (this.#recoveryPending.has(report.sessionID)) {
+      this.#recoveryInterrupted.add(report.sessionID)
+    }
     const closed = this.#tracker.apply({
       kind: "execution-interrupted",
       sessionID: report.sessionID,
@@ -1012,6 +1166,54 @@ export class Supervisor {
   }
 
   /**
+   * One attempt's failure evidence (http-response event or retry hook):
+   * returns whether THIS observation is the attempt's first count.
+   */
+  #countAttemptFailure(
+    unitID: string | undefined,
+    source: "http" | "retry",
+    category: FailureCategory,
+  ): boolean {
+    if (unitID === undefined) return true
+    const ev = this.#attemptFailures.get(unitID) ?? {}
+    if (source === "http" ? ev.retry === category : ev.http === category) {
+      // The other host signal already counted this attempt: consume it.
+      const closed = { ...ev, http: undefined, retry: undefined, closed: category }
+      this.#attemptFailures.set(unitID, closed)
+      return false
+    }
+    this.#attemptFailures.set(
+      unitID,
+      source === "http" ? { ...ev, http: category } : { ...ev, retry: category },
+    )
+    return true
+  }
+
+  /**
+   * The terminal `execution-failed` repeats the episode's last attempt: it
+   * counts only when the last attempt left no live evidence (e.g. a
+   * capability failure that never produced an HTTP response or retry hook).
+   */
+  #countTerminalFailure(unitID: string | undefined, category: FailureCategory): boolean {
+    if (unitID === undefined) return true
+    const ev = this.#attemptFailures.get(unitID) ?? {}
+    if (ev.http === category) {
+      this.#attemptFailures.set(unitID, { ...ev, http: undefined })
+      return false
+    }
+    if (ev.retry === category) {
+      this.#attemptFailures.set(unitID, { ...ev, retry: undefined })
+      return false
+    }
+    if (ev.closed === category) {
+      this.#attemptFailures.set(unitID, { ...ev, closed: undefined })
+      return false
+    }
+    this.#attemptFailures.set(unitID, { ...ev, closed: category })
+    return true
+  }
+
+  /**
    * Hands a closing unit's probe ticket to its explicit outcome reporter.
    * Taken BEFORE the close: #afterUnitClose treats any ticket still held as
    * lost and re-opens the breaker, which would turn a probe's real outcome
@@ -1041,6 +1243,10 @@ export class Supervisor {
       }
     }
     if (closed.kind === "opened" || closed.kind === "closed") {
+      const unitID = closedUnitID(closed)
+      if (unitID !== undefined) {
+        this.#attemptFailures.delete(unitID)
+      }
       // Per-session flags for a unit that will never open again must not
       // leak: a stale continuation mark would swallow a real user prompt's
       // admission; a stale admission marker would skip routing. The guard
@@ -1074,7 +1280,11 @@ export class Supervisor {
         ? { headers: { "retry-after": report.retryAfterHeader } }
         : {}),
     })
-    this.#observeHealth(failureEvent(refKey(model), classification))
+    // The retry hook classifies the same request for the host's retry
+    // decision; counting both would double every attempt (ADP-019).
+    if (this.#countAttemptFailure(unit?.id, "http", classification.category)) {
+      this.#observeHealth(failureEvent(refKey(model), classification))
+    }
   }
 
   // ---------- retry hook ----------
@@ -1089,7 +1299,12 @@ export class Supervisor {
       },
       status: input.error.status,
     })
-    this.#observeHealth(failureEvent(refKey(input.model), classification))
+    const unitID = this.#tracker.active(input.sessionID)?.id
+    // The pumped http-response event describes the same failed request;
+    // counting both would double every attempt (ADP-019).
+    if (this.#countAttemptFailure(unitID, "retry", classification.category)) {
+      this.#observeHealth(failureEvent(refKey(input.model), classification))
+    }
 
     // Recovery = fresh admission; the failed resource is already health-blocked.
     let recovery: RecoveryOption = { kind: "none" }
@@ -1118,7 +1333,6 @@ export class Supervisor {
       logFailOpen("recovery", error)
     }
 
-    const unitID = this.#tracker.active(input.sessionID)?.id
     const vetoesUsed = unitID !== undefined ? (this.#vetoes.get(unitID) ?? 0) : 0
     const core = decideRetry({
       classification,
@@ -1166,9 +1380,27 @@ export class Supervisor {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- a veto implies the admission was an apply (the recovery exists only then)
       decision: admission!,
     })
-    void this.#ownRecovery(input.sessionID, wrapped.model, routingTier)
+    void this.#ownRecovery(
+      input.sessionID,
+      wrapped.model,
+      routingTier,
+      () => this.#modeFor(input.sessionID, settings) !== "off",
+    )
       .then(() => undefined)
       .catch(async (error: unknown) => {
+        if (error instanceof RecoveryAbortedError) {
+          // The user steered away (interruption / OFF) during the settle: the
+          // veto stands, but no continuation episode will ever carry the
+          // probe it admitted — release it instead of wedging half-open.
+          if (
+            probeTicket !== undefined &&
+            this.#sessionProbeTickets.get(input.sessionID) === probeTicket
+          ) {
+            this.#sessionProbeTickets.delete(input.sessionID)
+            this.#health.releaseProbe(probeTicket)
+          }
+          return
+        }
         logFailOpen("recovery-ops", error)
         // The recovery rejected before (or while) delivering its continuation
         // prompt, so no unit will ever carry the probe it admitted — release
@@ -1202,22 +1434,45 @@ export class Supervisor {
    * continuation's prompt hook re-arms the admission marker (the unit must
    * not be re-routed: that would discard the recovery/escalation decision).
    */
-  async #ownRecovery(sessionID: string, model: ModelRef, tier?: TierName): Promise<void> {
+  async #ownRecovery(
+    sessionID: string,
+    model: ModelRef,
+    tier: TierName | undefined,
+    stillValid: () => boolean,
+  ): Promise<void> {
     if (tier !== undefined) this.#continuationTiers.set(sessionID, tier)
-    const alive = await this.#isSessionAlive(sessionID)
-    const recovery: RecoveryOption = { kind: "switch", model }
-    const action = planContinuation({
-      recovery,
-      continuationPossible: alive,
-    })
+    // The guard window opens before the first await so an interrupt pumped
+    // during the admission race is still seen.
+    this.#recoveryPending.add(sessionID)
     try {
-      await executeContinuation({ sessionID, action, ops: this.#ops })
+      const alive = await this.#isSessionAlive(sessionID)
+      const recovery: RecoveryOption = { kind: "switch", model }
+      const action = planContinuation({
+        recovery,
+        continuationPossible: alive,
+      })
+      // executeContinuation settles first; the supervisor settles here so the
+      // post-settle guard (mode OFF, user interruption) can abort before any
+      // switch or prompt — the settle is the only step that can take
+      // unbounded time, and a decision made before it may be stale after it.
+      await this.#ops.settle(sessionID)
+      if (!stillValid() || this.#recoveryInterrupted.delete(sessionID)) {
+        throw new RecoveryAbortedError(sessionID)
+      }
+      // Already settled above; the action's own settle is a no-op.
+      await executeContinuation({
+        sessionID,
+        action,
+        ops: { ...this.#ops, settle: () => Promise.resolve() },
+      })
     } catch (error) {
       // The continuation prompt never reached the host, so no unit will open
       // to consume the tier intent — drop it or it would pin the marker
       // wipes and mislabel a later user prompt's admission.
       if (tier !== undefined) this.#continuationTiers.delete(sessionID)
       throw error
+    } finally {
+      this.#recoveryPending.delete(sessionID)
     }
   }
 
@@ -1229,7 +1484,8 @@ export class Supervisor {
     // pruned here (its per-session steering is worthless once the session is
     // gone), in the same sweep that clears the other per-session maps.
     const overrideIDs = this.#sessionModes.snapshot().map((record) => record.sessionID)
-    if (records.length === 0 && overrideIDs.length === 0 && this.#tierRequests.size === 0) return
+    const tierRequestIDs = this.#tierRequests.snapshot().map((record) => record.sessionID)
+    if (records.length === 0 && overrideIDs.length === 0 && tierRequestIDs.length === 0) return
     // OFF sessions are not supervised: their parked records are neither
     // dropped nor resumed, and no alive probe runs for them.
     const supervised = new Set(
@@ -1243,7 +1499,7 @@ export class Supervisor {
     }
     // Tier-request holders join the alive sweep too: a dead session's sticky
     // tier request dies with its session, like the other per-session maps.
-    for (const sessionID of this.#tierRequests.keys()) {
+    for (const sessionID of tierRequestIDs) {
       if (!alive.has(sessionID)) alive.set(sessionID, await this.#isSessionAlive(sessionID))
     }
     const plan = selectResumable(records, {
@@ -1255,8 +1511,17 @@ export class Supervisor {
       await this.#dropParked(dropped)
     }
     // Tier requests die with their session, like the other per-session maps.
-    for (const sessionID of this.#tierRequests.keys()) {
-      if (alive.get(sessionID) === false) this.#tierRequests.delete(sessionID)
+    // The fire-and-forget note means the queue may still hold writes; the
+    // serialized set applies after them. A write failure just leaves the
+    // record (fail-open — it will die with the session on the next sweep).
+    for (const sessionID of tierRequestIDs) {
+      if (alive.get(sessionID) === false) {
+        try {
+          await this.#tierRequests.set(sessionID, null)
+        } catch (error) {
+          logFailOpen("tier-requests", error)
+        }
+      }
     }
     // At most ONE continuation per session per sweep: prompting a session
     // with an active unit would supersede the user's in-flight episode (not
@@ -1301,13 +1566,17 @@ export class Supervisor {
     // report's session's mode.
     const mode = this.#modeFor(record.sessionID, settings)
     let decision: ReturnType<typeof admit>
+    let probeTicket: ProbeTicket | undefined
     try {
-      decision = (await this.#admit(settings, record.sessionID)).decision
+      const admission = await this.#admit(settings, record.sessionID, record.tier)
+      decision = admission.decision
+      probeTicket = admission.probeTicket
     } catch (error) {
       logFailOpen("resume", error)
       return
     }
     if (mode === "observe") {
+      if (probeTicket !== undefined) this.#health.releaseProbe(probeTicket)
       await this.#recordReceipt({
         sessionID: record.sessionID,
         unitID: record.id,
@@ -1317,7 +1586,9 @@ export class Supervisor {
       return
     }
     if (decision.kind !== "apply") {
-      // Still no usable resource (or the routing deferred) — stay parked.
+      // Still no usable resource (or the routing deferred) — stay parked. The
+      // admission held no probe ticket: #admit keeps a ticket only for apply
+      // decisions and releases every other one itself.
       await this.#recordReceipt({
         sessionID: record.sessionID,
         unitID: record.id,
@@ -1327,7 +1598,10 @@ export class Supervisor {
       return
     }
     const popped = await this.#popParked(record)
-    if (popped === undefined) return
+    if (popped === undefined) {
+      if (probeTicket !== undefined) this.#health.releaseProbe(probeTicket)
+      return
+    }
     // The resume continuation is not re-admitted (owned continuation), so
     // the freshly routed admission is recorded here, unit-less; the unit
     // that opens next adopts it and carries the outcome.
@@ -1340,9 +1614,27 @@ export class Supervisor {
     // freshly routed model, then prompt — the episode's first LLM call must
     // not hit the model the work was parked away from.
     try {
-      await this.#ownRecovery(record.sessionID, decision.model, record.tier)
+      if (probeTicket !== undefined) this.#sessionProbeTickets.set(record.sessionID, probeTicket)
+      await this.#ownRecovery(
+        record.sessionID,
+        decision.model,
+        record.tier,
+        // The parked session's own effective mode and its still-open unit
+        // window are re-checked after the settle; a session that gained an
+        // active unit must not be prompted (not a safe boundary).
+        () =>
+          this.#modeFor(record.sessionID, settings) !== "off" &&
+          this.#tracker.active(record.sessionID) === undefined,
+      )
     } catch (error) {
-      logFailOpen("resume", error)
+      if (
+        probeTicket !== undefined &&
+        this.#sessionProbeTickets.get(record.sessionID) === probeTicket
+      ) {
+        this.#sessionProbeTickets.delete(record.sessionID)
+        this.#health.releaseProbe(probeTicket)
+      }
+      if (!(error instanceof RecoveryAbortedError)) logFailOpen("resume", error)
       await this.#rePark(record)
     }
   }
@@ -1374,8 +1666,14 @@ export class Supervisor {
     try {
       await this.#options.session.get({ sessionID })
       return true
-    } catch {
-      return false
+    } catch (error) {
+      // The host rejects `session.get` for a missing session with a plain
+      // error and exposes no typed status; only a definitive not-found
+      // counts as dead. Anything else is treated as alive (fail open toward
+      // keeping durable user state, ADP-031): a transient storage or host
+      // error must never prune parked work, mode overrides, or tier
+      // requests — the next sweep re-probes instead.
+      return !/not found/i.test(String(error))
     }
   }
 

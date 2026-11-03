@@ -41,21 +41,44 @@ export async function registerSessionHooks(
   handlers: SessionHookHandlers,
   options?: SessionHookOptions,
 ): Promise<Registration[]> {
-  const retry = await session.hook("retry", (input) => handlers.onRetry(input))
-  const context = await session.hook("context", (input) =>
-    handlers.onModelRequest(contextModelRequest(input)),
-  )
-  const modelRequest = await session.hook("model.request", (input) =>
-    handlers.onModelRequest(hookModelRequest(input)),
-  )
-  const httpResponse = await session.hook("http.response", async (input) =>
-    handlers.onHttpResponse(await mapHttpResponse(input, options)),
-  )
-  const idle = await session.hook("experimental.idle", (input) =>
-    handlers.onIdle({ kind: "idle", sessionID: input.sessionID }),
-  )
-  const prompt = await session.hook("prompt", (input) =>
-    handlers.onPrompt({ kind: "prompt", sessionID: input.sessionID }),
-  )
-  return [retry, context, modelRequest, httpResponse, idle, prompt]
+  const acquired: Registration[] = []
+  try {
+    acquired.push(await session.hook("retry", (input) => handlers.onRetry(input)))
+    acquired.push(
+      await session.hook("context", (input) => handlers.onModelRequest(contextModelRequest(input))),
+    )
+    acquired.push(
+      await session.hook("model.request", (input) =>
+        handlers.onModelRequest(hookModelRequest(input)),
+      ),
+    )
+    acquired.push(
+      await session.hook("http.response", async (input) =>
+        handlers.onHttpResponse(await mapHttpResponse(input, options)),
+      ),
+    )
+    acquired.push(
+      await session.hook("experimental.idle", (input) =>
+        handlers.onIdle({ kind: "idle", sessionID: input.sessionID }),
+      ),
+    )
+    acquired.push(
+      await session.hook("prompt", (input) =>
+        handlers.onPrompt({ kind: "prompt", sessionID: input.sessionID }),
+      ),
+    )
+    return acquired
+  } catch (error) {
+    // Partial-failure rollback: every hook already registered on the host must
+    // be disposed so a failed setup leaves no half-wired supervisor behind.
+    // Disposal failures are swallowed — the registration failure is the cause.
+    for (const registration of acquired) {
+      try {
+        await registration.dispose()
+      } catch {
+        // Disposal failure must not mask the original registration error.
+      }
+    }
+    throw error
+  }
 }

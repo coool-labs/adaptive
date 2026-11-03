@@ -5,7 +5,7 @@
  * payloads (receipts/parked are parsed back from storage — the stores are
  * private by design).
  */
-// covers: ["ADP-002", "ADP-010", "ADP-013", "ADP-015", "ADP-016", "ADP-024", "ADP-029", "ADP-030", "ADP-031", "ADP-054", "ADP-056"]
+// covers: ["ADP-002", "ADP-010", "ADP-013", "ADP-015", "ADP-016", "ADP-024", "ADP-029", "ADP-030", "ADP-031", "ADP-054", "ADP-055", "ADP-056"]
 import { describe, expect, it, vi } from "vitest"
 
 import type { ModelSource } from "../../src/adapters/opencode/inventory.js"
@@ -15,6 +15,7 @@ import type { SupervisorSessionSource } from "../../src/supervisor/types.js"
 
 import { makeInfo, wireRef } from "../adapters/opencode/helpers.js"
 import { parseReceiptsPayload } from "../../src/state/receipts/index.js"
+import { parseTierRequestsPayload } from "../../src/state/tier-requests/index.js"
 import { parseParkedPayload } from "../../src/state/parked-work/index.js"
 import { RECEIPTS_KEY } from "../../src/state/receipts/types.js"
 import { PARKED_KEY } from "../../src/state/parked-work/types.js"
@@ -25,6 +26,7 @@ import { SETTINGS_KEY } from "../../src/state/settings/types.js"
 import { CAPACITY_KEY } from "../../src/state/capacity/types.js"
 import { HEALTH_KEY } from "../../src/state/health/types.js"
 import { SESSION_MODES_KEY } from "../../src/state/session-modes/types.js"
+import { TIER_REQUESTS_KEY, MAX_TIER_REQUEST_RECORDS } from "../../src/state/tier-requests/types.js"
 import {
   activeStorage,
   FailAfterStorage,
@@ -246,10 +248,10 @@ describe("supervisor", () => {
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED_S1)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       await supervisor.handleReport({
         kind: "execution-failed",
@@ -350,10 +352,10 @@ describe("supervisor", () => {
     // Trip the breaker (threshold 5 outage failures) while no unit is active.
     for (let index = 0; index < 5; index += 1) {
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 5,
         model: ref("prov", "b"),
+        requestKind: "primary",
       })
       await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
     }
@@ -693,6 +695,85 @@ describe("supervisor", () => {
       expect(parseParkedPayload(storedParked(storage))).toHaveLength(0)
     })
 
+    it("keeps resuming when the alive probe fails with a non-Error rejection", async () => {
+      // Only a definitive not-found marks a session dead; a hostile (non-Error)
+      // rejection is a transient/unknown failure — durable state survives it
+      // and the resume proceeds (ADP-031 fail-open toward keeping user work).
+      const log: string[] = []
+      const source = {
+        // A non-Error rejection reason (hostile/transient host behavior): the
+        // eslint rule flags it deliberately — this test exercises that shape.
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        get: () => Promise.reject("boom"),
+        wait: () => Promise.resolve(),
+        switchModel: (input: { model: { id: string } }) => {
+          log.push(`switch:${input.model.id}`)
+          return Promise.resolve()
+        },
+        prompt: (input: { sessionID: string; text: string }) => {
+          log.push(`prompt:${input.text}`)
+          return Promise.resolve({ sessionID: input.sessionID })
+        },
+      }
+      const session = { source, log } as unknown as FakeSupervisorSession
+      const storage = activeStorage()
+      seedParked(storage)
+      const supervisor = makeSupervisor({ storage, session })
+      await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+      expect(log).toEqual([`switch:a`, `prompt:${CONTINUATION_PROMPT}`])
+    })
+
+    it("re-parks without a resume failure log when the user interrupts the settle", async () => {
+      const errors = spyErrors()
+      try {
+        const log: string[] = []
+        const gates: (() => void)[] = []
+        const source = {
+          get: () => Promise.resolve({ sessionID: "s1" }),
+          wait: () =>
+            new Promise<void>((resolve) => {
+              gates.push(resolve)
+            }),
+          switchModel: (input: { model: { id: string } }) => {
+            log.push(`switch:${input.model.id}`)
+            return Promise.resolve()
+          },
+          prompt: (input: { sessionID: string; text: string }) => {
+            log.push(`prompt:${input.text}`)
+            return Promise.resolve({ sessionID: input.sessionID })
+          },
+        }
+        const session = { source } as unknown as FakeSupervisorSession
+        const storage = activeStorage()
+        seedParked(storage)
+        const supervisor = makeSupervisor({ storage, session })
+        // The resume blocks on the host settle, so the interrupt must arrive
+        // while the idle report is still in flight.
+        const idle = supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+        await flush()
+        // The resume is parked in the host settle; the user interrupts.
+        await supervisor.handleReport({
+          kind: "execution-interrupted",
+          sessionID: "s1",
+          at: 10,
+          reason: "user",
+        })
+        gates[0]?.()
+        await idle
+        await flush()
+        // The stale decision must not act; the work is saved again, honestly —
+        // an aborted resume is steering, not an infrastructure failure, so no
+        // resume-failure log line is emitted (ADP-010/ADP-031).
+        expect(log).toEqual([])
+        expect(errors.lines.join("\n")).not.toContain("resume:")
+        const parked = parseParkedPayload(storedParked(storage))
+        expect(parked).toHaveLength(1)
+        expect(parked[0]).toMatchObject({ sessionID: "s1", attempts: 1 })
+      } finally {
+        errors.restore()
+      }
+    })
+
     it("re-parks with a fresh timestamp when the resume prompt fails", async () => {
       const session = new FakeSupervisorSession({ failPrompt: true })
       const storage = activeStorage()
@@ -703,10 +784,52 @@ describe("supervisor", () => {
       expect(parked).toHaveLength(1)
       expect(parked[0]?.parkedAt).toBe(1000)
     })
+
+    // covers: ["ADP-010", "ADP-024"]
+    it("a resume whose session went OFF during the settle is aborted and re-parked", async () => {
+      const log: string[] = []
+      const gates: (() => void)[] = []
+      const source = {
+        get: () => Promise.resolve({ sessionID: "s1" }),
+        wait: () => {
+          log.push("wait:s1")
+          return new Promise<void>((resolve) => {
+            gates.push(resolve)
+          })
+        },
+        switchModel: (input: { sessionID: string; model: { providerID: string; id: string } }) => {
+          log.push(`switch:${input.model.id}`)
+          return Promise.resolve()
+        },
+        prompt: (input: { sessionID: string; text: string }) => {
+          log.push(`prompt:${input.text}`)
+          return Promise.resolve({ sessionID: input.sessionID })
+        },
+      }
+      const session = { source } as unknown as FakeSupervisorSession
+      const storage = activeStorage()
+      seedParked(storage)
+      const supervisor = makeSupervisor({ storage, session })
+      // The resume is parked in the host settle (unbounded wait).
+      const idle = supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+      await flush()
+      await flush()
+      expect(log).toEqual(["wait:s1"])
+      // The user turns the session OFF while the settle is in flight.
+      await supervisor.setSessionMode("s1", "off")
+      gates[0]?.()
+      await idle
+      await flush()
+      // The stale decision must not act; the durable record is kept.
+      expect(log).toEqual(["wait:s1"])
+      expect(parseParkedPayload(storedParked(storage))).toHaveLength(1)
+    })
   })
 
   describe("work-unit model tracking", () => {
-    it("seeds a new unit from the last external model selection", async () => {
+    // ADP-028: the pick is the user's (external selection, no pending own
+    // note), so admission is suppressed and the unit seeds from the pick.
+    it("a user pick seeds the unit's model and suppresses admission until re-enabled", async () => {
       const session = new FakeSupervisorSession()
       const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
@@ -717,16 +840,33 @@ describe("supervisor", () => {
         model: ref("prov", "b"),
       })
       await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 10 })
-      // Admission still applies a (tier policy), but the unit runs seeded with b.
+      // No switch: the session runs on the user's picked model.
+      expect(session.log).toEqual([])
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts[0]?.decision).toEqual({
+        kind: "defer",
+        reason: "routing-defer",
+        detail: "manual-selection",
+      })
       await supervisor.handleReport({
         kind: "execution-failed",
         sessionID: "s1",
         at: 20,
         error: { type: "UnknownError", message: "", status: 429 },
       })
+      // The 429 was attributed to b (the unit's seeded model)...
       await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
-      // The 429 was attributed to b (the unit's model), so a stays preferred.
-      expect(session.log).toEqual(["switch:s1:prov/a", "switch:s1:prov/a"])
+      const after = parseReceiptsPayload(storedReceipts(storage))
+      expect(after[1]?.decision).toEqual({
+        kind: "defer",
+        reason: "routing-defer",
+        detail: "manual-selection",
+      })
+      // ...and once the user asks Adaptive back, a (not blamed for the
+      // failure) is still the preferred resource.
+      supervisor.noteTierRequest("s1", "standard")
+      await supervisor.handleReport({ kind: "prompt", sessionID: "s1" })
+      expect(session.log).toEqual(["switch:s1:prov/a"])
     })
   })
 
@@ -752,6 +892,14 @@ describe("supervisor", () => {
         attempt: 1,
         decision: { retry: true, delay: 100 },
       }
+    }
+
+    /** One-candidate standard tier: no ready sibling can absorb a veto, so
+     * breaker counting is observed directly through admission outcomes. */
+    function singleStorage(): KeyFailStorage {
+      const storage = new KeyFailStorage("unused")
+      seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
+      return storage
     }
 
     it("logs and continues when a report handler throws (fail-open)", async () => {
@@ -784,10 +932,10 @@ describe("supervisor", () => {
       }
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       await supervisor.handleRetry(Object.freeze(input))
       expect(errors.lines[0]).toContain("[coool.adaptive] retry:")
@@ -813,6 +961,42 @@ describe("supervisor", () => {
       await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
       // The 429 was attributed to b (reported via model-request), so a stays healthy.
       expect(session.log).toEqual(["switch:s1:prov/a", "switch:s1:prov/a"])
+    })
+
+    // covers: ["ADP-027", "ADP-013"]
+    it("an auxiliary model request never adopts the primary unit's model attribution", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = activeStorage()
+      const supervisor = makeSupervisor({ storage, session })
+      await supervisor.handleReport(STARTED)
+      // The context hook reports the model actually executing (primary).
+      await supervisor.handleReport({
+        kind: "model-request",
+        sessionID: "s1",
+        model: ref("prov", "a"),
+        requestKind: "primary",
+      })
+      // The host's title/summary generation runs on its own cheap model pick;
+      // that pick must not become the session's (or the unit's) model.
+      await supervisor.handleReport({
+        kind: "model-request",
+        sessionID: "s1",
+        model: ref("prov", "b"),
+        requestKind: "title",
+      })
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 20,
+        error: { type: "UnknownError", message: "", status: 429 },
+      })
+      await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
+      // The 429 belongs to the primary model (a): a is windowed and the
+      // admission falls back to b. Adopting the auxiliary pick would have
+      // blamed b and re-applied a.
+      expect(session.log).toEqual(["switch:s1:prov/a", "switch:s1:prov/b"])
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts[1]?.decision).toMatchObject({ kind: "apply", model: ref("prov", "b") })
     })
 
     it("leaves the retry decision when recovery admission fails", async () => {
@@ -852,10 +1036,10 @@ describe("supervisor", () => {
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       await supervisor.handleRetry({
         sessionID: "s1",
@@ -962,10 +1146,10 @@ describe("supervisor", () => {
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       await supervisor.handleReport({
         kind: "execution-failed",
@@ -993,10 +1177,10 @@ describe("supervisor", () => {
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       await supervisor.handleReport({
         kind: "execution-failed",
@@ -1055,16 +1239,133 @@ describe("supervisor", () => {
       expect(storedReceipts(storage)).toBeUndefined()
     })
 
+    // covers: ["ADP-019"]
+    it("a failed attempt counts once toward the breaker: it trips after exactly the threshold", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = singleStorage()
+      const supervisor = makeSupervisor({ storage, session })
+      // One real failed attempt surfaces through three host signals: the
+      // pumped http-response, the retry hook, and the terminal
+      // execution-failed. Each attempt must count once (ADP-019 threshold 5).
+      const attempt = async (): Promise<void> => {
+        await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
+        await supervisor.handleRetry({
+          sessionID: "s1",
+          model: ref("prov", "a"),
+          error: { type: "UnknownError", message: "", status: 503 },
+          attempt: 1,
+          decision: { retry: false },
+        })
+      }
+      const terminal = async (at: number): Promise<void> => {
+        await supervisor.handleReport({
+          kind: "execution-failed",
+          sessionID: "s1",
+          at,
+          error: { type: "UnknownError", message: "", status: 503 },
+        })
+      }
+      // The context hook reports the executing model each turn: without it
+      // the http-response/terminal signals have no attributable model.
+      const attribute = async (): Promise<void> => {
+        await supervisor.handleReport({
+          kind: "model-request",
+          sessionID: "s1",
+          model: ref("prov", "a"),
+          requestKind: "primary",
+        })
+      }
+      await supervisor.handleReport(STARTED)
+      await attribute()
+      for (let index = 0; index < 4; index += 1) await attempt()
+      await terminal(20)
+      // Four attempts = four counts: the breaker is NOT open yet, so the next
+      // admission still applies the (degraded) preferred resource.
+      await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
+      await attribute()
+      expect(session.log).toEqual(["switch:s1:prov/a", "switch:s1:prov/a"])
+      // The fifth failed attempt trips it.
+      for (let index = 0; index < 1; index += 1) await attempt()
+      await terminal(40)
+      await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 50 })
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts.at(-1)?.decision).toEqual({
+        kind: "park",
+        reason: "all-blocked",
+        detail: "breaker-open",
+      })
+    })
+
+    it("a terminal failure counts only when its attempt left no live evidence", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = singleStorage()
+      const supervisor = makeSupervisor({ storage, session })
+      const hook = async (): Promise<void> => {
+        await supervisor.handleRetry({
+          sessionID: "s1",
+          model: ref("prov", "a"),
+          error: { type: "UnknownError", message: "", status: 503 },
+          attempt: 1,
+          decision: { retry: false },
+        })
+      }
+      const terminal = async (at: number): Promise<void> => {
+        await supervisor.handleReport({
+          kind: "execution-failed",
+          sessionID: "s1",
+          at,
+          error: { type: "UnknownError", message: "", status: 503 },
+        })
+      }
+      const http = async (): Promise<void> => {
+        await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
+      }
+      const startUnit = async (at: number): Promise<void> => {
+        await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at })
+        await supervisor.handleReport({
+          kind: "model-request",
+          sessionID: "s1",
+          model: ref("prov", "a"),
+          requestKind: "primary",
+        })
+      }
+      // hook-only attempt: its terminal is the same attempt (skipped).
+      await startUnit(10)
+      await hook()
+      await terminal(20)
+      // http-only attempt: same rule.
+      await startUnit(30)
+      await http()
+      await terminal(31)
+      // A full http+hook pair closes the attempt; the terminal repeats it.
+      await startUnit(32)
+      await http()
+      await hook()
+      await terminal(33)
+      // A terminal with no live attempt evidence is itself the evidence.
+      await startUnit(34)
+      await terminal(35)
+      // The fifth failed attempt reaches the threshold of 5.
+      await hook()
+      await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 40 })
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts.at(-1)?.decision).toEqual({
+        kind: "park",
+        reason: "all-blocked",
+        detail: "breaker-open",
+      })
+    })
+
     it("honors retryAfterMs from a failed execution as the rate-limit window", async () => {
       const session = new FakeSupervisorSession()
       const storage = activeStorage()
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       await supervisor.handleReport({
         kind: "execution-failed",
@@ -1085,10 +1386,10 @@ describe("supervisor", () => {
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       for (let i = 0; i < 4; i += 1) {
         await supervisor.handleRetry(retryInput429())
@@ -1115,10 +1416,10 @@ describe("supervisor", () => {
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       await supervisor.handleReport({
         kind: "http-response",
@@ -1139,10 +1440,10 @@ describe("supervisor", () => {
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       await supervisor.handleReport({
         kind: "http-response",
@@ -1293,10 +1594,10 @@ describe("supervisor", () => {
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       await supervisor.handleReport({
         kind: "execution-failed",
@@ -1418,10 +1719,10 @@ describe("supervisor", () => {
       // The host names base-model calls variant "default" (2.2.5): that is
       // still prov/a, so the advanced tier's own prov/a is no stronger target.
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: { providerID: "prov", id: "a", variant: "default" },
+        requestKind: "primary",
       })
       await supervisor.handleReport({
         kind: "execution-failed",
@@ -1456,10 +1757,10 @@ describe("supervisor", () => {
       })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       await supervisor.handleReport({
         kind: "execution-failed",
@@ -1603,10 +1904,10 @@ describe("supervisor", () => {
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       await supervisor.handleReport({
         kind: "execution-failed",
@@ -1658,10 +1959,10 @@ describe("supervisor", () => {
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       expect(supervisor.noteEscalationRequest("s1", "needs larger context", "413 on 200k")).toBe(
         true,
@@ -1732,10 +2033,10 @@ describe("supervisor", () => {
         expect(supervisor.noteEscalationRequest("s1", "r", String(index))).toBe(true)
       }
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       await supervisor.handleReport({
         kind: "execution-failed",
@@ -1774,6 +2075,64 @@ describe("supervisor", () => {
       }
     })
 
+    it("swallows an aborted escalation continuation without a failure log", async () => {
+      const errors = spyErrors()
+      try {
+        const log: string[] = []
+        const gates: (() => void)[] = []
+        const source = {
+          get: () => Promise.resolve({ sessionID: "s1" }),
+          wait: () =>
+            new Promise<void>((resolve) => {
+              gates.push(resolve)
+            }),
+          switchModel: (input: { model: { id: string } }) => {
+            log.push(`switch:${input.model.id}`)
+            return Promise.resolve()
+          },
+          prompt: (input: { sessionID: string; text: string }) => {
+            log.push(`prompt:${input.text}`)
+            return Promise.resolve({ sessionID: input.sessionID })
+          },
+        }
+        const session = { source, log } as unknown as FakeSupervisorSession
+        const storage = escalateStorage()
+        const supervisor = makeSupervisor({ storage, session })
+        await supervisor.handleReport(STARTED)
+        await supervisor.handleReport({
+          kind: "model-request",
+          sessionID: "s1",
+          model: ref("prov", "a"),
+          requestKind: "primary",
+        })
+        // The failed episode's escalation continuation blocks on the host
+        // settle, so the interrupt must arrive while it is still in flight.
+        const failed = supervisor.handleReport({
+          kind: "execution-failed",
+          sessionID: "s1",
+          at: 20,
+          error: CONTEXT_OVERFLOW,
+        })
+        await flush()
+        await supervisor.handleReport({
+          kind: "execution-interrupted",
+          sessionID: "s1",
+          at: 20,
+          reason: "user",
+        })
+        gates[0]?.()
+        await failed
+        await flush()
+        // The aborted continuation is steering, not an ops failure: the stale
+        // decision never acts and no escalation-ops log line is emitted.
+        expect(log).toEqual(["switch:a"])
+        expect(errors.lines.join("\n")).not.toContain("escalation-ops")
+        expect(parseParkedPayload(storedParked(storage))).toHaveLength(0)
+      } finally {
+        errors.restore()
+      }
+    })
+
     it("defers with escalation-no-candidate when the inventory read fails (C1)", async () => {
       // The escalation's target evaluation reads the inventory itself (the
       // second listCandidates call); when that read fails there is no
@@ -1805,10 +2164,10 @@ describe("supervisor", () => {
       })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       await supervisor.handleReport({
         kind: "execution-failed",
@@ -1845,20 +2204,20 @@ describe("supervisor", () => {
       const supervisor = makeSupervisor({ storage, session })
       // Trip b's breaker (threshold 5 outage failures) while no unit is active.
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 5,
         model: ref("prov", "b"),
+        requestKind: "primary",
       })
       for (let index = 0; index < 5; index += 1) {
         await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
       }
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
-        kind: "model-selected",
+        kind: "model-request",
         sessionID: "s1",
-        at: 15,
         model: ref("prov", "a"),
+        requestKind: "primary",
       })
       await supervisor.handleReport({
         kind: "execution-failed",
@@ -2082,11 +2441,12 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
 
   /** Five countable outage failures against the session's last model. */
   async function trip(supervisor: Supervisor, now: number): Promise<void> {
+    if (now < 0) return // kept for call-site symmetry; only the model matters
     await supervisor.handleReport({
-      kind: "model-selected",
+      kind: "model-request",
       sessionID: "s1",
-      at: now,
       model: ref("prov", "a"),
+      requestKind: "primary",
     })
     for (let i = 0; i < 5; i += 1) {
       await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
@@ -2322,10 +2682,10 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     // The host reports base-model calls with variant "default" (2.2.5); the
     // observation must count against the bare model the inventory offers.
     await supervisor.handleReport({
-      kind: "model-selected",
+      kind: "model-request",
       sessionID: "s1",
-      at: now,
       model: { providerID: "prov", id: "a", variant: "default" },
+      requestKind: "primary",
     })
     for (let i = 0; i < 5; i += 1) {
       await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
@@ -2460,10 +2820,10 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session, clock })
     await supervisor.handleReport({
-      kind: "model-selected",
+      kind: "model-request",
       sessionID: "s1",
-      at: now,
       model: ref("prov", "b"),
+      requestKind: "primary",
     })
     for (let i = 0; i < 5; i += 1) {
       await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
@@ -2482,6 +2842,40 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
       reason: "probe",
       model: ref("prov", "b"),
       evidence: { skipped: [{ ref: ref("prov", "a"), why: "breaker-open" }] },
+    })
+  })
+
+  // covers: ["ADP-024", "ADP-019"]
+  it("an observe-mode resume releases the probe its admission issued (never wedges half-open)", async () => {
+    let now = 0
+    const clock = (): number => now
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    seed(storage, SETTINGS_KEY, settingsJSON("observe", { standard: [wireRef("prov", "a")] }))
+    seed(storage, PARKED_KEY, {
+      version: 1,
+      parked: [
+        { id: "s1#1", sessionID: "s1", tier: "standard", reason: "all-blocked", parkedAt: 5 },
+      ],
+    })
+    const supervisor = makeSupervisor({ storage, session, clock })
+    await trip(supervisor, now)
+    // The resume admission consumes a's due probe, but OBSERVE never runs the
+    // probe episode: the ticket must be released at the resume boundary.
+    now = 40_000
+    await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+    let receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts[0]?.decision).toMatchObject({
+      kind: "observe-only",
+      would: { kind: "apply", reason: "probe" },
+    })
+    // The next sweep sees the probe due again, not stuck probe-in-flight.
+    now = 50_000
+    await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+    receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts.at(-1)?.decision).toMatchObject({
+      kind: "observe-only",
+      would: { kind: "apply", reason: "probe" },
     })
   })
 
@@ -2629,10 +3023,10 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     const supervisor = makeSupervisor({ storage, session, clock })
     await trip(supervisor, now)
     await supervisor.handleReport({
-      kind: "model-selected",
+      kind: "model-request",
       sessionID: "s1",
-      at: now,
       model: ref("prov", "b"),
+      requestKind: "primary",
     })
     for (let i = 0; i < 5; i += 1) {
       await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
@@ -2718,6 +3112,98 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     })
   })
 
+  it("a recovery whose session went OFF during the settle is aborted before any switch or prompt", async () => {
+    const log: string[] = []
+    const gates: (() => void)[] = []
+    const source = {
+      get: () => Promise.resolve({ sessionID: "s1" }),
+      wait: () =>
+        new Promise<void>((resolve) => {
+          gates.push(resolve)
+        }),
+      switchModel: (input: { sessionID: string; model: { providerID: string; id: string } }) => {
+        log.push(`switch:${input.model.id}`)
+        return Promise.resolve()
+      },
+      prompt: (input: { sessionID: string; text: string }) => {
+        log.push(`prompt:${input.text}`)
+        return Promise.resolve({ sessionID: input.sessionID })
+      },
+    }
+    const session = { source } as unknown as FakeSupervisorSession
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.handleReport(STARTED_S1)
+    const input = retryInput()
+    await supervisor.handleRetry(input)
+    expect(input.decision).toEqual({ retry: false })
+    await flush()
+    // The recovery is parked in the host settle (unbounded wait).
+    expect(log).toEqual(["switch:a"])
+    // The user turns the session OFF while the settle is in flight.
+    await supervisor.setSessionMode("s1", "off")
+    gates[0]?.()
+    await flush()
+    // The stale decision must not act: no recovery switch, no prompt.
+    expect(log).toEqual(["switch:a"])
+  })
+
+  // covers: ["ADP-010", "ADP-019"]
+  it("a user interruption during the settle aborts the recovery and releases its probe", async () => {
+    let now = 0
+    const clock = (): number => now
+    const log: string[] = []
+    const gates: (() => void)[] = []
+    const source = {
+      get: () => Promise.resolve({ sessionID: "s1" }),
+      wait: () =>
+        new Promise<void>((resolve) => {
+          gates.push(resolve)
+        }),
+      switchModel: (input: { sessionID: string; model: { providerID: string; id: string } }) => {
+        log.push(`switch:${input.model.id}`)
+        return Promise.resolve()
+      },
+      prompt: (input: { sessionID: string; text: string }) => {
+        log.push(`prompt:${input.text}`)
+        return Promise.resolve({ sessionID: input.sessionID })
+      },
+    }
+    const session = { source } as unknown as FakeSupervisorSession
+    const storage = singleStorage()
+    const supervisor = makeSupervisor({ storage, session, clock })
+    await trip(supervisor, now)
+    now = 40_000
+    const input = retryInput()
+    input.error = { type: "UnknownError", message: "", status: 503 }
+    await supervisor.handleRetry(input)
+    expect(input.decision).toEqual({ retry: false })
+    await flush()
+    // The recovery consumed a's due probe and is parked in the settle.
+    // The user interrupts while it waits.
+    await supervisor.handleReport({
+      kind: "execution-interrupted",
+      sessionID: "s1",
+      at: now,
+      reason: "user",
+    })
+    gates[0]?.()
+    await flush()
+    // No owned continuation ran (ADP-010: user cancellation never triggers
+    // failover), and the probe was released: a is probed again at once
+    // instead of wedged half-open. The only switch is that fresh probe
+    // admission's.
+    now = 50_000
+    await supervisor.handleReport(PROMPT_S1)
+    expect(log).toEqual(["switch:a"])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts.at(-1)?.decision).toMatchObject({
+      kind: "apply",
+      reason: "probe",
+      model: ref("prov", "a"),
+    })
+  })
+
   it("a new veto releases the probe ticket whose continuation it replaces", async () => {
     let now = 0
     const clock = (): number => now
@@ -2737,10 +3223,10 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     const supervisor = makeSupervisor({ storage, session, clock })
     await trip(supervisor, now)
     await supervisor.handleReport({
-      kind: "model-selected",
+      kind: "model-request",
       sessionID: "s1",
-      at: now,
       model: ref("prov", "b"),
+      requestKind: "primary",
     })
     for (let i = 0; i < 5; i += 1) {
       await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
@@ -3259,6 +3745,162 @@ describe("review regressions (continuation admission, idle sweep, escalation tar
   })
 })
 
+describe("manual model selection (ADP-028: Adaptive never fights manual model changes)", () => {
+  const PROMPT_S1 = { kind: "prompt", sessionID: "s1" } as const
+
+  it("a user model pick disables prompt admission until Adaptive or the user re-enables", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    // The user picks b (an external selection event, no pending own note).
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 5,
+      model: ref("prov", "b"),
+    })
+    await supervisor.handleReport(PROMPT_S1)
+    // The prompt must NOT switch away from the model the user just chose.
+    expect(session.log).toEqual([])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts[0]?.decision).toEqual({
+      kind: "defer",
+      reason: "routing-defer",
+      detail: "manual-selection",
+    })
+  })
+
+  it("execution-started routing is suppressed for a manually selected session too", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 5,
+      model: ref("prov", "b"),
+    })
+    await supervisor.handleReport(STARTED_S1)
+    expect(session.log).toEqual([])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts[0]?.unitID).toBe("s1#1")
+    expect(receipts[0]?.decision).toEqual({
+      kind: "defer",
+      reason: "routing-defer",
+      detail: "manual-selection",
+    })
+  })
+
+  it("an adaptive switch re-enables routing (the next selection echo is Adaptive's)", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 5,
+      model: ref("prov", "b"),
+    })
+    await supervisor.handleReport(PROMPT_S1)
+    expect(parseReceiptsPayload(storedReceipts(storage))[0]?.decision).toMatchObject({
+      detail: "manual-selection",
+    })
+    // A failure on a foreign model vetoes native retry; the owned recovery
+    // switches onto a — an ADAPTIVE switch (the pending own-switch note).
+    await supervisor.handleRetry({
+      sessionID: "s1",
+      model: ref("other", "x"),
+      error: { type: "UnknownError", message: "", status: 429 },
+      attempt: 1,
+      decision: { retry: true, delay: 100 },
+    })
+    await flush()
+    // The host echoes the adaptive switch as a selection event; the tracker
+    // attributes it to Adaptive, which re-enables prompt routing.
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 10,
+      model: ref("prov", "a"),
+    })
+    // The owned continuation's prompt hook (marker consumed, no admission),
+    // then the fresh user prompt after it: routing is re-enabled and a is
+    // applied again.
+    await supervisor.handleReport(PROMPT_S1)
+    await supervisor.handleReport(STARTED_S1)
+    await supervisor.handleReport(PROMPT_S1)
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts.at(-1)?.decision).toMatchObject({ kind: "apply", reason: "preferred" })
+    expect(session.log.at(-1)).toBe("switch:s1:prov/a")
+  })
+
+  it("a tier request re-enables routing for the session", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 5,
+      model: ref("prov", "b"),
+    })
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual([])
+    supervisor.noteTierRequest("s1", "standard")
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual(["switch:s1:prov/a"])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts[1]?.tier).toBe("standard")
+    expect(receipts[1]?.decision).toMatchObject({ kind: "apply", model: ref("prov", "a") })
+  })
+
+  it("a standing settings pin overrides manual-selection suppression", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    seed(
+      storage,
+      SETTINGS_KEY,
+      settingsJSON("active", { standard: [wireRef("prov", "a")] }, wireRef("prov", "b")),
+    )
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 5,
+      model: ref("prov", "a"),
+    })
+    await supervisor.handleReport(PROMPT_S1)
+    // The pin is the user's standing instruction: it still applies.
+    expect(session.log).toEqual(["switch:s1:prov/b"])
+  })
+
+  it("evicts the oldest manual selection past the bounded capacity", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    for (let i = 0; i < Supervisor.MAX_MANUAL_SELECTIONS; i++) {
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: `s${String(i)}`,
+        at: i,
+        model: ref("prov", "b"),
+      })
+    }
+    // One more pushes the oldest out: s0's admission routes again...
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s-new",
+      at: 1,
+      model: ref("prov", "b"),
+    })
+    await supervisor.handleReport({ kind: "prompt", sessionID: "s0" })
+    expect(session.log).toEqual(["switch:s0:prov/a"])
+    // ...while a recent manual pick is still suppressed.
+    await supervisor.handleReport({ kind: "prompt", sessionID: "s-new" })
+    expect(session.log).toEqual(["switch:s0:prov/a"])
+  })
+})
+
 describe("per-session mode overrides (ADP-054)", () => {
   const PROMPT_S1 = { kind: "prompt", sessionID: "s1" } as const
 
@@ -3293,7 +3935,7 @@ describe("per-session mode overrides (ADP-054)", () => {
       ...session.source,
       get: (input: { sessionID: string }) =>
         input.sessionID === deadSessionID
-          ? Promise.reject(new Error("session gone"))
+          ? Promise.reject(new Error("session not found"))
           : session.source.get(input),
     }
     const infos = [makeInfo("prov", "a"), makeInfo("prov", "b")]
@@ -3492,6 +4134,47 @@ describe("per-session mode overrides (ADP-054)", () => {
     expect(payload.records).toEqual([])
   })
 
+  // covers: ["ADP-024", "ADP-031"]
+  it("a transient session.get error never destroys durable state at the sweep", async () => {
+    // Only a definitive not-found counts as a dead session: a transient
+    // storage/host error must not prune parked work, overrides, or tier
+    // requests — the sweep leaves them for the next idle boundary.
+    const storage = observeStorage({ standard: [wireRef("prov", "a")] })
+    seedParked(storage)
+    seedOverride(storage, "s1", "observe")
+    const session = new FakeSupervisorSession()
+    const source = {
+      ...session.source,
+      get: () => Promise.reject(new Error("storage hiccup, try again")),
+    }
+    const infos = [makeInfo("prov", "a"), makeInfo("prov", "b")]
+    const model = {
+      transform: (cb: (editor: unknown) => unknown) => {
+        const editor = {
+          list: () => infos,
+          get: (providerID: string, modelID: string) =>
+            infos.find((info) => info.providerID === providerID && info.id === modelID),
+        }
+        cb(editor)
+        return Promise.resolve({ dispose: () => Promise.resolve() })
+      },
+    } as unknown as ModelSource
+    const supervisor = new Supervisor({
+      session: source as unknown as SupervisorSessionSource,
+      model,
+      storage: storage.source,
+      clock: () => 1000,
+    })
+    supervisor.noteTierRequest("s1", "quick")
+    await supervisor.handleReport({ kind: "idle", sessionID: "s2" })
+    // The parked record was not destroyed (observe mode leaves it parked and
+    // the transient error left the session "alive"), and neither were the
+    // override and the tier request.
+    expect(parseParkedPayload(storedParked(storage))).toHaveLength(1)
+    expect(await supervisor.getSessionMode("s1")).toBe("observe")
+    expect(await supervisor.getTierRequest("s1")).toBe("quick")
+  })
+
   it("an overridden session keeps its override when it is alive at idle", async () => {
     const storage = observeStorage({ standard: [wireRef("prov", "a")] })
     seedParked(storage)
@@ -3515,7 +4198,7 @@ describe("tier requests (ADP-055)", () => {
       ...session.source,
       get: (input: { sessionID: string }) =>
         input.sessionID === deadSessionID
-          ? Promise.reject(new Error("session gone"))
+          ? Promise.reject(new Error("session not found"))
           : session.source.get(input),
     }
     const infos = [makeInfo("prov", "a"), makeInfo("prov", "b")]
@@ -3620,14 +4303,67 @@ describe("tier requests (ADP-055)", () => {
   it("evicts the oldest tier request past the bounded capacity", async () => {
     const session = new FakeSupervisorSession()
     const storage = activeStorage()
-    const supervisor = makeSupervisor({ storage, session })
-    for (let i = 0; i < Supervisor.MAX_TIER_REQUESTS; i++) {
+    // An incrementing clock stamps each request, so the store's newest-first
+    // bound evicts the earliest-stamped one.
+    let now = 0
+    const supervisor = makeSupervisor({ storage, session, clock: () => ++now })
+    for (let i = 0; i < MAX_TIER_REQUEST_RECORDS; i++) {
       supervisor.noteTierRequest(`s${String(i)}`, "standard")
     }
     // One more pushes the oldest (s0) out; the newest still rides.
     supervisor.noteTierRequest("s-new", "quick")
     expect(await supervisor.getTierRequest("s0")).toBeNull()
+    expect(await supervisor.getTierRequest("s1")).toBe("standard")
     expect(await supervisor.getTierRequest("s-new")).toBe("quick")
+    const persisted = parseTierRequestsPayload(storage.data.get(TIER_REQUESTS_KEY))
+    expect(persisted).toHaveLength(MAX_TIER_REQUEST_RECORDS)
+  })
+
+  it("a tier request noted before load is dropped fail-open when its write fails", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage(TIER_REQUESTS_KEY)
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
+    const supervisor = makeSupervisor({ storage, session })
+    expect(supervisor.noteTierRequest("s1", "quick")).toBe(true)
+    expect(await supervisor.getTierRequest("s1")).toBeNull()
+    // The prompt admits normally (the lost record is the in-memory era's
+    // restart degradation, never a crash).
+    await supervisor.handleReport(PROMPT_S1)
+    expect(session.log).toEqual(["switch:s1:prov/a"])
+  })
+
+  it("a tier request recorded through one instance is visible to a second instance sharing the storage", async () => {
+    // The TUI host loads the plugin twice (hooks instance vs RPC instance);
+    // the request must travel through the persisted mirror, not live only on
+    // the instance that recorded it.
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const recorder = makeSupervisor({ storage, session })
+    expect(recorder.noteTierRequest("s1", "quick")).toBe(true)
+    // Flush the recorder's queue so the persisted write has committed before
+    // the second instance hydrates.
+    expect(await recorder.getTierRequest("s1")).toBe("quick")
+    const router = makeSupervisor({ storage, session: new FakeSupervisorSession() })
+    expect(await router.getTierRequest("s1")).toBe("quick")
+  })
+
+  it("a dead session's tier request survives a failed prune write at the idle sweep", async () => {
+    const errors = spyErrors()
+    const storage = new KeyFailStorage(TIER_REQUESTS_KEY)
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
+    seed(storage, TIER_REQUESTS_KEY, {
+      version: 1,
+      records: [
+        { sessionID: "s2", tier: "advanced", updatedAt: 1000 },
+        { sessionID: "s1", tier: "quick", updatedAt: 1001 },
+      ],
+    })
+    const { supervisor } = supervisorWithDeadSession(storage, "s2")
+    await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+    // The prune write failed: the record stays (fail-open), the sweep moves on.
+    expect(await supervisor.getTierRequest("s2")).toBe("advanced")
+    expect(await supervisor.getTierRequest("s1")).toBe("quick")
+    errors.restore()
   })
 
   it("does not re-probe a session that already joined the sweep", async () => {

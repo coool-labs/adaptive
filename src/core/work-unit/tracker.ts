@@ -24,12 +24,36 @@ import {
   type ModelSource,
   type ModelTransition,
   type OpenedResult,
+  type SelectionResult,
   type WorkUnitEvent,
 } from "./types.js"
 
+/** Insert into a bounded map, evicting the oldest (first) entry past the cap. */
+function setBounded<K, V>(map: Map<K, V>, key: K, value: V, cap: number): void {
+  if (!map.has(key) && map.size >= cap) {
+    for (const oldest of map.keys()) {
+      map.delete(oldest)
+      break
+    }
+  }
+  map.set(key, value)
+}
+
 export class WorkUnitTracker {
   readonly #active = new Map<string, ActiveUnit>()
+  // Intentionally unbounded: evicting an episode counter could re-mint a unit
+  // id (`${sessionID}#${episode}`) that a persisted receipt or parked record
+  // already carries — a collision replaces parked work. The map holds one
+  // number per session ever seen; that growth is bounded by session churn,
+  // not by episodes.
   readonly #episodes = new Map<string, number>()
+  /**
+   * Bounded per-session maps (last model, pending own-switch note): a
+   * long-lived host meets unbounded short-lived sessions, and the model
+   * knowledge of a long-gone session is worthless. Insertion order gives the
+   * eviction (oldest session first).
+   */
+  static readonly MAX_TRACKED_SESSIONS = 1024
   readonly #lastModel = new Map<string, ModelTransition>()
   readonly #pendingOwn = new Map<string, ModelRef>()
 
@@ -38,7 +62,7 @@ export class WorkUnitTracker {
    * `model-selected` event for this session.
    */
   noteOwnSwitch(sessionID: string, model: ModelRef): void {
-    this.#pendingOwn.set(sessionID, model)
+    setBounded(this.#pendingOwn, sessionID, model, WorkUnitTracker.MAX_TRACKED_SESSIONS)
   }
 
   /**
@@ -56,6 +80,9 @@ export class WorkUnitTracker {
 
   /** Apply an execution-started event; the tracker always opens a unit. */
   apply(event: Extract<WorkUnitEvent, { kind: "execution-started" }>): OpenedResult
+  apply(
+    event: Extract<WorkUnitEvent, { kind: "model-selected" | "model-request" }>,
+  ): SelectionResult
   apply(event: WorkUnitEvent): ApplyResult
   apply(event: WorkUnitEvent): ApplyResult {
     switch (event.kind) {
@@ -122,11 +149,6 @@ export class WorkUnitTracker {
     return this.#active.get(sessionID)
   }
 
-  /** All currently open units, in insertion order. */
-  activeAll(): ActiveUnit[] {
-    return [...this.#active.values()]
-  }
-
   /** Last model known to be in effect for a session, across episodes. */
   lastModel(sessionID: string): ModelTransition | undefined {
     return this.#lastModel.get(sessionID)
@@ -145,7 +167,7 @@ export class WorkUnitTracker {
 
   #trackModel(sessionID: string, at: number, model: ModelRef, source: ModelSource): ApplyResult {
     const transition: ModelTransition = { at, model, source }
-    this.#lastModel.set(sessionID, transition)
+    setBounded(this.#lastModel, sessionID, transition, WorkUnitTracker.MAX_TRACKED_SESSIONS)
     const current = this.#active.get(sessionID)
     if (current === undefined) return { kind: "model-noted", transition }
     const unit: ActiveUnit = {

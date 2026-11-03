@@ -142,6 +142,12 @@ export type IgnoredReason = (typeof IGNORED_REASONS)[number]
 /** Result of an execution-started event: the tracker always opens (possibly superseding). */
 export type OpenedResult = Extract<ApplyResult, { kind: "opened" }>
 
+/** Result of a selection event: the tracker always records model knowledge. */
+export type SelectionResult = Extract<
+  ApplyResult,
+  { kind: "model-noted" } | { kind: "model-tracked" }
+>
+
 export type ApplyResult =
   | {
       readonly kind: "opened"

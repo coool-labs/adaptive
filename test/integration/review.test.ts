@@ -46,32 +46,37 @@ describe("decision review", () => {
   })
 
   it("decides identically in observe and control modes", async () => {
-    const events = (): {
-      start: { kind: "execution-started"; sessionID: string; at: number }
-      select: {
-        kind: "model-selected"
+    const events = (): [
+      { kind: "execution-started"; sessionID: string; at: number },
+      {
+        kind: "model-request"
         sessionID: string
-        at: number
         model: { providerID: string; id: string }
-      }
-      fail: {
+        requestKind: "primary"
+      },
+      {
         kind: "execution-failed"
         sessionID: string
         at: number
         error: { type: string; message: string; status: number }
-      }
-      next: { kind: "execution-started"; sessionID: string; at: number }
-    } => ({
-      start: { kind: "execution-started", sessionID: "s1", at: 10 },
-      select: { kind: "model-selected", sessionID: "s1", at: 15, model: ref("prov", "a") },
-      fail: {
+      },
+      { kind: "execution-started"; sessionID: string; at: number },
+    ] => [
+      { kind: "execution-started", sessionID: "s1", at: 10 },
+      {
+        kind: "model-request",
+        sessionID: "s1",
+        model: ref("prov", "a"),
+        requestKind: "primary",
+      },
+      {
         kind: "execution-failed",
         sessionID: "s1",
         at: 20,
         error: { type: "UnknownError", message: "", status: 429 },
       },
-      next: { kind: "execution-started", sessionID: "s1", at: 30 },
-    })
+      { kind: "execution-started", sessionID: "s1", at: 30 },
+    ]
 
     const observeStorage = activeStorage()
     seed(
@@ -86,7 +91,7 @@ describe("decision review", () => {
       session: new FakeSupervisorSession(),
     })
     const e = events()
-    for (const report of [e.start, e.select, e.fail, e.next]) {
+    for (const report of e) {
       await observe.handleReport(report)
     }
 
@@ -95,7 +100,7 @@ describe("decision review", () => {
       storage: activeStorage2,
       session: new FakeSupervisorSession(),
     })
-    for (const report of [e.start, e.select, e.fail, e.next]) {
+    for (const report of events()) {
       await control.handleReport(report)
     }
 
@@ -156,7 +161,7 @@ describe("decision review", () => {
     expect(receipts.at(-1)?.outcome).toEqual({ status: "interrupted", reason: "user" })
   })
 
-  it("respects a manual switch and falls back only after its failure", async () => {
+  it("a manual switch stands and is never reverted until the user re-enables", async () => {
     const storage = activeStorage()
     const session = new FakeSupervisorSession()
     const supervisor = makeSupervisor({ storage, session })
@@ -170,15 +175,21 @@ describe("decision review", () => {
       error: { type: "UnknownError", message: "", status: 429 },
     })
     await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
-    // Unit 1 tracks b (not reverted); its 429 blocks b, so unit 2 falls
-    // back to a within the same tier.
+    // The pick stands: no admission switch, and the defer receipt records why.
     const receipts = parseReceiptsPayload(storedReceipts(storage))
-    expect(receipts[0]?.decision).toMatchObject({ kind: "apply", model: ref("prov", "a") })
-    expect(receipts[1]?.decision).toMatchObject({
-      kind: "apply",
-      reason: "preferred",
-      model: ref("prov", "a"),
+    expect(receipts[0]?.decision).toEqual({
+      kind: "defer",
+      reason: "routing-defer",
+      detail: "manual-selection",
     })
+    expect(session.log).toEqual([])
+    // The 429 was attributed to b (the picked model): once the user asks
+    // Adaptive back, a — not blamed for the failure — is still preferred.
+    supervisor.noteTierRequest("s1", "standard")
+    await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 40 })
+    const reEnabled = parseReceiptsPayload(storedReceipts(storage)).at(-1)
+    expect(reEnabled?.decision).toMatchObject({ kind: "apply", model: ref("prov", "a") })
+    expect(session.log).toEqual(["switch:s1:prov/a"])
   })
 
   it("applies a draining candidate when no ready equivalent exists", async () => {
