@@ -9,6 +9,11 @@ export const TIERS = ["quick", "standard", "advanced"] as const satisfies readon
 
 export type TierName = (typeof TIERS)[number]
 
+/** Vocabulary guard without a cast: strict member equality. */
+export function isTierName(tier: string): tier is TierName {
+  return TIERS.some((name) => name === tier)
+}
+
 /**
  * Request kinds the OpenCode `context` hook exposes for the executing
  * request. Auxiliary kinds are trivial host-internal requests (title,
