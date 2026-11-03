@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — 2026-11-03
+
+Post-release review fixes: correctness, durability, and honest behavior — no new features.
+
+### Fixed
+
+- Tier requests persist through a bounded store (ADP-055): a request recorded through the TUI's RPC instance now reaches the routing instance without a restart (the TUI host loads the plugin twice).
+- A preferred resource whose breaker is due for its half-open probe is probed at its preferred position instead of being passed over for a ready sibling — it can actually fail back; probes that never dispatch are released still-due instead of restarting their backoff, and a probe's real outcome reaches the breaker instead of being swallowed by unit cleanup.
+- Escalation budget is finite per task (one user prompt and its continuations), not per unit (ADP-015); escalation never targets the resource that failed when the host reports it as variant `default`.
+- Quota exhaustion without a reset time is bounded by a default window instead of blocking the resource permanently (ADP-012); persisted parsers reject — rather than rewrite — malformed keys, windows, and usage above 100% (a Codex window reporting >100% voids the snapshot instead of leaving the other window to speak for it).
+- Manual model selections are honored (ADP-028): a user pick suppresses Adaptive's prompt admission for the session until a tier request, mode change, or settings pin steers back; auxiliary requests (titles, compaction) no longer overwrite primary model attribution; one failed attempt counts once toward the breaker instead of up to three times.
+- Persistent stores (receipts, parked work, session modes, tier requests, capacity, health, settings) serialize their mutations, so concurrent reports can no longer lose updates or duplicate receipt IDs.
+- A failed plugin setup rolls back its registrations instead of leaking hooks and subscriptions; cleanup awaits every disposal; hook registration failures roll back already-acquired hooks.
+- RPC: the schema gate rejects empty and oversized session identifiers, read failures reach the client through a declared internal error (with their message) instead of a generic defect, and internal failures are logged rather than thrown.
+- Interrupted recoveries re-check the session before continuing (user interruption or mode `off` during the settle aborts the recovery); a session-read failure no longer prunes durable state except when the session is truly gone; tracker maps are bounded.
+- The TUI carries the host location on every RPC call, so project-local installs reach the handlers; rejected dialogs settle instead of leaving the menu hanging.
+- The tier editor refetches settings every pass (no stale rows); the status table renders window/reset times as full dates; receipt reasons are explained honestly (including `pin-incompatible`, `escalation-not-justified`, `escalation-budget-exhausted`); the GUI rolls back an unsaved dropdown after a failed save.
+- Packaging: `dist` is cleaned at build (no stale files ship), the Darwin-only PTY is no longer a required devDependency (works on any platform via `npm ci`), and source maps carry their sources.
+
 ## [1.0.0] — 2026-11-03
 
 Initial release.
@@ -28,4 +47,5 @@ Initial release.
 - Capacity awareness from provider response headers (best-effort, never load-bearing).
 - Fail-open on internal plugin failure; privacy and configured-provider restrictions fail closed.
 
+[1.0.1]: https://github.com/Hacklone/opencode-adaptive/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Hacklone/opencode-adaptive/releases/tag/v1.0.0

@@ -1,6 +1,6 @@
 {
   "name": "@coool/opencode-adaptive",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Execution supervisor plugin for OpenCode v2: capability-tier routing, structured-evidence escalation, horizontal failure recovery, and resource health tracking.",
   "type": "module",
   "license": "MIT",
