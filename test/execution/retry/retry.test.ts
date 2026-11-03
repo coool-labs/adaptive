@@ -61,14 +61,11 @@ describe("decideRetry", () => {
     expect(decision).toEqual({ kind: "veto", model: OTHER })
   })
 
-  it("carries the probe id of a probe-admitted recovery candidate", () => {
+  it("never carries the probe id in the veto (the supervisor tracks its own tickets)", () => {
     const recovery: RecoveryOption = { kind: "switch", model: OTHER, probeId: "p7" }
-    expect(decideRetry(input({ recovery }))).toEqual({ kind: "veto", model: OTHER, probeId: "p7" })
-  })
-
-  it("does not add a probeId field when the recovery has none", () => {
-    const decision = decideRetry(input())
-    expect(decision.kind === "veto" && "probeId" in decision).toBe(false)
+    const decision = decideRetry(input({ recovery }))
+    expect(decision).toEqual({ kind: "veto", model: OTHER })
+    expect("probeId" in decision).toBe(false)
   })
 
   it("vetoes at the last budget slot", () => {
@@ -234,8 +231,7 @@ describe("properties", () => {
     if (i.vetoesUsed >= MAX_VETOES_PER_UNIT) {
       return { kind: "leave" }
     }
-    const { model, probeId } = i.recovery
-    return probeId === undefined ? { kind: "veto", model } : { kind: "veto", model, probeId }
+    return { kind: "veto", model: i.recovery.model }
   }
 
   it("matches the independently written veto oracle", () => {

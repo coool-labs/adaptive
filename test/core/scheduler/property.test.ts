@@ -208,30 +208,21 @@ describe("admit properties — pin routing", () => {
 })
 
 describe("planEscalation properties", () => {
-  const ladderArb = fc.uniqueArray(fc.string({ minLength: 1 }), { maxLength: 4 })
-
   function escalationArb(): fc.Arbitrary<EscalationInput> {
-    return ladderArb.chain((ladder) =>
-      fc
-        .record({
-          variantPos: fc.option(fc.nat(Math.max(0, ladder.length - 1)), { nil: undefined }),
-          tier: fc.constantFrom(...TIERS),
-          budgetMax: fc.nat(6),
-          kind: fc.constantFrom(...ESCALATION_EVIDENCE_KINDS),
-          nextResources: fc.array(modelRefArb, { maxLength: 3 }),
-        })
-        .map(({ variantPos, tier, budgetMax, kind, nextResources }): EscalationInput => ({
-          currentModel:
-            ladder.length > 0 && variantPos !== undefined
-              ? { providerID: "p", id: "m", variant: ladder[variantPos] }
-              : { providerID: "p", id: "m" },
-          currentTier: tier,
-          variantLadder: ladder,
-          nextTierResources: nextResources,
-          evidence: [{ kind, detail: "structured evidence" }],
-          budget: { used: 0, max: budgetMax },
-        })),
-    )
+    return fc
+      .record({
+        tier: fc.constantFrom(...TIERS),
+        budgetMax: fc.nat(6),
+        kind: fc.constantFrom(...ESCALATION_EVIDENCE_KINDS),
+        nextResources: fc.array(modelRefArb, { maxLength: 3 }),
+      })
+      .map(({ tier, budgetMax, kind, nextResources }): EscalationInput => ({
+        currentModel: { providerID: "p", id: "m" },
+        currentTier: tier,
+        nextTierResources: nextResources,
+        evidence: [{ kind, detail: "structured evidence" }],
+        budget: { used: 0, max: budgetMax },
+      }))
   }
 
   it("only escalates strictly upward with bounded evidence and budget", () => {
@@ -244,48 +235,25 @@ describe("planEscalation properties", () => {
       expect(decision.evidence.length).toBeLessThanOrEqual(4)
       expect(decision.budgetRemaining).toBe(input.budget.max - input.budget.used - 1)
       expect(decision.budgetRemaining).toBeGreaterThanOrEqual(0)
-      const currentTierIndex = TIERS.indexOf(input.currentTier)
-      const targetTierIndex = TIERS.indexOf(decision.tier)
-      expect(targetTierIndex).toBeGreaterThanOrEqual(currentTierIndex)
-      if (decision.step === "variant") {
-        // Same model, strictly stronger variant on the ladder.
-        expect(decision.tier).toBe(input.currentTier)
-        expect(decision.target.providerID).toBe(input.currentModel.providerID)
-        expect(decision.target.id).toBe(input.currentModel.id)
-        const current = input.currentModel.variant
-        expect(current).toBeDefined()
-        const ladder = input.variantLadder ?? []
-        if (current !== undefined) {
-          const next = ladder[ladder.indexOf(current) + 1]
-          expect(decision.target.variant).toBe(next)
-          expect(ladder.indexOf(decision.target.variant ?? "")).toBeGreaterThan(
-            ladder.indexOf(current),
-          )
-        }
-      } else {
-        // Next tier, first configured resource in user order.
-        expect(decision.tier).toBe(nextTier(input.currentTier))
-        expect(input.currentTier).not.toBe("advanced")
-        const first = input.nextTierResources[0]
-        expect(first).toBeDefined()
-        expect(decision.target).toEqual(first)
-      }
+      // Next tier, first configured resource in user order.
+      expect(decision.tier).toBe(nextTier(input.currentTier))
+      expect(input.currentTier).not.toBe("advanced")
+      const first = input.nextTierResources[0]
+      expect(first).toBeDefined()
+      expect(decision.target).toEqual(first)
     })
     expect(fc.check(prop, { numRuns: 300 }).failed).toBe(false)
   })
 
-  it("terminates within the budget and the structural ladder bound", () => {
+  it("terminates within the budget across chained steps", () => {
     const prop = fc.property(escalationArb(), (start) => {
       let used = 0
       let tier = start.currentTier
-      let model = start.currentModel
-      let ladder: readonly string[] | undefined = start.variantLadder
       let steps = 0
       for (;;) {
         const decision = planEscalation({
-          currentModel: model,
+          currentModel: { providerID: "p", id: "m" },
           currentTier: tier,
-          variantLadder: ladder,
           nextTierResources: [{ providerID: "next", id: "resource" }],
           evidence: [{ kind: "repeated-failure", detail: "structured" }],
           budget: { used, max: start.budget.max },
@@ -295,13 +263,8 @@ describe("planEscalation properties", () => {
         }
         steps += 1
         used += 1
-        if (decision.step === "tier") {
-          tier = decision.tier
-          ladder = undefined
-        }
-        model = decision.target
+        tier = decision.tier
         expect(used).toBeLessThanOrEqual(start.budget.max)
-        expect(steps).toBeLessThanOrEqual(Math.max(1, start.variantLadder?.length ?? 0) + 2)
       }
       expect(steps).toBeLessThanOrEqual(start.budget.max)
     })

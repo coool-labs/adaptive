@@ -75,7 +75,6 @@ export type ParkReason = (typeof PARK_REASONS)[number]
 export const SKIP_REASONS = [
   "not-in-inventory",
   "capacity-exhausted",
-  "incompatible",
   ...INCOMPATIBILITY_REASONS,
   ...BLOCKED_REASONS,
 ] as const satisfies readonly string[]
@@ -133,6 +132,8 @@ export interface EscalationEvidence {
   readonly detail?: string | undefined
 }
 
+// Persisted receipt vocabulary. The planner produces only "tier" today; the
+// historical "variant" step stays parseable so old receipts are not dropped.
 export const ESCALATION_STEPS = ["variant", "tier"] as const satisfies readonly string[]
 
 export type EscalationStep = (typeof ESCALATION_STEPS)[number]
@@ -149,12 +150,6 @@ export const MAX_ESCALATION_EVIDENCE = 4
 export interface EscalationInput {
   readonly currentModel: ModelRef
   readonly currentTier: TierName
-  /**
-   * Ordered variant ids for the current model, weakest → strongest, when the
-   * host inventory exposes an order. Without a ladder the variant step is
-   * skipped — strength is never guessed from variant names (ADP-004).
-   */
-  readonly variantLadder?: readonly string[] | undefined
   /** Configured resources of the next tier, user order, already gated. */
   readonly nextTierResources: readonly ModelRef[]
   /** Non-empty structured evidence justifies escalation. */
@@ -166,7 +161,7 @@ export interface EscalateDecision {
   readonly kind: "escalate"
   readonly target: ModelRef
   readonly step: EscalationStep
-  /** Tier of the target: unchanged for the variant step, next tier otherwise. */
+  /** Tier of the escalated-to resource (the next tier). */
   readonly tier: TierName
   readonly evidence: readonly EscalationEvidence[]
   readonly budgetRemaining: number

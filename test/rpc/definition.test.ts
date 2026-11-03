@@ -12,6 +12,27 @@ function validate(
 }
 
 describe("adaptiveRpc definition", () => {
+  it("declares an internal error on every method", () => {
+    for (const method of Object.values(adaptiveRpc.methods)) {
+      expect(Object.keys(method.errors)).toEqual(["internal"])
+    }
+  })
+
+  it("rejects empty and oversized session identifiers on read methods", () => {
+    for (const name of ["session-mode.get", "tier-request.get"] as const) {
+      for (const sessionID of ["", "s".repeat(129)]) {
+        const verdict = validate(adaptiveRpc.methods[name].input, { sessionID })
+        expect("issues" in verdict).toBe(true)
+        if (!("issues" in verdict)) return
+        expect(verdict.issues[0]?.message).toContain("sessionID")
+      }
+      const sessionID = "s".repeat(128)
+      expect(validate(adaptiveRpc.methods[name].input, { sessionID })).toEqual({
+        value: { sessionID },
+      })
+    }
+  })
+
   it("pins the id, method names, and event names", () => {
     expect(ADAPTIVE_RPC_ID).toBe("coool.adaptive")
     expect(Object.keys(adaptiveRpc.methods).sort()).toEqual([

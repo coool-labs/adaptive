@@ -19,11 +19,16 @@ import { parseCapacityPayload } from "./parse.js"
 
 export class CapacityReadingStore {
   #readings: PersistedCapacityReading[] = []
+  #queue: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly storage: CapacityStorage) {}
 
   /** Load the persisted mirror; unreadable or corrupt data is empty, not an error. */
-  async load(): Promise<void> {
+  load(): Promise<void> {
+    return this.#serialize(() => this.#load())
+  }
+
+  async #load(): Promise<void> {
     let raw: unknown
     try {
       raw = await this.storage.read()
@@ -46,7 +51,11 @@ export class CapacityReadingStore {
    * instance persisted. Bound by MAX_CAPACITY_READINGS, evicting the oldest
    * observations first.
    */
-  async replace(entries: readonly PersistedCapacityReading[]): Promise<void> {
+  replace(entries: readonly PersistedCapacityReading[]): Promise<void> {
+    return this.#serialize(() => this.#replace(entries))
+  }
+
+  async #replace(entries: readonly PersistedCapacityReading[]): Promise<void> {
     const byKey = new Map<string, PersistedCapacityReading>()
     for (const entry of this.#readings) {
       byKey.set(resourceKeyID(entry.key), entry)
@@ -65,5 +74,13 @@ export class CapacityReadingStore {
     // disk consistent (the caller decides how to fail open).
     await this.storage.write({ version: CAPACITY_VERSION, readings: next })
     this.#readings = next
+  }
+
+  // The merge must run after the preceding commit, and reloads cannot race
+  // writes. Rejections remain visible to callers without poisoning the tail.
+  #serialize(operation: () => Promise<void>): Promise<void> {
+    const run = this.#queue.then(operation)
+    this.#queue = run.catch(() => undefined)
+    return run
   }
 }

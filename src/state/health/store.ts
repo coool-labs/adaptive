@@ -14,11 +14,16 @@ import type { ResourceRecord } from "../../health/resource-health/types.js"
 
 export class HealthRecordStore {
   #records: ResourceRecord[] = []
+  #queue: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly storage: HealthStorage) {}
 
   /** Rebuild from storage (restart behavior). A read failure yields an empty store. */
-  async load(): Promise<void> {
+  load(): Promise<void> {
+    return this.#serialize(() => this.#load())
+  }
+
+  async #load(): Promise<void> {
     let raw: unknown
     try {
       raw = await this.storage.read()
@@ -39,7 +44,11 @@ export class HealthRecordStore {
    * keeps the most recently updated records — stale scopes matter less than
    * the resources that are actually failing right now.
    */
-  async replace(records: readonly ResourceRecord[]): Promise<void> {
+  replace(records: readonly ResourceRecord[]): Promise<void> {
+    return this.#serialize(() => this.#replace(records))
+  }
+
+  async #replace(records: readonly ResourceRecord[]): Promise<void> {
     const next =
       records.length > MAX_HEALTH_RECORDS
         ? [...records]
@@ -54,5 +63,13 @@ export class HealthRecordStore {
     }
     await this.storage.write(payload)
     this.#records = next
+  }
+
+  // Reloads and writes share one queue; otherwise a slow persistence call
+  // can restore older state after a newer call has already committed.
+  #serialize(operation: () => Promise<void>): Promise<void> {
+    const run = this.#queue.then(operation)
+    this.#queue = run.catch(() => undefined)
+    return run
   }
 }

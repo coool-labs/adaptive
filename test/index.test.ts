@@ -72,7 +72,7 @@ function fakeContext(options: {
         options.registeredRpc?.({ definition, handlers })
         return Promise.resolve({
           dispose: () => Promise.resolve(),
-          events: { emit: () => undefined },
+          events: { emit: () => Promise.resolve() },
         })
       },
     },
@@ -84,6 +84,77 @@ function startedEvent(): unknown {
 }
 
 describe("plugin entry", () => {
+  it.each(["tool", "rpc"] as const)(
+    "rolls back hooks and events when %s registration fails, despite disposal errors",
+    async (stage) => {
+      const session = new FakeSupervisorSession()
+      const storage = new KeyFailStorage("unused")
+      const events = fakeEvents()
+      const context = fakeContext({ storage, session, events })
+      const failure = new Error("setup failed")
+      const disposed: string[] = []
+      vi.spyOn(console, "error").mockImplementation(() => undefined)
+      vi.spyOn(context.session, "hook").mockImplementation((name) =>
+        Promise.resolve({
+          dispose: () => {
+            disposed.push(name)
+            return Promise.reject(new Error("hook disposal failed"))
+          },
+        }),
+      )
+      if (stage === "tool") {
+        vi.spyOn(context.tool, "transform").mockRejectedValue(failure)
+      } else {
+        vi.spyOn(context.tool, "transform").mockResolvedValue({
+          dispose: () => {
+            disposed.push("tool")
+            throw new Error("synchronous disposal failure")
+          },
+        })
+        vi.spyOn(context.rpc, "register").mockRejectedValue(failure)
+      }
+      await expect(adaptivePlugin.setup(context)).rejects.toBe(failure)
+      expect(disposed).toEqual([...HOOK_NAMES, ...(stage === "rpc" ? ["tool"] : [])])
+      expect(events.signal()?.aborted).toBe(true)
+    },
+  )
+
+  it("awaits every registration during cleanup even when disposals reject", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    const events = fakeEvents()
+    const context = fakeContext({ storage, session, events })
+    const disposed: string[] = []
+    vi.spyOn(console, "error").mockImplementation(() => undefined)
+    vi.spyOn(context.session, "hook").mockImplementation((name) =>
+      Promise.resolve({
+        dispose: () => {
+          disposed.push(name)
+          return Promise.reject(new Error("hook disposal failed"))
+        },
+      }),
+    )
+    vi.spyOn(context.tool, "transform").mockResolvedValue({
+      dispose: () => {
+        disposed.push("tool")
+        throw new Error("synchronous disposal failure")
+      },
+    })
+    vi.spyOn(context.rpc, "register").mockResolvedValue({
+      events: { emit: () => Promise.resolve() },
+      dispose: async () => {
+        await Promise.resolve()
+        disposed.push("rpc")
+        throw new Error("rpc disposal failed")
+      },
+    })
+    const cleanup = await adaptivePlugin.setup(context)
+    if (typeof cleanup !== "function") throw new Error("Expected plugin cleanup")
+    await expect(cleanup()).resolves.toBeUndefined()
+    expect(disposed).toEqual([...HOOK_NAMES, "tool", "rpc"])
+    expect(events.signal()?.aborted).toBe(true)
+  })
+
   it("exposes the stable plugin id", () => {
     expect(PLUGIN_ID).toBe("coool.adaptive")
     expect(adaptivePlugin.id).toBe(PLUGIN_ID)

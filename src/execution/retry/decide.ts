@@ -68,8 +68,7 @@ export function decideRetry(input: RetryInput): RetryCoreDecision {
   if (input.vetoesUsed >= MAX_VETOES_PER_UNIT) {
     return { kind: "leave" }
   }
-  const { model, probeId } = recovery
-  return probeId === undefined ? { kind: "veto", model } : { kind: "veto", model, probeId }
+  return { kind: "veto", model: recovery.model }
 }
 
 /**

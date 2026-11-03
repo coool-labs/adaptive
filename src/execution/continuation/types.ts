@@ -19,7 +19,7 @@ export type ContinuationActionKind = (typeof CONTINUATION_ACTIONS)[number]
 
 export type ContinuationAction =
   | { kind: "allow-native" }
-  | { kind: "in-session"; model: ModelRef; probeId?: string | undefined }
+  | { kind: "in-session"; model: ModelRef }
   | { kind: "clean-continuation" }
 
 export interface ContinuationPlanInput {

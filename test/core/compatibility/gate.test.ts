@@ -3,7 +3,6 @@ import fc from "fast-check"
 import { describe, expect, it } from "vitest"
 import {
   checkCompatibility,
-  filterCompatible,
   type CandidateModel,
   type Demand,
   type IncompatibilityReason,
@@ -207,19 +206,6 @@ describe("reason accumulation", () => {
       demand({ tools: true, input: ["image"], output: ["text"] }),
     )
     expect(verdict).toEqual({ compatible: true, reasons: [] })
-  })
-})
-
-describe("filterCompatible", () => {
-  it("keeps order and drops incompatible candidates", () => {
-    const a = candidate({ modelID: "a" })
-    const b = candidate({ modelID: "b", enabled: false })
-    const c = candidate({ modelID: "c" })
-    expect(filterCompatible([a, b, c], demand())).toEqual([a, c])
-  })
-
-  it("returns empty for an empty candidate list", () => {
-    expect(filterCompatible([], demand({ tools: true }))).toEqual([])
   })
 })
 

@@ -11,6 +11,11 @@
  * rejected as rpc.invalid_input); deeper validation happens in the handlers
  * via the state parsers (`applyPatch` reports per-field errors instead), and
  * output schemas are passthroughs over trusted server-side data.
+ *
+ * Every method declares one `internal` error with no data: handler failures
+ * are returned through the call context's error factory instead of thrown —
+ * a plain throw becomes a server defect and the client sees only the generic
+ * `rpc.internal` message (verified on the sibling @coool plugins).
  */
 import { Rpc } from "@opencode/schema/rpc"
 import type { StandardSchemaV1 } from "@standard-schema/spec"
@@ -20,11 +25,14 @@ import type { PatchResult } from "../state/settings/types.js"
 import type { SessionModeSetResult } from "../state/session-modes/index.js"
 import type { TierRequestSetResult } from "./handlers.js"
 import type { TierName } from "../core/tier-policy/types.js"
+import { MAX_SESSION_ID_LENGTH } from "../state/session-modes/types.js"
 import type { Receipt } from "../state/receipts/types.js"
 import type { StatusSnapshot } from "./status.js"
 
 export const ADAPTIVE_RPC_ID = "coool.adaptive"
 const RPC_VENDOR = "coool.adaptive"
+
+const INTERNAL_ERROR = { internal: voidSchema() }
 
 /**
  * Identity schema: the wire value passes through unchanged; the type
@@ -59,10 +67,20 @@ function voidSchema(): StandardSchemaV1<undefined, undefined> {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 
-const isString = (value: unknown): boolean => typeof value === "string"
+const isString = (value: unknown): value is string => typeof value === "string"
 
-/** `{ sessionID: string }` — deeper validation (bounds, vocabulary) is the handler's. */
-const hasSessionID = (value: unknown): boolean => isRecord(value) && isString(value["sessionID"])
+/**
+ * `{ sessionID: string }` wire shape. Bounds checked here too: a session id
+ * beyond the bound cannot be a real host identifier and an empty string is
+ * never one, so neither reaches a handler or a store lookup.
+ */
+const hasSessionID = (value: unknown): boolean => {
+  if (!(isRecord(value) && isString(value["sessionID"]))) return false
+  const sessionID = value["sessionID"]
+  // A session id beyond the bound cannot be a real host identifier and an
+  // empty string is never one; neither reaches a handler or a store lookup.
+  return sessionID.length > 0 && sessionID.length <= MAX_SESSION_ID_LENGTH
+}
 
 /** `{ sessionID: string, mode: OperatingMode | null }` wire shape. */
 const isSessionModeSet = (value: unknown): boolean =>
@@ -80,22 +98,27 @@ export const adaptiveRpc = Rpc.define({
   id: ADAPTIVE_RPC_ID,
   methods: {
     "settings.get": {
+      errors: INTERNAL_ERROR,
       input: voidSchema(),
       output: schema<SettingsV1>(isRecord, "output must be an object"),
     },
     "settings.set": {
+      errors: INTERNAL_ERROR,
       input: schema<SettingsPatch>(isRecord, "input must be an object"),
       output: schema<PatchResult>(isRecord, "output must be an object"),
     },
     "status.get": {
+      errors: INTERNAL_ERROR,
       input: voidSchema(),
       output: schema<StatusSnapshot>(isRecord, "output must be an object"),
     },
     "receipts.list": {
+      errors: INTERNAL_ERROR,
       input: voidSchema(),
       output: schema<Receipt[]>(Array.isArray, "output must be an array"),
     },
     "session-mode.get": {
+      errors: INTERNAL_ERROR,
       input: schema<{ sessionID: string }>(
         hasSessionID,
         "input must be an object with a sessionID string",
@@ -103,6 +126,7 @@ export const adaptiveRpc = Rpc.define({
       output: schema<{ mode: OperatingMode | null }>(isRecord, "output must be an object"),
     },
     "session-mode.set": {
+      errors: INTERNAL_ERROR,
       input: schema<{ sessionID: string; mode: OperatingMode | null }>(
         isSessionModeSet,
         "input must be an object with a sessionID string and a mode string or null",
@@ -110,6 +134,7 @@ export const adaptiveRpc = Rpc.define({
       output: schema<SessionModeSetResult>(isRecord, "output must be an object"),
     },
     "tier-request.get": {
+      errors: INTERNAL_ERROR,
       input: schema<{ sessionID: string }>(
         hasSessionID,
         "input must be an object with a sessionID string",
@@ -117,6 +142,7 @@ export const adaptiveRpc = Rpc.define({
       output: schema<{ tier: TierName | null }>(isRecord, "output must be an object"),
     },
     "tier-request.set": {
+      errors: INTERNAL_ERROR,
       input: schema<{ sessionID: string; tier: string | null }>(
         isTierRequestSet,
         "input must be an object with a sessionID string and a tier string or null",

@@ -16,12 +16,6 @@ import { Supervisor, logFailOpen } from "./supervisor/index.js"
 export { PLUGIN_ID } from "./plugin-id.js"
 
 /**
- * Plugin id as required by GOAL.md: must not collide with the `opencode.*`
- * namespace and must stay stable across releases (referenced by settings
- * storage keys and receipts).
- */
-
-/**
  * Entry point wired into OpenCode via `opencode.json(c)`. Setup glues the
  * adapter touchpoints (session hooks, event subscription, storage) to the
  * supervisor and returns a cleanup that disposes every registration.
@@ -67,18 +61,36 @@ export default Plugin.define({
         logFailOpen("events", error)
       },
     )
+    // Every disposal settles independently: a failing dispose is logged, never
+    // allowed to mask the other disposals or (during rollback) the original
+    // setup error. Disposals are awaited so a late rejection cannot land after
+    // the host considers the plugin gone.
+    const disposals: { name: string; dispose: () => void | Promise<void> }[] = []
+    const settled = async (name: string, dispose: () => void | Promise<void>): Promise<void> => {
+      try {
+        await dispose()
+      } catch (error) {
+        logFailOpen(name, error)
+      }
+    }
+    const settledAll = async (): Promise<void> => {
+      for (const { name, dispose } of disposals) {
+        await settled(name, dispose)
+      }
+    }
+    for (const [index, hookRegistration] of hooks.entries()) {
+      disposals.push({ name: `hook ${String(index)}`, dispose: () => hookRegistration.dispose() })
+    }
+    disposals.push({
+      name: "events",
+      dispose: () => {
+        subscription.dispose()
+      },
+    })
     // The typed escalation tool (T-18, ADP-015): the agent's self-report
     // surface for stronger capability, applied at the next safe boundary.
     // The tier tool (ADP-055): the agent declares the task's tier; the
     // declaration steers the session's next admissions until cleared.
-    const toolRegistration = await context.tool.transform((editor) => {
-      editor.add(
-        escalationTool((sessionID, reason, evidence) =>
-          supervisor.noteEscalationRequest(sessionID, reason, evidence),
-        ),
-      )
-      editor.add(tierTool((sessionID, tier) => supervisor.noteTierRequest(sessionID, tier)))
-    })
     // Typed RPC (ADP-034/036): the only channel to the control surfaces.
     // The settings-changed emitter resolves the registration lazily: handlers
     // only run after `register` resolves, so the holder is always populated.
@@ -87,18 +99,28 @@ export default Plugin.define({
       // The correlated tuple pairing is checked by the handler types; the
       // registration forwards it to the host emitter untouched.
       rpcHolder.registration?.events.emit(...args)
-    const rpcRegistration = await context.rpc.register(
-      adaptiveRpc,
-      adaptiveRpcHandlers(supervisor, emit),
-    )
-    rpcHolder.registration = rpcRegistration
-    return () => {
-      for (const hookRegistration of hooks) {
-        void hookRegistration.dispose()
-      }
-      subscription.dispose()
-      void toolRegistration.dispose()
-      void rpcRegistration.dispose()
+    try {
+      const toolRegistration = await context.tool.transform((editor) => {
+        editor.add(
+          escalationTool((sessionID, reason, evidence) =>
+            supervisor.noteEscalationRequest(sessionID, reason, evidence),
+          ),
+        )
+        editor.add(tierTool((sessionID, tier) => supervisor.noteTierRequest(sessionID, tier)))
+      })
+      disposals.push({ name: "tools", dispose: () => toolRegistration.dispose() })
+      const rpcRegistration = await context.rpc.register(
+        adaptiveRpc,
+        adaptiveRpcHandlers(supervisor, emit),
+      )
+      rpcHolder.registration = rpcRegistration
+      disposals.push({ name: "rpc", dispose: () => rpcRegistration.dispose() })
+    } catch (error) {
+      // Roll back everything already registered so a failure at the tool or
+      // rpc stage does not leak live hooks and the event pump.
+      await settledAll()
+      throw error
     }
+    return () => settledAll()
   },
 })

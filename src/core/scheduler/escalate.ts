@@ -2,12 +2,12 @@
  * Capability escalation planner (ADP-015).
  *
  * Escalation is justified only by non-empty structured evidence, follows the
- * ladder same model / current effort → same model / stronger effort → next
- * tier, and is bounded by the caller's finite budget. Every output either
- * moves strictly up the ladder or refuses: the planner itself never steps
- * sideways or down. Termination across steps rests on the budget, which the
- * caller must carry across every unit of one task (each escalation continues
- * on a new unit).
+ * ladder next tier, and is bounded by the caller's finite budget. The
+ * same-model stronger-variant rung is not implemented: it would need an
+ * ordered variant ladder the host does not expose, and strength is never
+ * guessed from variant names. Every output moves strictly up the ladder or
+ * refuses. Termination rests on the budget, which the caller must carry
+ * across every unit of one task (each escalation continues on a new unit).
  */
 import { nextTier } from "../tier-policy/types.js"
 import type { ModelRef } from "../work-unit/types.js"
@@ -40,18 +40,6 @@ export function planEscalation(input: EscalationInput): EscalateDecision | Defer
   }
   if (input.budget.max <= 0 || input.budget.used >= input.budget.max) {
     return { kind: "defer", reason: "escalation-budget-exhausted" }
-  }
-  const { currentModel, variantLadder } = input
-  if (currentModel.variant !== undefined && variantLadder !== undefined) {
-    const index = variantLadder.indexOf(currentModel.variant)
-    if (index >= 0) {
-      // For a well-formed (non-holey) ladder, undefined here means the current
-      // variant is the strongest — the ladder is exhausted.
-      const stronger = variantLadder[index + 1]
-      if (stronger !== undefined) {
-        return escalate(input, { ...currentModel, variant: stronger }, "variant", input.currentTier)
-      }
-    }
   }
   const next = nextTier(input.currentTier)
   if (next === undefined) {

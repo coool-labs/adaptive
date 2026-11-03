@@ -10,8 +10,8 @@ function ref(providerID = "prov", id = "model", variant?: string): ModelRef {
   return variant === undefined ? { providerID, id } : { providerID, id, variant }
 }
 
-function switchRecovery(model: ModelRef, probeId?: string): RecoveryOption {
-  return probeId === undefined ? { kind: "switch", model } : { kind: "switch", model, probeId }
+function switchRecovery(model: ModelRef): RecoveryOption {
+  return { kind: "switch", model }
 }
 
 describe("planContinuation", () => {
@@ -47,14 +47,14 @@ describe("planContinuation", () => {
     ).toEqual({ kind: "in-session", model })
   })
 
-  it("carries the probe id into the in-session plan when present", () => {
+  it("never carries a probe id in the in-session plan (the supervisor owns tickets)", () => {
     const model = ref("p", "m")
     const planned = planContinuation({
-      recovery: switchRecovery(model, "probe-1"),
+      recovery: { kind: "switch", model, probeId: "probe-1" },
       continuationPossible: true,
     })
-    expect(planned).toEqual({ kind: "in-session", model, probeId: "probe-1" })
-    expect("probeId" in planned).toBe(true)
+    expect(planned).toEqual({ kind: "in-session", model })
+    expect("probeId" in planned).toBe(false)
   })
 
   it("plans a clean continuation when the in-session path is impossible", () => {
@@ -80,14 +80,13 @@ describe("planContinuation properties", () => {
         providerID: fc.string({ minLength: 1 }),
         id: fc.string({ minLength: 1 }),
         variant: fc.option(fc.string({ minLength: 1 }), { nil: undefined }),
-        probeId: fc.option(fc.string({ minLength: 1 }), { nil: undefined }),
       }),
       { nil: undefined },
     )
     .map((r) =>
       r === undefined
         ? { kind: "none" }
-        : switchRecovery({ providerID: r.providerID, id: r.id, variant: r.variant }, r.probeId),
+        : switchRecovery({ providerID: r.providerID, id: r.id, variant: r.variant }),
     )
 
   const inputArb = fc.record({

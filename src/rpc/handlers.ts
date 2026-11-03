@@ -2,20 +2,23 @@
  * RPC handler binding (ADP-034/036): adapts the supervisor's state API to the
  * typed RPC methods. Handlers never throw for expected outcomes — an invalid
  * patch is a per-field `PatchResult`, and an internal failure degrades to
- * `{ ok: false }` (fail-open, ADP-031). Read methods propagate host errors so
- * surfaces can show them honestly.
+ * `{ ok: false }` (fail-open, ADP-031). Read methods declare internal failures
+ * through the call context's error factory: a plain throw becomes a server
+ * defect whose generic `rpc.internal` message hides the cause (verified on the
+ * sibling @coool plugins).
  */
 import { OPERATING_MODES } from "../core/scheduler/types.js"
 import type { OperatingMode } from "../core/scheduler/types.js"
 import { TIERS } from "../core/tier-policy/types.js"
 import type { TierName } from "../core/tier-policy/types.js"
-import { logFailOpen } from "../supervisor/log.js"
+import { LOG_ERROR_LENGTH, logFailOpen } from "../supervisor/log.js"
 import { isValidSessionID } from "../state/session-modes/index.js"
-import type { SessionModeSetResult } from "../state/session-modes/index.js"
 import type { PatchResult } from "../state/settings/types.js"
 import type { SettingsPatch, SettingsV1 } from "../state/settings/index.js"
+import type { Rpc } from "@opencode/schema/rpc"
 import type { Receipt } from "../state/receipts/types.js"
 import type { StatusSnapshot } from "./status.js"
+import type { AdaptiveRpc } from "./definition.js"
 
 export interface AdaptiveRpcSource {
   settings(): Promise<SettingsV1>
@@ -75,27 +78,32 @@ function tierRequestSetError(input: {
   return undefined
 }
 
+type Methods = AdaptiveRpc["methods"]
+type MethodName = Extract<keyof Methods, string>
+
+/** The subset of the host's RpcCallContext the handlers use (no plugin import). */
+export interface AdaptiveRpcCallContext<Name extends MethodName> {
+  readonly error: Rpc.ErrorFactory<Methods[Name]>
+}
+
+type HandlerErrorOf<Name extends MethodName> = Rpc.HandlerError<Methods[Name]>
+
+type HandlerOf<Name extends MethodName> = (
+  input: Rpc.Output<Methods[Name]["input"]>,
+  context: AdaptiveRpcCallContext<Name>,
+) => Promise<Rpc.HandlerOutput<Methods[Name]["output"]> | HandlerErrorOf<Name>>
+
 export function adaptiveRpcHandlers(
   source: AdaptiveRpcSource,
   emit?: AdaptiveRpcEmit,
-): {
-  "settings.get": (input: undefined) => Promise<SettingsV1>
-  "settings.set": (input: SettingsPatch) => Promise<PatchResult>
-  "status.get": (input: undefined) => Promise<StatusSnapshot>
-  "receipts.list": (input: undefined) => Promise<Receipt[]>
-  "session-mode.get": (input: { sessionID: string }) => Promise<{ mode: OperatingMode | null }>
-  "session-mode.set": (input: {
-    sessionID: string
-    mode: OperatingMode | null
-  }) => Promise<SessionModeSetResult>
-  "tier-request.get": (input: { sessionID: string }) => Promise<{ tier: TierName | null }>
-  "tier-request.set": (input: {
-    sessionID: string
-    tier: string | null
-  }) => Promise<TierRequestSetResult>
-} {
+): { [Name in MethodName]: HandlerOf<Name> } {
   return {
-    "settings.get": () => source.settings(),
+    "settings.get": (_input, context) =>
+      source
+        .settings()
+        .catch((error: unknown) =>
+          context.error("internal", String(error).slice(0, LOG_ERROR_LENGTH)),
+        ),
     "settings.set": async (patch) => {
       try {
         const result = await source.updateSettings(patch)
@@ -112,10 +120,25 @@ export function adaptiveRpcHandlers(
         return { ok: false, errors: ["internal error"] }
       }
     },
-    "status.get": () => source.status(),
-    "receipts.list": () => source.receipts(),
-    "session-mode.get": (input) =>
-      source.getSessionMode(input.sessionID).then((mode) => ({ mode })),
+    "status.get": (_input, context) =>
+      source
+        .status()
+        .catch((error: unknown) =>
+          context.error("internal", String(error).slice(0, LOG_ERROR_LENGTH)),
+        ),
+    "receipts.list": (_input, context) =>
+      source
+        .receipts()
+        .catch((error: unknown) =>
+          context.error("internal", String(error).slice(0, LOG_ERROR_LENGTH)),
+        ),
+    "session-mode.get": (input, context) =>
+      source
+        .getSessionMode(input.sessionID)
+        .then((mode) => ({ mode }))
+        .catch((error: unknown) =>
+          context.error("internal", String(error).slice(0, LOG_ERROR_LENGTH)),
+        ),
     "session-mode.set": async (input) => {
       const invalid = sessionModeSetError(input)
       if (invalid !== undefined) return { ok: false, errors: [invalid] }
@@ -134,8 +157,13 @@ export function adaptiveRpcHandlers(
       }
       return { ok: true }
     },
-    "tier-request.get": (input) =>
-      source.getTierRequest(input.sessionID).then((tier) => ({ tier })),
+    "tier-request.get": (input, context) =>
+      source
+        .getTierRequest(input.sessionID)
+        .then((tier) => ({ tier }))
+        .catch((error: unknown) =>
+          context.error("internal", String(error).slice(0, LOG_ERROR_LENGTH)),
+        ),
     "tier-request.set": async (input) => {
       const invalid = tierRequestSetError(input)
       if (invalid !== undefined) return { ok: false, errors: [invalid] }

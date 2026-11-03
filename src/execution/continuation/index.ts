@@ -1,4 +1,3 @@
-export { CONTINUATION_ACTIONS } from "./types.js"
 export type {
   ContinuationAction,
   ContinuationActionKind,

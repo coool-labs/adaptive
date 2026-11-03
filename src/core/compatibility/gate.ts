@@ -62,11 +62,3 @@ export function checkCompatibility(candidate: CandidateModel, demand: Demand): V
 
   return { compatible: reasons.length === 0, reasons }
 }
-
-/** Order-preserving convenience filter for the scheduler. */
-export function filterCompatible<T extends CandidateModel>(
-  candidates: readonly T[],
-  demand: Demand,
-): T[] {
-  return candidates.filter((candidate) => checkCompatibility(candidate, demand).compatible)
-}

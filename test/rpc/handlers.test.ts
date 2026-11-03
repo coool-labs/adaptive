@@ -36,6 +36,21 @@ function source(overrides: Partial<AdaptiveRpcSource> = {}): AdaptiveRpcSource {
   }
 }
 
+/**
+ * A handler call context whose error factory returns the plain {type,message}
+ * shape. The cast stands in for the branded HandlerError: the brand symbol is
+ * not exported by @opencode/schema, so a test cannot construct the real one.
+ */
+type Handlers = ReturnType<typeof adaptiveRpcHandlers>
+type SettingsGetContext = Parameters<Handlers["settings.get"]>[1]
+function callContext(): SettingsGetContext {
+  const error = ((type: string, message: string) => ({
+    type,
+    message,
+  })) as unknown as SettingsGetContext["error"]
+  return { error }
+}
+
 function receipt(): Receipt {
   return {
     id: 1,
@@ -53,8 +68,23 @@ describe("adaptiveRpcHandlers", () => {
   it("settings.get delegates to the source", async () => {
     const spy = vi.fn(() => Promise.resolve(defaultSettings()))
     const handlers = adaptiveRpcHandlers(source({ settings: spy }))
-    await expect(handlers["settings.get"](undefined)).resolves.toEqual(defaultSettings())
+    await expect(handlers["settings.get"](undefined, callContext())).resolves.toEqual(
+      defaultSettings(),
+    )
     expect(spy).toHaveBeenCalledOnce()
+  })
+
+  it("declares a failed read through the context error factory, not a throw", async () => {
+    // Regression: reads used to propagate the raw rejection, which the host
+    // turns into a server defect with the generic rpc.internal message — the
+    // real cause never reached the surface.
+    const handlers = adaptiveRpcHandlers(
+      source({ settings: () => Promise.reject(new Error("storage unavailable")) }),
+    )
+    await expect(handlers["settings.get"](undefined, callContext())).resolves.toEqual({
+      type: "internal",
+      message: "Error: storage unavailable",
+    })
   })
 
   it("status.get and receipts.list delegate to the source", async () => {
@@ -72,8 +102,42 @@ describe("adaptiveRpcHandlers", () => {
         receipts: () => Promise.resolve(receipts),
       }),
     )
-    await expect(handlers["status.get"](undefined)).resolves.toBe(status)
-    await expect(handlers["receipts.list"](undefined)).resolves.toBe(receipts)
+    await expect(handlers["status.get"](undefined, callContext())).resolves.toBe(status)
+    await expect(handlers["receipts.list"](undefined, callContext())).resolves.toBe(receipts)
+  })
+
+  it("declares a failed read through the context error factory", async () => {
+    // Each read surface failing storage resolves the declared internal error
+    // instead of throwing into the host (a plain throw becomes a generic
+    // rpc.internal defect).
+    const handlers = adaptiveRpcHandlers(
+      source({
+        status: () => Promise.reject(new Error("status unavailable")),
+        receipts: () => Promise.reject(new Error("receipts unavailable")),
+        getSessionMode: () => Promise.reject(new Error("modes unavailable")),
+        getTierRequest: () => Promise.reject(new Error("tiers unavailable")),
+      }),
+    )
+    await expect(handlers["status.get"](undefined, callContext())).resolves.toEqual({
+      type: "internal",
+      message: "Error: status unavailable",
+    })
+    await expect(handlers["receipts.list"](undefined, callContext())).resolves.toEqual({
+      type: "internal",
+      message: "Error: receipts unavailable",
+    })
+    await expect(
+      handlers["session-mode.get"]({ sessionID: "ses_1" }, callContext()),
+    ).resolves.toEqual({
+      type: "internal",
+      message: "Error: modes unavailable",
+    })
+    await expect(
+      handlers["tier-request.get"]({ sessionID: "ses_1" }, callContext()),
+    ).resolves.toEqual({
+      type: "internal",
+      message: "Error: tiers unavailable",
+    })
   })
 
   it("settings.set returns the patch result and emits settings-changed on success", async () => {
@@ -83,7 +147,7 @@ describe("adaptiveRpcHandlers", () => {
       source({ updateSettings: () => Promise.resolve(result) }),
       emit,
     )
-    await expect(handlers["settings.set"]({ mode: "off" })).resolves.toBe(result)
+    await expect(handlers["settings.set"]({ mode: "off" }, callContext())).resolves.toBe(result)
     expect(emit).toHaveBeenCalledWith("settings-changed", { version: result.settings.version })
   })
 
@@ -93,7 +157,9 @@ describe("adaptiveRpcHandlers", () => {
       source({ updateSettings: () => Promise.resolve({ ok: false, errors: ["invalid mode"] }) }),
       emit,
     )
-    await expect(handlers["settings.set"]({ mode: "bogus" as "off" })).resolves.toEqual({
+    await expect(
+      handlers["settings.set"]({ mode: "bogus" as "off" }, callContext()),
+    ).resolves.toEqual({
       ok: false,
       errors: ["invalid mode"],
     })
@@ -106,7 +172,7 @@ describe("adaptiveRpcHandlers", () => {
       source({ updateSettings: () => Promise.reject(new Error("boom")) }),
       undefined,
     )
-    await expect(handlers["settings.set"]({})).resolves.toEqual({
+    await expect(handlers["settings.set"]({}, callContext())).resolves.toEqual({
       ok: false,
       errors: ["internal error"],
     })
@@ -120,7 +186,7 @@ describe("adaptiveRpcHandlers", () => {
       source({ updateSettings: () => Promise.resolve(result) }),
       () => Promise.reject(new Error("emit boom")),
     )
-    await expect(handlers["settings.set"]({})).resolves.toBe(result)
+    await expect(handlers["settings.set"]({}, callContext())).resolves.toBe(result)
     expect(spy.mock.calls[0]?.[0]).toContain("[coool.adaptive] rpc-emit")
   })
 
@@ -128,7 +194,7 @@ describe("adaptiveRpcHandlers", () => {
     const set = vi.fn(() => Promise.resolve())
     const handlers = adaptiveRpcHandlers(source({ setSessionMode: set }))
     await expect(
-      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "off" }),
+      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "off" }, callContext()),
     ).resolves.toEqual({
       ok: true,
     })
@@ -160,7 +226,9 @@ describe("adaptiveRpcHandlers: session-mode (ADP-054)", () => {
       Promise.resolve(sessionID === "ses_1" ? ("active" as const) : null),
     )
     const handlers = adaptiveRpcHandlers(source({ getSessionMode: spy }))
-    await expect(handlers["session-mode.get"]({ sessionID: "ses_1" })).resolves.toEqual({
+    await expect(
+      handlers["session-mode.get"]({ sessionID: "ses_1" }, callContext()),
+    ).resolves.toEqual({
       mode: "active",
     })
     expect(spy).toHaveBeenCalledOnce()
@@ -172,7 +240,7 @@ describe("adaptiveRpcHandlers: session-mode (ADP-054)", () => {
     const emit = vi.fn(() => Promise.resolve())
     const handlers = adaptiveRpcHandlers(source({ setSessionMode: set }), emit)
     await expect(
-      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "active" }),
+      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "active" }, callContext()),
     ).resolves.toEqual({
       ok: true,
     })
@@ -184,11 +252,11 @@ describe("adaptiveRpcHandlers: session-mode (ADP-054)", () => {
     const set = vi.fn(() => Promise.resolve())
     const emit = vi.fn(() => Promise.resolve())
     const handlers = adaptiveRpcHandlers(source({ setSessionMode: set }), emit)
-    await expect(handlers["session-mode.set"]({ sessionID: "ses_1", mode: null })).resolves.toEqual(
-      {
-        ok: true,
-      },
-    )
+    await expect(
+      handlers["session-mode.set"]({ sessionID: "ses_1", mode: null }, callContext()),
+    ).resolves.toEqual({
+      ok: true,
+    })
     expect(set).toHaveBeenCalledWith("ses_1", null)
     expect(emit).toHaveBeenCalledWith("session-mode-changed", { sessionID: "ses_1" })
   })
@@ -197,7 +265,9 @@ describe("adaptiveRpcHandlers: session-mode (ADP-054)", () => {
     const set = vi.fn(() => Promise.resolve())
     const handlers = adaptiveRpcHandlers(source({ setSessionMode: set }))
     for (const sessionID of ["", "x".repeat(129)]) {
-      await expect(handlers["session-mode.set"]({ sessionID, mode: "off" })).resolves.toEqual({
+      await expect(
+        handlers["session-mode.set"]({ sessionID, mode: "off" }, callContext()),
+      ).resolves.toEqual({
         ok: false,
         errors: ["sessionID must be a non-empty string of at most 128 characters"],
       })
@@ -209,7 +279,7 @@ describe("adaptiveRpcHandlers: session-mode (ADP-054)", () => {
     const set = vi.fn(() => Promise.resolve())
     const handlers = adaptiveRpcHandlers(source({ setSessionMode: set }))
     await expect(
-      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "bogus" as "off" }),
+      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "bogus" as "off" }, callContext()),
     ).resolves.toEqual({
       ok: false,
       errors: ["mode must be one of off, observe, active or null"],
@@ -225,7 +295,7 @@ describe("adaptiveRpcHandlers: session-mode (ADP-054)", () => {
       emit,
     )
     await expect(
-      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "off" }),
+      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "off" }, callContext()),
     ).resolves.toEqual({
       ok: false,
       errors: ["internal error"],
@@ -240,7 +310,7 @@ describe("adaptiveRpcHandlers: session-mode (ADP-054)", () => {
       Promise.reject(new Error("emit boom")),
     )
     await expect(
-      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "off" }),
+      handlers["session-mode.set"]({ sessionID: "ses_1", mode: "off" }, callContext()),
     ).resolves.toEqual({
       ok: true,
     })
@@ -258,7 +328,9 @@ describe("adaptiveRpcHandlers: tier-request (ADP-055)", () => {
       Promise.resolve(sessionID === "ses_1" ? ("advanced" as const) : null),
     )
     const handlers = adaptiveRpcHandlers(source({ getTierRequest: spy }))
-    await expect(handlers["tier-request.get"]({ sessionID: "ses_1" })).resolves.toEqual({
+    await expect(
+      handlers["tier-request.get"]({ sessionID: "ses_1" }, callContext()),
+    ).resolves.toEqual({
       tier: "advanced",
     })
     expect(spy).toHaveBeenCalledOnce()
@@ -270,7 +342,7 @@ describe("adaptiveRpcHandlers: tier-request (ADP-055)", () => {
     const emit = vi.fn(() => Promise.resolve())
     const handlers = adaptiveRpcHandlers(source({ noteTierRequest: note }), emit)
     await expect(
-      handlers["tier-request.set"]({ sessionID: "ses_1", tier: "advanced" }),
+      handlers["tier-request.set"]({ sessionID: "ses_1", tier: "advanced" }, callContext()),
     ).resolves.toEqual({
       ok: true,
     })
@@ -286,9 +358,9 @@ describe("adaptiveRpcHandlers: tier-request (ADP-055)", () => {
       source({ setTierRequest: set, noteTierRequest: note }),
       emit,
     )
-    await expect(handlers["tier-request.set"]({ sessionID: "ses_1", tier: null })).resolves.toEqual(
-      { ok: true },
-    )
+    await expect(
+      handlers["tier-request.set"]({ sessionID: "ses_1", tier: null }, callContext()),
+    ).resolves.toEqual({ ok: true })
     expect(set).toHaveBeenCalledWith("ses_1", null)
     expect(note).not.toHaveBeenCalled()
     expect(emit).toHaveBeenCalledWith("tier-request-changed", { sessionID: "ses_1" })
@@ -299,7 +371,9 @@ describe("adaptiveRpcHandlers: tier-request (ADP-055)", () => {
     const set = vi.fn(() => Promise.resolve())
     const handlers = adaptiveRpcHandlers(source({ noteTierRequest: note, setTierRequest: set }))
     for (const sessionID of ["", "x".repeat(129)]) {
-      await expect(handlers["tier-request.set"]({ sessionID, tier: "quick" })).resolves.toEqual({
+      await expect(
+        handlers["tier-request.set"]({ sessionID, tier: "quick" }, callContext()),
+      ).resolves.toEqual({
         ok: false,
         errors: ["sessionID must be a non-empty string of at most 128 characters"],
       })
@@ -312,7 +386,7 @@ describe("adaptiveRpcHandlers: tier-request (ADP-055)", () => {
     const note = vi.fn(() => true)
     const handlers = adaptiveRpcHandlers(source({ noteTierRequest: note }))
     await expect(
-      handlers["tier-request.set"]({ sessionID: "ses_1", tier: "bogus" }),
+      handlers["tier-request.set"]({ sessionID: "ses_1", tier: "bogus" }, callContext()),
     ).resolves.toEqual({
       ok: false,
       errors: ["tier must be one of quick, standard, advanced or null"],
@@ -325,7 +399,7 @@ describe("adaptiveRpcHandlers: tier-request (ADP-055)", () => {
     const emit = vi.fn(() => Promise.resolve())
     const handlers = adaptiveRpcHandlers(source({ noteTierRequest: () => false }), emit)
     await expect(
-      handlers["tier-request.set"]({ sessionID: "ses_1", tier: "quick" }),
+      handlers["tier-request.set"]({ sessionID: "ses_1", tier: "quick" }, callContext()),
     ).resolves.toEqual({ ok: false, errors: ["internal error"] })
     expect(emit).not.toHaveBeenCalled()
     expect(spy.mock.calls[0]?.[0]).toContain("[coool.adaptive] rpc-set")
@@ -338,9 +412,9 @@ describe("adaptiveRpcHandlers: tier-request (ADP-055)", () => {
       source({ setTierRequest: () => Promise.reject(new Error("storage down")) }),
       emit,
     )
-    await expect(handlers["tier-request.set"]({ sessionID: "ses_1", tier: null })).resolves.toEqual(
-      { ok: false, errors: ["internal error"] },
-    )
+    await expect(
+      handlers["tier-request.set"]({ sessionID: "ses_1", tier: null }, callContext()),
+    ).resolves.toEqual({ ok: false, errors: ["internal error"] })
     expect(emit).not.toHaveBeenCalled()
     expect(spy.mock.calls[0]?.[0]).toContain("[coool.adaptive] rpc-set")
   })
@@ -354,9 +428,9 @@ describe("adaptiveRpcHandlers: tier-request (ADP-055)", () => {
       }),
       () => Promise.reject(new Error("emit boom")),
     )
-    await expect(handlers["tier-request.set"]({ sessionID: "ses_1", tier: null })).resolves.toEqual(
-      { ok: true },
-    )
+    await expect(
+      handlers["tier-request.set"]({ sessionID: "ses_1", tier: null }, callContext()),
+    ).resolves.toEqual({ ok: true })
     expect(spy.mock.calls[0]?.[0]).toContain("[coool.adaptive] rpc-emit")
   })
 
@@ -364,7 +438,7 @@ describe("adaptiveRpcHandlers: tier-request (ADP-055)", () => {
     const note = vi.fn(() => true)
     const handlers = adaptiveRpcHandlers(source({ noteTierRequest: note }))
     await expect(
-      handlers["tier-request.set"]({ sessionID: "ses_1", tier: "standard" }),
+      handlers["tier-request.set"]({ sessionID: "ses_1", tier: "standard" }, callContext()),
     ).resolves.toEqual({ ok: true })
     expect(note).toHaveBeenCalledOnce()
   })

@@ -117,6 +117,15 @@ describe("runtime e2e: typed rpc surface on a real opencode host", () => {
     expect(badVoid.ok).toBe(false)
     const goodVoid = await rpcRaw(host, "settings.get", {})
     expect(goodVoid.ok).toBe(true)
+    for (const method of ["session-mode.get", "tier-request.get"]) {
+      for (const sessionID of ["", "s".repeat(129)]) {
+        const response = await rpcRaw(host, method, { input: { sessionID } })
+        // The host rejects gated input with a non-2xx wire error (same shape
+        // as the badPatch/badVoid cases above), so the HTTP status is the
+        // contract here.
+        expect(response.ok).toBe(false)
+      }
+    }
   })
 
   it(

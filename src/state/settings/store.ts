@@ -26,7 +26,16 @@ export class SettingsStore {
    * defaults instead of breaking setup; the record is not rewritten here, so
    * a later successful patch simply re-stamps the current version.
    */
-  async load(): Promise<SettingsV1> {
+  load(): Promise<SettingsV1> {
+    // No rejection tail: #load is total (the read is caught and
+    // migrateSettings never throws), so run cannot reject and poison the
+    // chain — unlike update(), whose write can fail.
+    const run = this.#queue.then(() => this.#load())
+    this.#queue = run
+    return run
+  }
+
+  async #load(): Promise<SettingsV1> {
     let raw: unknown
     try {
       raw = await this.storage.read()

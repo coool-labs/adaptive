@@ -12,7 +12,6 @@
  * Everything is validated; unparseable telemetry produces no estimate rather
  * than a guess.
  */
-import type { CapacityReading } from "../../health/capacity/types.js"
 
 export const CODEX_SENSOR_ID = "codex-headers"
 
@@ -35,6 +34,3 @@ export interface CodexUsage {
   readonly primary?: CodexWindow | undefined
   readonly secondary?: CodexWindow | undefined
 }
-
-/** Extract a capacity reading for the binding (most-consumed) window. */
-export type CodexReading = CapacityReading

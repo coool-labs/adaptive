@@ -55,66 +55,6 @@ describe("planEscalation — refusals", () => {
   })
 })
 
-describe("planEscalation — variant step", () => {
-  it("escalates to the next stronger variant on the same model", () => {
-    const decision = planEscalation(
-      inputOf({
-        currentModel: ref("p", "m", "low"),
-        variantLadder: ["minimal", "low", "medium", "high"],
-        nextTierResources: [ref("q", "bigger")],
-      }),
-    )
-    expect(decision).toEqual({
-      kind: "escalate",
-      target: ref("p", "m", "medium"),
-      step: "variant",
-      tier: "standard",
-      evidence: [...evidence],
-      budgetRemaining: 2,
-    })
-  })
-
-  it("falls through to the tier step when the variant is already strongest", () => {
-    const decision = planEscalation(
-      inputOf({
-        currentModel: ref("p", "m", "high"),
-        variantLadder: ["low", "high"],
-        nextTierResources: [ref("q", "bigger")],
-      }),
-    )
-    expect(decision).toEqual({
-      kind: "escalate",
-      target: ref("q", "bigger"),
-      step: "tier",
-      tier: "advanced",
-      evidence: [...evidence],
-      budgetRemaining: 2,
-    })
-  })
-
-  it("falls through to the tier step when the variant is not on the ladder", () => {
-    const decision = planEscalation(
-      inputOf({
-        currentModel: ref("p", "m", "mystery"),
-        variantLadder: ["low", "high"],
-        nextTierResources: [ref("q", "bigger")],
-      }),
-    )
-    expect(decision.kind).toBe("escalate")
-    expect(decision.kind === "escalate" ? decision.step : undefined).toBe("tier")
-  })
-
-  it("falls through to the tier step when the current model has no variant", () => {
-    const decision = planEscalation(
-      inputOf({
-        variantLadder: ["low", "high"],
-        nextTierResources: [ref("q", "bigger")],
-      }),
-    )
-    expect(decision.kind === "escalate" ? decision.step : undefined).toBe("tier")
-  })
-})
-
 describe("planEscalation — tier step", () => {
   it("escalates to the first resource of the next tier in user order", () => {
     const decision = planEscalation(

@@ -46,8 +46,7 @@ export const MAX_VETOES_PER_UNIT = 4
  * (`{retry: false}` in the hook + a native continuation by switching to the
  * recovered candidate); `leave` keeps the host's own `decision` untouched.
  */
-export type RetryCoreDecision =
-  { kind: "veto"; model: ModelRef; probeId?: string | undefined } | { kind: "leave" }
+export type RetryCoreDecision = { kind: "veto"; model: ModelRef } | { kind: "leave" }
 
 /** Mode-wrapped decision. Observe records `would` without intervening. */
 export type RetryDecision = RetryCoreDecision | { kind: "observe-only"; would: RetryCoreDecision }

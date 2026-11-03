@@ -12,9 +12,6 @@ import type { ContinuationAction, ContinuationPlanInput } from "./types.js"
  */
 export function planContinuation(input: ContinuationPlanInput): ContinuationAction {
   if (input.recovery.kind === "none") return { kind: "allow-native" }
-  if (input.continuationPossible)
-    return input.recovery.probeId === undefined
-      ? { kind: "in-session", model: input.recovery.model }
-      : { kind: "in-session", model: input.recovery.model, probeId: input.recovery.probeId }
+  if (input.continuationPossible) return { kind: "in-session", model: input.recovery.model }
   return { kind: "clean-continuation" }
 }
