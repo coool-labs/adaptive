@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-11-03
+
+Fallback correctness for real provider failures, plus real-host end-to-end coverage.
+
+### Fixed
+
+- The classifier recognizes subscription limits as quota exhaustion (ADP-009): "You've hit your session limit · resets …", "usage limit reached", "out of credits", and similar provider phrasings now quarantine the resource with a bounded window instead of reading as an unknown failure, so the next admission falls back to the tier's next resource (verified against the real ChatGPT and Claude session-limit messages).
+- A health-blocked manual model pick yields to the configured fallback: the pick suppresses Adaptive's admission only while the picked resource stays usable (ADP-028).
+- The tier editor stays on the tier page after each add/move/remove instead of bouncing back to the tier list.
+
+### Added
+
+- Real-host end-to-end coverage (runtime-e2e): provider failure modes (timeout, mid-stream disconnect, malformed response, 401 auth without retry loops), restart durability (settings, modes, tier requests, receipts), manual-selection semantics, once-only breaker counting, and the per-task escalation budget (45 runtime-e2e tests total).
+
 ## [1.0.1] — 2026-11-03
 
 Post-release review fixes: correctness, durability, and honest behavior — no new features.
@@ -47,5 +61,6 @@ Initial release.
 - Capacity awareness from provider response headers (best-effort, never load-bearing).
 - Fail-open on internal plugin failure; privacy and configured-provider restrictions fail closed.
 
+[1.2.0]: https://github.com/Hacklone/opencode-adaptive/releases/tag/v1.2.0
 [1.0.1]: https://github.com/Hacklone/opencode-adaptive/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Hacklone/opencode-adaptive/releases/tag/v1.0.0
