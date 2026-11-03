@@ -65,7 +65,14 @@ const TEXTUAL_PATTERNS: readonly {
     pattern:
       /context (length|window)|maximum context|input length exceeds|prompt is too long|too many (input )?tokens|exceeds the maximum/i,
   },
-  { category: "quota_exhausted", pattern: /\bquota\b|credit balance/i },
+  {
+    // Subscription limits ("You've hit your session/usage limit") are quota
+    // exhaustion with a provider-side reset window; the reset time in the
+    // text is not parsed (the classifier has no clock) — the health layer's
+    // default quota window bounds the quarantine instead.
+    category: "quota_exhausted",
+    pattern: /\bquota\b|credit balance|(?:session|usage) limit/i,
+  },
   { category: "rate_limited", pattern: /rate ?limit/i },
   { category: "timeout", pattern: /\btimeout\b|timed? ?out|deadline exceeded|etimedout/i },
   {

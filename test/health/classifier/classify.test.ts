@@ -293,6 +293,14 @@ describe("classifyFailure: textual last resort", () => {
       "quota_exhausted",
     ],
     ["Your credit balance is too low", "quota_exhausted"],
+    // Regression (live daemon): claude-agent's subscription-limit message was
+    // classified unknown, so the resource stayed "ready" and every following
+    // prompt re-picked it instead of falling back to the tier's next resource.
+    [
+      "You've hit your session limit · resets 6:10pm (Europe/Budapest) Resets at 2026-11-03T17:10:00.000Z.",
+      "quota_exhausted",
+    ],
+    ["You've hit your usage limit. Your limit will reset at 5pm", "quota_exhausted"],
     ["Rate limit exceeded, please retry after 20s", "rate_limited"],
     ["Request timed out", "timeout"],
     ["Connection error: ETIMEDOUT", "timeout"],
