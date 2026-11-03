@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] — 2026-11-03
+
+### Fixed
+
+- A 429 whose message says the quota is spent (for example OpenAI's "You exceeded your current quota, please check your plan and billing details.") now quarantines the resource for the quota window and continues on the next usable resource, instead of being treated as a 30-second rate limit and retried every 30 seconds. 429s that name a rate limit or a per-minute ceiling keep the short window.
+
 ## [1.2.2] — 2026-11-03
 
 ### Fixed
@@ -81,6 +87,7 @@ Initial release.
 - Capacity awareness from provider response headers (best-effort, never load-bearing).
 - Fail-open on internal plugin failure; privacy and configured-provider restrictions fail closed.
 
+[1.2.3]: https://github.com/coool-labs/opencode-adaptive/releases/tag/v1.2.3
 [1.2.2]: https://github.com/coool-labs/opencode-adaptive/releases/tag/v1.2.2
 [1.2.1]: https://github.com/coool-labs/opencode-adaptive/releases/tag/v1.2.1
 [1.2.0]: https://github.com/coool-labs/opencode-adaptive/releases/tag/v1.2.0
