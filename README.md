@@ -1,162 +1,99 @@
 # @coool/opencode-adaptive
 
-An execution supervisor plugin for [OpenCode](https://opencode.ai) v2. Per execution episode it decides which configured capability tier and resource should run, escalates capability only on structured evidence, keeps work moving through rate limits and outages, and lets preferred resources recover naturally — without replacing any part of OpenCode.
+Automatic model fallback and routing for [OpenCode](https://opencode.ai).
 
-OpenCode owns sessions, agents, tools, `/goal`, and model invocation. Adaptive owns the layer between them: tier routing, health, failover, escalation, and decision receipts.
+You list your models in order of preference. Adaptive runs each task on the first one that works. When a model hits a quota, rate limit or outage, work moves to the next one. When the preferred model is back, it is used again.
 
-## Why it exists
+It is set up entirely from the `/adaptive` menu in OpenCode. There are no config files to edit and no model IDs to type.
 
-OpenCode runs every episode on one model. When that model is rate-limited, down, or out of quota, the episode either fails or grinds through retries. And when the work is trivial or genuinely hard, the same model runs it regardless. Adaptive separates **capability** (how strong a model the work needs) from **availability** (which resources are actually usable right now): capability changes only on structured evidence, availability problems recover horizontally within the tier.
+## What you can do with it
+
+**Use subscriptions first, pay-as-you-go second.** Put your subscription models at the top of the list and an API provider such as OpenRouter at the bottom. You get the most out of what you already pay for. The API only takes over when the subscriptions are out of quota, and the subscriptions are used again as soon as they reset.
+
+**Use cheap models for small work.** Keep separate lists for quick, standard and advanced work. Typo fixes don't need your strongest model.
+
+**Leave long runs unattended.** If every model in a list is blocked when a task is about to start, the task waits and starts when one comes back, even after an OpenCode restart. A `/goal` run is a series of tasks, so it pauses and carries on by itself.
+
+## Features
+
+- **Menu setup.** Models, order and mode are set in `/adaptive` with model search. No config files.
+- **Tiers.** Quick, standard and advanced work each get their own list, and a failure stays inside the tier the work needs. The agent can ask for a tier with the `adaptive_tier` tool. Routing follows fixed rules, not a prompt the model may or may not obey.
+- **Quota awareness.** It reads usage from provider response headers. When a subscription is nearly used up (about 10% left), new tasks go to the next ready model in the tier, and it is used again after the reset time when the provider reports one.
+- **Waiting that survives a restart.** When every model is blocked as a task is about to start, the task is saved and starts when one returns, instead of failing.
+- **Dry run.** In `observe` mode it records what it would have done, with the reason, before it changes anything. A session can have its own mode.
+- **Escalation on evidence only.** An outage never sends work to a more expensive tier. Moving up needs a context overflow, a policy rejection, or an explicit request from the agent.
 
 ## Install
 
-Add the plugin to your project's `opencode.json`:
-
-```json
-{
-  "plugins": ["@coool/opencode-adaptive"]
-}
+```sh
+opencode plugin add @coool/opencode-adaptive
 ```
 
-OpenCode installs it from npm on the next start. Requires OpenCode ≥ 2.2.1 and Node ≥ 20.19.
+Needs OpenCode 2.2.1 or newer.
 
-After the first start, Adaptive runs in **observe** mode: it records what it would have done without touching your sessions. A one-time invitation in `/adaptive` walks you through configuration.
+## Set up
 
-## 2-minute setup
+1. Start OpenCode and run `/adaptive`.
+2. Open **Models**, pick a tier, and choose **Add model…**. Search for a model and select it. Repeat, best first. If the tier a task needs is empty, OpenCode's own model runs it.
+3. Open **Mode** and choose `active`.
 
-1. Start OpenCode (TUI or desktop).
-2. Run `/adaptive` (TUI) or open the Adaptive settings page (experimental GUI surface).
-3. Fill the tier lists in the order you prefer them, for example:
-   - **Quick** — fast models for small edits.
-   - **Standard** — your default workhorse.
-   - **Advanced** — the strongest model you have.
-4. Switch the mode from **Observe** to **Control** when the receipts look right.
+New installs start in `observe` mode: Adaptive records what it would do but changes nothing. Look at **Receipts** to check its decisions, then switch to `active`.
+
+| Mode      | What happens                                                           |
+| --------- | ---------------------------------------------------------------------- |
+| `off`     | Nothing.                                                               |
+| `observe` | Decisions are recorded, not applied. This is the default.              |
+| `active`  | Decisions are applied. A task changes model only when its model fails. |
+
+Any session can override the global mode: open `/adaptive` inside the session and choose **This session…**.
+
+To reorder or remove a model, select it in the tier list. **Status** shows each model's state, including subscription usage (`used 72%, resets 18:42`) when the provider reports it.
 
 ## Tiers
 
-A tier is an **ordered list of resources** you configure. Order is policy: Adaptive never reorders it, never borrows across tiers, and never overrides it for cost.
+A tier is an ordered list of models. The order is your policy, and Adaptive never changes it.
 
-- **Quick** — cheap/fast work: short edits, formatting, small lookups.
-- **Standard** — ordinary execution episodes.
-- **Advanced** — hard work that earns a stronger model.
+- **Quick** for small, mechanical work.
+- **Standard** for everything else. This is the default.
+- **Advanced** for hard work.
 
-A resource names a concrete `providerID`/`modelID`, optionally with a variant.
+A model can be in more than one tier.
 
-## Observe vs Control
+The tier for a task is the first of these that applies:
 
-- **Off** — Adaptive does nothing.
-- **Observe** (default after install) — Adaptive routes, classifies, and records decision receipts, but applies nothing. Every decision it would have made is visible in the receipts.
-- **Control** — Adaptive applies its decisions: model switches happen only at safe boundaries (work-unit start/termination), never mid-episode.
+1. A pinned model (`/adaptive` → **Pin**).
+2. A tier request for the session: the agent can declare one with the `adaptive_tier` tool, or you set it inside a session with `/adaptive` → **Tier**.
+3. A per-agent tier from the `agentTiers` setting (RPC only).
+4. Background requests such as titles and summaries use `quick`.
+5. `standard`.
 
-### Per-session mode
+No language model or keyword matching is involved. A model is skipped if it is unknown or can't fit the context, and the receipt says why. Adaptive only uses models you added.
 
-The operating mode is global, but every session can override it. Open `/adaptive` inside a session: the mode menu shows **Follow global (observe)** first — picking a mode there sets an override for that session only, and picking **Follow global** clears it again. Everywhere else (home, other sessions) the global mode applies unchanged; the menu title always shows the session's effective mode. Overrides persist across restarts, are pruned when the session dies, and are managed over RPC (`session-mode.get` / `session-mode.set`, `session-mode-changed` event).
+## When a model fails
 
-## Example configuration
+- **Rate limit, quota, timeout, outage:** if the error is clear-cut and another model in the same tier is ready, the task switches to it and carries on from the current session. Your prompt is not resent and finished tool calls are not repeated. If the error is unclear or no other model is ready, OpenCode's normal retry continues.
+- **A model fails repeatedly:** it is paused for a cooldown, then tried once. If that works, it is back.
+- **Every model in the tier is blocked as a task starts:** the task waits and starts when one returns.
+- **You cancel:** nothing is retried or switched.
+- **Auth error or unknown model:** the model is marked unavailable and skipped.
 
-Settings live on the server; every surface (TUI, GUI, RPC) edits the same truth. The equivalent of the setup above as a settings patch:
+An outage never moves work to a stronger tier. Work only moves up on real evidence: a context overflow, a content-policy rejection, or the agent calling `adaptive_escalate` with a reason and evidence. This happens at most twice per task.
 
-```json
-{
-  "mode": "active",
-  "tiers": {
-    "quick": [{ "providerID": "fake", "id": "small-model" }],
-    "standard": [{ "providerID": "fake", "id": "main-model" }],
-    "advanced": [{ "providerID": "fake", "id": "big-model" }]
-  },
-  "pin": null,
-  "agentTiers": { "build": "standard" }
-}
-```
+## Limits
 
-`pin` names a concrete model and outranks every other routing input. `agentTiers` maps an agent name to a tier (a role hint). Both are optional.
-
-## Recipe: subscriptions first
-
-If you pay for subscriptions and keep a metered API as the safety net, list the subscriptions first:
-
-```json
-{
-  "mode": "active",
-  "tiers": {
-    "standard": [
-      { "providerID": "openai", "id": "gpt-5-codex" },
-      { "providerID": "anthropic", "id": "claude-sonnet-4-5" },
-      { "providerID": "openrouter", "id": "anthropic/claude-sonnet-4.5" }
-    ]
-  }
-}
-```
-
-Order is policy, so the subscriptions are used first and OpenRouter only when both are windowed (rate limited) or exhausted. Nothing is force-failed back: once a preferred resource recovers, it is used again automatically at the next safe boundary — never mid-episode. The Status page shows each subscription's sensed usage (`used 72%, resets 18:42`) when the provider reports it, so you can see how close a window is to running out. Substitute the model IDs you actually have configured.
-
-## How routing behaves
-
-Routing happens only at safe boundaries, by a deterministic priority ladder — no LLM classifier, no keyword soup:
-
-1. **User pin** — wins over everything.
-2. **Agent tier hint** — the configured tier for the active agent.
-3. **Default `standard`** — ambiguity resolves here.
-
-If the required tier has no usable resource, Adaptive waits or parks the work — it never silently moves it to another tier. A compatibility gate skips resources that cannot fit the active context (unavailable, unknown, or unusable for the request); skipped candidates appear in the decision receipt.
-
-## How failover and recovery behave
-
-- Infrastructure failure (rate limits, quota, timeouts, outages) **never** escalates capability. It recovers horizontally within the required tier: the next resource in the same tier list.
-- OpenCode's own retries stay in charge; Adaptive vetoes a retry only when a better same-tier resource exists, then continues the episode on it with a clean continuation prompt. User cancellations never trigger failover.
-- Repeated failures trip a **circuit breaker** per resource: it stops being selected, and exactly one probe is admitted after a cooldown to check recovery.
-- A preferred resource that went down is used again at the next safe boundary once it recovers. Nothing is force-failed back.
-- Work that cannot run (whole tier blocked) is **parked durably** and resumes at an idle boundary when a resource returns. Completed tool side effects are treated as durable and never replayed.
-
-## Quota and capacity behavior
-
-Quota exhaustion (fixed-window exhaustion, `x-ratelimit` evidence) is classified separately from a transient rate limit: quota failures are not retried, only failed over. Header-based capacity sensing is best-effort and never load-bearing — WebSocket providers bypass the HTTP hooks OpenCode exposes.
-
-## Escalation
-
-Capability escalates only on structured evidence — context overflow or content-policy rejection — with a finite budget (2 escalations per episode), recorded with reason and evidence in the receipt. Escalation moves to the next tier's first resource (or a stronger variant of the same model). Infra failure never escalates.
-
-## `/goal` compatibility
-
-Adaptive does not manage goals. Native `/goal` episodes are ordinary execution episodes to the supervisor: routing, recovery, and receipts behave the same. The goal loop keeps running; Adaptive keeps supplying an available resource.
-
-## Privacy
-
-Nothing leaves the machine. No telemetry, no network calls of its own, and no secrets in settings, receipts, logs, or RPC payloads. Receipts are a bounded ring (newest 200) and are never injected into prompts.
-
-## Supported OpenCode versions
-
-Minimum **2.2.1**; the packed-plugin test suite runs against 2.2.1, current, and latest OpenCode hosts.
-
-## Limitations
-
-- **GUI surface:** the Adaptive settings page targets OpenCode's experimental GUI, which no released OpenCode host mounts yet — the browser UI served by `opencode serve` never loads plugin GUI bundles, and the desktop app (tested through 1.19.5) does not either. Settings work today through the `/adaptive` TUI command (OpenCode ≥ 2.2.x; the desktop app must be ≥ 1.19.5 to accept the `plugins` config key) and the typed RPC surface.
-- **No cross-tier borrowing:** if a tier is exhausted, work waits or parks. This is deliberate.
-- **No de-escalation:** after an episode escalates, the next episode routes fresh; Adaptive does not downgrade a running episode.
-- **WebSocket-native providers** bypass the HTTP hooks used for capacity sensing; their capacity view is best-effort.
+- No borrowing between tiers. If a tier is exhausted, work waits. To let a model serve two tiers, add it to both.
+- A task that moved up a tier stays there. The next task is routed again from scratch.
+- Usage figures come from response headers and are best effort. Providers that use WebSockets don't expose them.
+- The browser/desktop settings page is experimental. No released OpenCode loads it yet, so use `/adaptive`.
 
 ## Troubleshooting
 
-- **Nothing changes** — you are probably in observe mode (the default). Check the mode in `/adaptive` or `status.get`; switch to active.
-- **A model is never picked** — it must exist in the provider's configured inventory (`opencode.json` models). Unknown resources are skipped, not guessed.
-- **`Plugin failed: <target>` toast in the TUI** — the plugin bundle failed to load; reinstall the package or check that the entrypoint builds (`npm run build` in a source checkout).
-- **All resources parked / work waits** — every resource in the required tier is blocked (rate limits or an open breaker). Wait for the cooldown probe or add another resource to the tier.
-- **Inspect decisions** — receipts record every admission, escalation, park, and recovery with reasons; read them via `/adaptive` or the `receipts.list` RPC method.
+- **Nothing changes.** You are in `observe` mode. Switch to `active` in `/adaptive` → **Mode**.
+- **A model is never picked.** Its provider must be connected in OpenCode.
+- **A task is waiting to start.** Every model in its tier is blocked. Wait for the cooldown or add another model.
+- **Why did it pick that model?** `/adaptive` → **Receipts**.
+- **"Plugin failed" toast.** The plugin didn't load. Update it with `opencode plugin update`, or remove and add it again.
 
-## Development
+## Privacy
 
-```sh
-npm install
-npm run verify:release   # full gate chain (format, lint, types, tests, coverage, build, e2e, traceability)
-```
-
-Individual gates and the regression policy are documented in [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Docs
-
-- [docs/PRODUCT.md](docs/PRODUCT.md) — product definition, tenets, scope.
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module map, dependency rules, decision flow.
-- [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) — requirements with stable IDs (ADP-xxx).
-- [docs/TEST_STRATEGY.md](docs/TEST_STRATEGY.md) — test layers, scenario maps, limitations.
-- [CONTRIBUTING.md](CONTRIBUTING.md) — gates, regression policy, traceability.
-- [CHANGELOG.md](CHANGELOG.md) — release history.
+Nothing leaves your machine. No telemetry, no network calls of its own, no secrets in settings, receipts or logs. Receipts keep the newest 200 entries and are never added to prompts.
