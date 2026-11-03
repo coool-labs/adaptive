@@ -70,8 +70,14 @@ const TEXTUAL_PATTERNS: readonly {
     // exhaustion with a provider-side reset window; the reset time in the
     // text is not parsed (the classifier has no clock) — the health layer's
     // default quota window bounds the quarantine instead.
+    // Sibling fallback plugins' issue trackers document the real-world
+    // phrasings that missed curated whitelists (oh-my-openagent #2393/#5815,
+    // lichter's 429 lesson): snake-cased limits, "usage exceeded" without
+    // "limit", credit exhaustion without "balance". Qualifiers stay required
+    // so "token limit reached" (context overflow) never matches quota.
     category: "quota_exhausted",
-    pattern: /\bquota\b|credit balance|(?:session|usage) limit/i,
+    pattern:
+      /\bquota\b|credit balance|(?:session|usage|free usage|message|plan|monthly|weekly|daily)[ _-]?limit|usage exceeded|out of credits|insufficient credits/i,
   },
   { category: "rate_limited", pattern: /rate ?limit/i },
   { category: "timeout", pattern: /\btimeout\b|timed? ?out|deadline exceeded|etimedout/i },

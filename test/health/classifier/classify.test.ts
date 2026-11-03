@@ -301,6 +301,14 @@ describe("classifyFailure: textual last resort", () => {
       "quota_exhausted",
     ],
     ["You've hit your usage limit. Your limit will reset at 5pm", "quota_exhausted"],
+    // Real-world phrasings sibling fallback plugins missed (their issue
+    // trackers): Anthropic's snake-cased limit, OpenCode Zen's free-usage
+    // wording, and credit exhaustion without "balance".
+    ["usage_limit_has_been_reached", "quota_exhausted"],
+    ["Free usage exceeded, subscribe to Go", "quota_exhausted"],
+    ["You are out of credits", "quota_exhausted"],
+    ["Insufficient credits to run this request", "quota_exhausted"],
+    ["ChatGPT usage limit reached. Check ChatGPT Settings → Usage for details.", "quota_exhausted"],
     ["Rate limit exceeded, please retry after 20s", "rate_limited"],
     ["Request timed out", "timeout"],
     ["Connection error: ETIMEDOUT", "timeout"],
