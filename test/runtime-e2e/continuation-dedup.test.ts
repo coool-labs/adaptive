@@ -89,7 +89,7 @@ const callModel = (call: { body: string }): string => {
 const callPrompt = (call: { body: string }): string => {
   try {
     const parsed = JSON.parse(call.body) as {
-      messages?: Array<{ role?: string; content?: string }>
+      messages?: { role?: string; content?: string }[]
     }
     const last = [...(parsed.messages ?? [])].reverse().find((m) => m.role === "user")
     return typeof last?.content === "string" ? last.content : ""
