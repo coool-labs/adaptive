@@ -128,6 +128,8 @@ export async function startHost(
     /** Reuse an existing home/project pair (restart scenarios). The caller
      * owns cleanup for reused paths; close() then only stops the host. */
     paths?: { home: string; project: string }
+    /** Plugin entries written into the project config (default: this repo once). */
+    pluginEntries?: readonly string[]
   } = {},
 ): Promise<StartedHost> {
   const owned = options.paths === undefined
@@ -160,7 +162,7 @@ export async function startHost(
             },
           ]),
         ),
-        plugins: [REPO_ROOT],
+        plugins: options.pluginEntries ?? [REPO_ROOT],
       },
       null,
       2,
