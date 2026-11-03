@@ -941,7 +941,7 @@ test(
           // The dialog is widened to xlarge precisely so the row fits on
           // one line: the full row (health, windowed state, clock deadline)
           // must render without wrapping.
-          await openStatusPage(app, /rate_limited\s+windowed until \d{2}:\d{2}/)
+          await openStatusPage(app, /rate_limited\s+windowed until \d{4}-\d{2}-\d{2} \d{2}:\d{2}/)
           // The dialog body is padded and carries the esc hint in the title
           // row's right corner.
           await app.waitForText("esc", { timeout: 10_000 })
@@ -996,7 +996,7 @@ test(
       // The capacity segment rides the STATE column: a healthy, unwindowed,
       // breaker-free resource with a sensed reading reads
       // "used <N>%, resets HH:MM" (used percent first, then the reset clock).
-      await openStatusPage(app, /used 72%, resets \d{2}:\d{2}/)
+      await openStatusPage(app, /used 72%, resets \d{4}-\d{2}-\d{2} \d{2}:\d{2}/)
       await app.waitForText("esc", { timeout: 10_000 })
     })
     await escapeToBase(app)
