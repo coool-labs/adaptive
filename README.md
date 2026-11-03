@@ -12,14 +12,14 @@ It is set up entirely from the `/adaptive` menu in OpenCode. There are no config
 
 **Use cheap models for small work.** Keep separate lists for quick, standard and advanced work. Typo fixes don't need your strongest model.
 
-**Leave long runs unattended.** If every model in a list is blocked when a task is about to start, the task waits and starts when one comes back, even after an OpenCode restart. A `/goal` run is a series of tasks, so it pauses and carries on by itself.
+**Leave long runs unattended.** If a model fails mid-task, work continues on the next ready model in the tier, and the preferred model is used again at the next task — finished tool calls are not repeated, even across an OpenCode restart. A `/goal` run is a series of tasks, so it carries on by itself.
 
 ## Features
 
 - **Menu setup.** Models, order and mode are set in `/adaptive` with model search. No config files.
 - **Tiers.** Quick, standard and advanced work each get their own list, and a failure stays inside the tier the work needs. The agent can ask for a tier with the `adaptive_tier` tool. Routing follows fixed rules, not a prompt the model may or may not obey.
 - **Quota awareness.** It reads usage from provider response headers. When a subscription is nearly used up (about 10% left), new tasks go to the next ready model in the tier, and it is used again after the reset time when the provider reports one.
-- **Waiting that survives a restart.** When every model is blocked as a task is about to start, the task is saved and starts when one returns, instead of failing.
+- **Recovery that survives a restart.** If work is interrupted and cannot continue right away because no model in its tier is ready, it is saved and resumes when one returns — even after an OpenCode restart, without repeating finished tool calls.
 - **Dry run.** In `observe` mode it records what it would have done, with the reason, before it changes anything. A session can have its own mode.
 - **Escalation on evidence only.** An outage never sends work to a more expensive tier. Moving up needs a context overflow, a policy rejection, or an explicit request from the agent.
 
@@ -64,8 +64,9 @@ The tier for a task is the first of these that applies:
 1. A pinned model (`/adaptive` → **Pin**).
 2. A tier request for the session: the agent can declare one with the `adaptive_tier` tool, or you set it inside a session with `/adaptive` → **Tier**.
 3. A per-agent tier from the `agentTiers` setting (RPC only).
-4. Background requests such as titles and summaries use `quick`.
-5. `standard`.
+4. `standard`.
+
+Background requests such as titles and summaries are observed but not routed separately in v1 — they keep OpenCode's own model.
 
 No language model or keyword matching is involved. A model is skipped if it is unknown or can't fit the context, and the receipt says why. Adaptive only uses models you added.
 
@@ -73,7 +74,7 @@ No language model or keyword matching is involved. A model is skipped if it is u
 
 - **Rate limit, quota, timeout, outage:** if the error is clear-cut and another model in the same tier is ready, the task switches to it and carries on from the current session. Your prompt is not resent and finished tool calls are not repeated. If the error is unclear or no other model is ready, OpenCode's normal retry continues.
 - **A model fails repeatedly:** it is paused for a cooldown, then tried once. If that works, it is back.
-- **Every model in the tier is blocked as a task starts:** the task waits and starts when one returns.
+- **Every model in the tier is blocked as a task starts:** OpenCode's own model runs it, and the decision is recorded as a receipt with the reason. A task that fails to recover is saved and resumes when a model returns.
 - **You cancel:** nothing is retried or switched.
 - **Auth error or unknown model:** the model is marked unavailable and skipped.
 
@@ -81,7 +82,7 @@ An outage never moves work to a stronger tier. Work only moves up on real eviden
 
 ## Limits
 
-- No borrowing between tiers. If a tier is exhausted, work waits. To let a model serve two tiers, add it to both.
+- No borrowing between tiers. If a tier is exhausted, the task runs on OpenCode's own model rather than another tier's models. To let a model serve two tiers, add it to both.
 - A task that moved up a tier stays there. The next task is routed again from scratch.
 - Usage figures come from response headers and are best effort. Providers that use WebSockets don't expose them.
 - The browser/desktop settings page is experimental. No released OpenCode loads it yet, so use `/adaptive`.
@@ -90,7 +91,7 @@ An outage never moves work to a stronger tier. Work only moves up on real eviden
 
 - **Nothing changes.** You are in `observe` mode. Switch to `active` in `/adaptive` → **Mode**.
 - **A model is never picked.** Its provider must be connected in OpenCode.
-- **A task is waiting to start.** Every model in its tier is blocked. Wait for the cooldown or add another model.
+- **Receipts show `park` on a new task.** Every model in its tier was blocked when the task started, so it ran on OpenCode's own model. The receipt says why; check `/adaptive` → **Status** for cooldowns.
 - **Why did it pick that model?** `/adaptive` → **Receipts**.
 - **"Plugin failed" toast.** The plugin didn't load. Update it with `opencode plugin update`, or remove and add it again.
 

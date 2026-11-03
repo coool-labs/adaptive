@@ -19,7 +19,7 @@ OpenCode Adaptive (`@coool/opencode-adaptive`, plugin ID `coool.adaptive`) is an
 ## v1 scope
 
 - Three capability tiers (`quick`, `standard`, `advanced`) as ordered user-configured resource lists (provider / account / model / variant).
-- Event-driven work-unit tracking, deterministic routing with priority ladder and `defer`, compatibility gate, hierarchical resource health, error classification, circuit breaker with single half-open probe, draining, durable park/resume, native-retry-aware horizontal recovery, evidence-driven escalation with finite budgets, decision receipts, modes OFF/OBSERVE/CONTROL (OBSERVE default), typed RPC, `/adaptive` TUI command, GUI SettingsPage.
+- Event-driven work-unit tracking, deterministic routing with priority ladder and `defer`, compatibility gate, hierarchical resource health, error classification, circuit breaker with single half-open probe, draining, durable park/resume, native-retry-aware horizontal recovery, evidence-driven escalation with finite budgets, decision receipts, modes off/observe/active (observe default), typed RPC, `/adaptive` TUI command, GUI SettingsPage.
 
 ## Non-goals (v1)
 
@@ -31,7 +31,7 @@ OpenCode Adaptive (`@coool/opencode-adaptive`, plugin ID `coool.adaptive`) is an
 
 ## User experience
 
-- **First install:** OBSERVE mode, one dismissible invitation to configure.
+- **First install:** observe mode, one dismissible invitation to configure.
 - **TUI:** `/adaptive` — mode switch, tiered model editor (search real models, variants, reorder, remove, validation), status and decision inspection.
 - **GUI:** native SettingsPage on OpenCode's experimental GUI surface — the same settings, same server truth. Works on desktop and narrow widths.
 - **Copy** is short and human ("Unavailable until 18:42", "Using GLM while Codex is unavailable").

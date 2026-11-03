@@ -24,7 +24,7 @@ Every requirement is objectively testable. IDs are stable; tests declare `covers
 
 - **ADP-013** — Infrastructure failure (429, quota, timeout, 503, outage) never escalates capability tier; it triggers horizontal recovery within the required tier.
 - **ADP-014** — Horizontal recovery prefers OpenCode-native retry/model-switch; Adaptive never aborts and replays the original user request once tool side effects exist; completed side effects are treated as durable.
-- **ADP-015** — Capability escalation (variant → stronger variant → stronger tier) happens only on structured evidence, prefers same-model stronger variant first, and uses a finite per-task budget (one user prompt and the continuations it spawns) with no escalation loops.
+- **ADP-015** — Capability escalation happens only on structured evidence and uses a finite per-task budget (one user prompt and the continuations it spawns) with no escalation loops. v1 escalates to the next tier only: a same-model stronger-variant rung would need an ordered variant ladder the host does not expose, and strength is never guessed from variant names (ADP-004).
 - **ADP-016** — Routing happens fresh at each safe work-unit boundary; there is no de-escalation engine and Adaptive never pulls a healthy resource away mid-work to save cost.
 - **ADP-017** — A compatibility gate (context capacity, tool use, modalities, model/variant/provider availability) filters candidates before health/preference ranking; only user-configured resources are ever eligible.
 - **ADP-018** — Preferred-resource recovery: configured order is unchanged; a recovered preferred resource becomes eligible at the next safe boundary; healthy running work is never interrupted for failback.
@@ -41,10 +41,10 @@ Every requirement is objectively testable. IDs are stable; tests declare `covers
 - **ADP-026** — Subagent executions are routed independently and share health state; Adaptive never restructures execution topology.
 - **ADP-027** — Auxiliary requests (compaction/title/generate/summary-class) do not consume an unnecessarily expensive tier.
 - **ADP-028** — Users can disable Adaptive, switch modes, explicitly request a tier, pin the current resource, and inspect why a decision was made; manual intent always wins and Adaptive never fights manual model changes.
-- **ADP-029** — Modes `OFF | OBSERVE | CONTROL`; OBSERVE is the default after install and never changes execution; OBSERVE and CONTROL run the identical scheduler implementation.
+- **ADP-029** — Modes `off | observe | active`; observe is the default after install and never changes execution; observe and active run the identical scheduler implementation. Persisted legacy `control` values migrate to `active` on read.
 - **ADP-030** — Decision receipts persist bounded local records (work/session identity, required tier, selected resource, decision type, reason, rejected candidates, health/capacity evidence, escalation evidence, outcome, timestamp); no secrets, never injected into prompts; bounded retention; nothing leaves the machine.
 - **ADP-031** — Adaptive fails open: internal failures (sensor, receipts, GUI, unknown metadata, optional adapter) log/notify and defer to ordinary OpenCode behavior, except privacy/user restrictions which may fail closed.
-- **ADP-032** — First install defaults to OBSERVE with one concise dismissible configuration invitation; no repeated startup toasts.
+- **ADP-032** — First install defaults to observe with one concise dismissible configuration invitation; no repeated startup toasts.
 
 ## UX
 
@@ -56,9 +56,9 @@ Every requirement is objectively testable. IDs are stable; tests declare `covers
 ## Engineering and quality gates
 
 - **ADP-037** — First-party production code reaches 100% statement/branch/function/line coverage with no exclusion gaming; generated/vendor code only if clearly identified.
-- **ADP-038** — Property/state-machine tests prove the invariants: unavailable/incompatible resources never selected; availability failures never escalate capability; Observe and Control produce identical decisions; Observe never changes execution; user pin wins; no silent downward capability shift; finite budgets cannot loop; half-open admits exactly one probe; preferred resources return only at safe boundaries; no impossible health transitions.
+- **ADP-038** — Property/state-machine tests prove the invariants: unavailable/incompatible resources never selected; availability failures never escalate capability; observe and active produce identical decisions; observe never changes execution; user pin wins; no silent downward capability shift; finite budgets cannot loop; half-open admits exactly one probe; preferred resources return only at safe boundaries; no impossible health transitions.
 - **ADP-039** — A deterministic fake OpenAI/OpenCode-compatible provider fixture scripts: success, streaming, tool calls, partial execution, 429, Retry-After, quota/reset headers, 503, timeout, disconnect, malformed response, context rejection, recovery after N calls. No paid models in automated suites.
-- **ADP-040** — Packed-plugin tests run the `npm pack` artifact against real isolated OpenCode hosts on 2.2.1, current, and latest, across server/tui/rpc surfaces, with behavioral scenarios.
+- **ADP-040** — Packed-plugin tests run the `npm pack` artifact against real isolated OpenCode hosts on 2.2.1, current, and latest, across the server and rpc surfaces (the interactive `tui` surface is not declared in the packed-plugin harness; TUI journeys run in the Termwright E2E layer, ADP-043), with behavioral scenarios.
 - **ADP-041** — Real-host E2E covers the runtime scenario list in TEST_STRATEGY.md §Runtime scenarios (including native `/goal` through a model transition), using the fake provider.
 - **ADP-042** — Playwright Web E2E against the real OpenCode Web UI with the packed plugin: Chromium + WebKit, desktop + narrow viewports, semantic locators, zero retries.
 - **ADP-043** — Termwright TUI E2E over a real PTY at 80x24, narrow, and wide sizes, asserting semantic state, keyboard-only flows, and capturing failure artifacts.

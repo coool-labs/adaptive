@@ -42,10 +42,10 @@ Dependency rules: `core` imports nothing from `adapters`/`ui`/`state`; `schedule
 
 ## Execution lifecycle
 
-1. **Admission / routing.** `session.execution.started` opens a work unit. The scheduler runs: required tier ← priority ladder (pin > tier request > role hint > deterministic evidence > `standard`, or `defer`); candidates ← tier list; compatibility gate; health/preference ranking. In CONTROL the chosen model is applied (`session.switchModel`) at this safe boundary; in OBSERVE the identical decision is only recorded as a receipt. `defer`/`OFF`/internal failure ⇒ OpenCode's own choice stands.
+1. **Admission / routing.** `session.execution.started` opens a work unit. The scheduler runs: required tier ← priority ladder (pin > tier request > role hint > deterministic evidence > `standard`, or `defer`); candidates ← tier list; compatibility gate; health/preference ranking. In `active` (control) the chosen model is applied (`session.switchModel`) at this safe boundary; in `observe` the identical decision is only recorded as a receipt. `defer`/`off`/internal failure ⇒ OpenCode's own choice stands.
 2. **Supervision.** Tool continuations stay in-unit (`step.*` events do not close the unit). Subagents are separate units sharing health.
 3. **Failure.** `classifier` turns the structured error into scope/category/retry-hint/confidence/source. The `retry` hook decides: infra failure with a healthy same-tier candidate → veto native retry (`{retry:false}`) and perform native continuation (`session.wait` → inventory re-check → `switchModel` → resume within the session, never a replayed original prompt); otherwise leave OpenCode's native retry decision untouched.
-4. **Escalation.** Only structured capability evidence escalates: same model / current variant → same model / stronger variant → next tier, within a finite per-task budget (one user prompt and its continuations).
+4. **Escalation.** Only structured capability evidence escalates, to the first configured resource of the next tier, within a finite per-task budget (one user prompt and its continuations). A same-model stronger-variant rung would need an ordered variant ladder the host does not expose; strength is never guessed from names.
 5. **Termination.** `succeeded`/`failed`/`interrupted` close the unit; receipts are written; parking/recovery evaluate at this safe boundary. `interrupted{reason:'user'}` never triggers failover.
 
 ## Resource-health model
@@ -68,7 +68,7 @@ Rules: quarantine at the narrowest justified scope (a model 429 never takes down
 
 ## Scheduler
 
-Pure function: `(settings, inventory, health, capacity, request context, clock) → Decision`. Decision is a discriminated union: `{kind:'apply', model, reason, evidence} | {kind:'defer', reason} | {kind:'park', reason} | {kind:'escalate', …} | {kind:'observe-only', would: Decision}`. OBSERVE and CONTROL call the same core; OBSERVE wraps the result without applying. Escalation budgets and breaker state are inputs, so the core stays deterministic; effects (switches, receipts, park) are applied by the execution layer.
+Pure function: `(settings, inventory, health, capacity, request context, clock) → Decision`. Decision is a discriminated union: `{kind:'apply', model, reason, evidence} | {kind:'defer', reason} | {kind:'park', reason} | {kind:'escalate', …} | {kind:'observe-only', would: Decision}`. `observe` and `active` call the same core; `observe` wraps the result without applying. Escalation budgets and breaker state are inputs, so the core stays deterministic; effects (switches, receipts, park) are applied by the execution layer.
 
 ## Persistence ownership
 
