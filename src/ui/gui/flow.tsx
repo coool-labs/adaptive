@@ -103,15 +103,18 @@ function ownSession(host: FlowHost): ReturnType<FlowHost["sessions"]["current"]>
 }
 
 /**
- * Typed RPC for the flow. RPC handlers resolve per location, so calls carry
- * the session's directory; on Home there is none and the host default applies.
+ * RPC handlers resolve per location, so calls carry the session's directory (a project-local install is
+ * only reachable that way); on Home there is none and the host default applies.
  */
+export function rpcLocation(host: FlowHost): { location?: { directory: string } } {
+  const directory = ownSession(host)?.location?.directory
+  return directory === undefined ? {} : { location: { directory } }
+}
+
+/** Typed RPC for the flow. */
 export function guiFlowApi(host: FlowHost): AdaptiveApi {
   const client = host.client.rpc(adaptiveRpc)
-  const at = () => {
-    const directory = ownSession(host)?.location?.directory
-    return directory === undefined ? {} : { location: { directory } }
-  }
+  const at = () => rpcLocation(host)
   return {
     settings: () => client["settings.get"](undefined, at()),
     setSettings: (patch) => client["settings.set"](patch, at()),

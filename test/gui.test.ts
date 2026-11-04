@@ -228,7 +228,14 @@ describe("gui entry", () => {
     return setup
   }
 
-  function fixture(options: { rpcCalls?: string[]; snapshot?: StatusSnapshot } = {}): {
+  function fixture(
+    options: {
+      rpcCalls?: string[]
+      statusOptions?: unknown[]
+      snapshot?: StatusSnapshot
+      session?: unknown
+    } = {},
+  ): {
     added: { registry: unknown; item: unknown }[]
     context: Record<string, unknown>
     menus: () => string[]
@@ -242,8 +249,9 @@ describe("gui entry", () => {
           expect(definition).toBeDefined()
           return {
             "settings.get": () => Promise.resolve({ ...defaultSettings(), inviteDismissed: true }),
-            "status.get": () => {
+            "status.get": (_input: unknown, callOptions: unknown) => {
               rpcCalls.push("status.get")
+              options.statusOptions?.push(callOptions)
               return Promise.resolve(options.snapshot ?? snapshot())
             },
             "receipts.list": () => {
@@ -263,7 +271,7 @@ describe("gui entry", () => {
       add: (registry: unknown, item: unknown) => {
         added.push({ registry, item })
       },
-      sessions: { current: () => undefined },
+      sessions: { current: () => options.session },
       servers: { list: () => [], get: () => undefined },
       dialogs: {
         select: (selection: { title: string }) => {
@@ -298,6 +306,27 @@ describe("gui entry", () => {
     await command.run()
     // The command drives the same dialog flow as the TUI, not just the settings page.
     expect(menus()).toEqual(["Adaptive (observe)"])
+  })
+
+  it("reads the settings page through the open session's location (project-local installs)", async () => {
+    const statusOptions: unknown[] = []
+    const { added, context } = fixture({
+      statusOptions,
+      session: {
+        id: "ses_1",
+        server: { builtin: true },
+        location: { directory: "/work/app" },
+      },
+    })
+    requiredSetup()(context as never)
+    const page = added[0]?.item as { render: () => unknown }
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const disposeRoot = render(() => page.render() as Element, container)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(statusOptions).toEqual([{ location: { directory: "/work/app" } }])
+    disposeRoot()
   })
 
   it("renders the registered page against the typed RPC client", async () => {

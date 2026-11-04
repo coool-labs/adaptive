@@ -696,6 +696,21 @@ describe.each(variants)("GUI /adaptive on a real host (%s)", (_name, load) => {
     })
   })
 
+  describe("settings page in a session", () => {
+    it("reads the server through the session's location", async () => {
+      const { page } = installOn(main, { session: { id: sessionID } })
+      const { container, dispose } = mountPage(page)
+      try {
+        await vi.waitFor(() => {
+          expect(modeSelect(container).disabled).toBe(false)
+        })
+        expect(container.querySelectorAll(".adaptive-receipt-line").length).toBeGreaterThan(0)
+      } finally {
+        dispose()
+      }
+    })
+  })
+
   describe("rejected writes", () => {
     it("alerts when the server refuses a global mode", async () => {
       const client = interceptRpc(main.client, (method, call) =>

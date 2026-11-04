@@ -18,4 +18,11 @@ describe("matchOptions", () => {
     expect(matchOptions("plain", options)).toEqual([options[2]])
     expect(matchOptions("zzz", options)).toEqual([])
   })
+
+  it("still finds everything the old per-field search did (provider, model id, name) and also the full id", () => {
+    expect(matchOptions("openai", options)).toEqual([options[0]])
+    expect(matchOptions("gpt-5", options)).toEqual([options[0]])
+    expect(matchOptions("claude x", options)).toEqual([options[1]])
+    expect(matchOptions("anthropic/claude-x", options)).toEqual([options[1]])
+  })
 })

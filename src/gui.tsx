@@ -6,7 +6,7 @@ import type { OperatingMode } from "./core/scheduler/types.js"
 import type { Receipt } from "./state/receipts/index.js"
 import type { StatusSnapshot } from "./rpc.js"
 import { adaptiveGuiApi, type GuiApi } from "./ui/gui/api.js"
-import { openAdaptive } from "./ui/gui/flow.js"
+import { openAdaptive, rpcLocation } from "./ui/gui/flow.js"
 import { modeChoices, parseModeValue, receiptLines, statusRows } from "./ui/gui/view.js"
 
 const RECEIPTS_PREVIEW_LIMIT = 5
@@ -98,7 +98,7 @@ export function AdaptiveStatusPage(props: { api: GuiApi }): JSX.Element {
  */
 export default Plugin.define({
   setup(context: Context): void {
-    const api = adaptiveGuiApi(context.client)
+    const api = adaptiveGuiApi(context.client, () => rpcLocation(context))
     context.add(SettingsPage, {
       id: "adaptive",
       title: "OpenCode Adaptive",
