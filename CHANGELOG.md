@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-11-04
+
+### Added
+
+- `/adaptive` in the GUI runs the same dialog flow as the TUI (status, models and tiers, mode, tier request, pin, receipts), over the same typed RPC. The settings page stays.
+- GUI end-to-end suite (`npm run e2e:gui`): the built GUI bundle runs against a stand-in host wired to a real OpenCode server, with a 100% coverage gate on the GUI and shared-flow sources.
+
+### Changed
+
+- The `/adaptive` flow moved from `src/ui/tui/` to `src/ui/flow/` and is shared by both surfaces.
+- The TUI model picker search is a case-insensitive substring match over the model's provider/model id and name.
+- The TUI status table renders from the same code path whether or not models are configured.
+
+### Fixed
+
+- The `/adaptive` slash command is registered in the GUI.
+- The GUI settings page now calls the Adaptive RPC with the open session's location, as the `/adaptive` flow does. Without it, a project-local install was unreachable whenever the host server's default location was not that project.
+
+### Removed
+
+- Unused code and options in the shared flow (`statusLine`, `validationMessage`, stale-index guards, unused select/confirm options).
+
 ## [1.2.3] — 2026-11-03
 
 ### Fixed
