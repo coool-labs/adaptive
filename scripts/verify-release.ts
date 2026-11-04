@@ -16,6 +16,7 @@ const STEPS = [
   "build",
   "pack:check",
   "plugin-test",
+  "e2e:gui",
   "e2e:web",
   "e2e:tui",
   "traceability",

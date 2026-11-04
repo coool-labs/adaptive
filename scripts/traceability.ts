@@ -61,6 +61,7 @@ const NOT_E2E_APPLICABLE: Readonly<Record<string, string>> = {
 const E2E_PREFIXES = [
   "test/runtime-e2e/",
   "test/e2e-web/",
+  "test/e2e-gui/",
   "test/e2e-tui/",
   "test/plugin-test/",
 ] as const

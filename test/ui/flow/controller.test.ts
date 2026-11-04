@@ -1,15 +1,15 @@
 // covers: ["ADP-032", "ADP-033", "ADP-054", "ADP-055"]
 import { describe, expect, it } from "vitest"
 
-import { INVITE_MESSAGE, INVITE_TITLE, runAdaptive } from "../../../src/ui/tui/controller.js"
-import { errorText } from "../../../src/ui/tui/options.js"
+import { INVITE_MESSAGE, INVITE_TITLE, runAdaptive } from "../../../src/ui/flow/controller.js"
+import { errorText } from "../../../src/ui/flow/options.js"
 import { applyPatch } from "../../../src/state/settings/index.js"
-import { STATUS_EMPTY_MESSAGE, statusTable } from "../../../src/ui/tui/status.js"
+import { STATUS_EMPTY_MESSAGE, statusTable } from "../../../src/ui/flow/status.js"
 import type { Receipt } from "../../../src/state/receipts/index.js"
 import type { SettingsPatch, SettingsV1 } from "../../../src/state/settings/index.js"
 import type { PatchResult } from "../../../src/state/settings/index.js"
-import type { AdaptiveApi, AdaptiveView } from "../../../src/ui/tui/controller.js"
-import type { ModelSummary } from "../../../src/ui/tui/tiers.js"
+import type { AdaptiveApi, AdaptiveView } from "../../../src/ui/flow/controller.js"
+import type { ModelSummary, TierEditorChoice } from "../../../src/ui/flow/tiers.js"
 import type { TierName } from "../../../src/core/tier-policy/types.js"
 import type { StatusSnapshot, TierResourceStatus } from "../../../src/rpc/status.js"
 
@@ -160,6 +160,10 @@ function rejectingPatchApi(errors: string[]): AdaptiveApi {
   return fakeApi({
     setSettings: () => Promise.resolve({ ok: false, errors } satisfies PatchResult),
   })
+}
+
+function resourceChoice(index: number): TierEditorChoice {
+  return { kind: "resource", index, ref: { providerID: "prov", id: "abc"[index] ?? "a" } }
 }
 
 function envWith(
@@ -902,11 +906,11 @@ describe("controller: tiers branch", () => {
         "models",
         "standard",
         { kind: "add" },
-        { providerID: "prov", modelID: "b" },
+        { providerID: "prov", modelID: "b", name: "Beta", variants: [] },
         undefined, // Escape the tier page: back to the tier list.
         "quick",
         { kind: "add" },
-        { providerID: "prov", modelID: "b" },
+        { providerID: "prov", modelID: "b", name: "Beta", variants: [] },
         undefined,
         undefined,
         "pin",
@@ -961,7 +965,7 @@ describe("controller: tiers branch", () => {
       "models",
       "standard",
       { kind: "add" },
-      { providerID: "prov", modelID: "b" },
+      { providerID: "prov", modelID: "b", name: "Beta", variants: [] },
       ...EXIT,
     )
     await runAdaptive(e)
@@ -1071,7 +1075,7 @@ describe("controller: tiers branch", () => {
       "models",
       "standard",
       { kind: "add" },
-      { providerID: "prov", modelID: "b" },
+      { providerID: "prov", modelID: "b", name: "Beta", variants: [] },
       undefined, // Escape the tier page: back to the tier list.
       undefined, // Leave the editor.
       undefined, // Leave the menu.
@@ -1114,7 +1118,7 @@ describe("controller: tiers branch", () => {
       "models",
       "standard",
       { kind: "add" },
-      { providerID: "prov", modelID: "b" },
+      { providerID: "prov", modelID: "b", name: "Beta", variants: [] },
       undefined,
       undefined,
       undefined,
@@ -1138,7 +1142,7 @@ describe("controller: tiers branch", () => {
       "models",
       "standard",
       { kind: "add" },
-      { providerID: "prov", modelID: "a" },
+      { providerID: "prov", modelID: "a", name: "Alpha", variants: ["high"] },
       { variant: "high" },
       ...EXIT,
     )
@@ -1160,7 +1164,7 @@ describe("controller: tiers branch", () => {
       "models",
       "standard",
       { kind: "add" },
-      { providerID: "prov", modelID: "a" },
+      { providerID: "prov", modelID: "a", name: "Alpha", variants: ["high"] },
       undefined,
       ...EXIT,
     )
@@ -1174,7 +1178,7 @@ describe("controller: tiers branch", () => {
       "models",
       "standard",
       { kind: "add" },
-      { providerID: "prov", modelID: "b" },
+      { providerID: "prov", modelID: "b", name: "Beta", variants: [] },
       ...EXIT,
     )
     await runAdaptive(e)
@@ -1202,7 +1206,7 @@ describe("controller: tiers branch", () => {
       "models",
       "standard",
       { kind: "add" },
-      { providerID: "prov", modelID: "b" },
+      { providerID: "prov", modelID: "b", name: "Beta", variants: [] },
       ...EXIT,
     )
     await runAdaptive(e)
@@ -1227,7 +1231,7 @@ describe("controller: tiers branch", () => {
           ]),
         ),
     })
-    e.view.selectQueue.push("models", "standard", { kind: "resource", index: 1 }, "up", ...EXIT)
+    e.view.selectQueue.push("models", "standard", resourceChoice(1), "up", ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([
       {
@@ -1254,7 +1258,7 @@ describe("controller: tiers branch", () => {
           ]),
         ),
     })
-    e.view.selectQueue.push("models", "standard", { kind: "resource", index: 2 }, "top", ...EXIT)
+    e.view.selectQueue.push("models", "standard", resourceChoice(2), "top", ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([
       {
@@ -1281,7 +1285,7 @@ describe("controller: tiers branch", () => {
           ]),
         ),
     })
-    e.view.selectQueue.push("models", "standard", { kind: "resource", index: 0 }, "down", ...EXIT)
+    e.view.selectQueue.push("models", "standard", resourceChoice(0), "down", ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([
       {
@@ -1302,7 +1306,7 @@ describe("controller: tiers branch", () => {
       settings: () => Promise.resolve(tierSettings([{ providerID: "prov", id: "a" }])),
     })
     e.view.confirmQueue.push(true)
-    e.view.selectQueue.push("models", "standard", { kind: "resource", index: 0 }, "remove", ...EXIT)
+    e.view.selectQueue.push("models", "standard", resourceChoice(0), "remove", ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([{ tiers: { quick: [], standard: [], advanced: [] } }])
   })
@@ -1312,16 +1316,7 @@ describe("controller: tiers branch", () => {
       settings: () => Promise.resolve(tierSettings([{ providerID: "prov", id: "a" }])),
     })
     e.view.confirmQueue.push(false)
-    e.view.selectQueue.push("models", "standard", { kind: "resource", index: 0 }, "remove", ...EXIT)
-    await runAdaptive(e)
-    expect(patches).toEqual([])
-  })
-
-  it("exits the resource menu when the index went stale", async () => {
-    const { e, patches } = envWith({
-      settings: () => Promise.resolve(tierSettings([{ providerID: "prov", id: "a" }])),
-    })
-    e.view.selectQueue.push("models", "standard", { kind: "resource", index: 3 }, ...EXIT)
+    e.view.selectQueue.push("models", "standard", resourceChoice(0), "remove", ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([])
   })
@@ -1511,38 +1506,11 @@ describe("controller: cancel and stale paths", () => {
     expect(patches).toEqual([])
   })
 
-  it("adds a stale picker pick without consulting variants", async () => {
-    const { e, patches } = envWith()
-    e.view.selectQueue.push(
-      "models",
-      "standard",
-      { kind: "add" },
-      { providerID: "ghost", modelID: "x" },
-      ...EXIT,
-    )
-    await runAdaptive(e)
-    expect(patches).toEqual([
-      {
-        tiers: {
-          quick: [],
-          standard: [{ providerID: "ghost", id: "x" }],
-          advanced: [],
-        },
-      },
-    ])
-  })
-
   it("returns to the tier editor when the resource menu is cancelled", async () => {
     const { e, patches } = envWith({
       settings: () => Promise.resolve(tierSettings([{ providerID: "prov", id: "a" }])),
     })
-    e.view.selectQueue.push(
-      "models",
-      "standard",
-      { kind: "resource", index: 0 },
-      undefined,
-      ...EXIT,
-    )
+    e.view.selectQueue.push("models", "standard", resourceChoice(0), undefined, ...EXIT)
     await runAdaptive(e)
     expect(patches).toEqual([])
   })

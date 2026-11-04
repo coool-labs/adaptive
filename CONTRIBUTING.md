@@ -24,6 +24,7 @@ npm run coverage       # vitest + 100% statement/branch/function/line gate on sr
 npm run build          # tsc build + GUI bundle
 npm run pack:check     # tarball inspection + publish dry-run (ADP-048)
 npm run plugin-test    # packed plugin against real OpenCode hosts (2.2.1 / current / latest)
+npm run e2e:gui        # GUI /adaptive journeys: built bundle + stand-in host on a real server (100% coverage gate)
 npm run e2e:web        # Playwright web E2E (Chromium + WebKit, desktop + narrow)
 npm run e2e:tui        # Termwright PTY TUI E2E (80x24 / narrow / wide)
 npm run traceability   # requirement-coverage gate (ADP-047)

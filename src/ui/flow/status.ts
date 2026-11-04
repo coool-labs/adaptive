@@ -35,11 +35,6 @@ function pinnedTo(ref: TierResourceStatus["ref"], pin: StatusSnapshot["pin"]): b
   return pin.providerID === ref.providerID && pin.id === ref.id && pin.variant === ref.variant
 }
 
-/** One plain status line for a resource: health, window, breaker, pin. */
-export function statusLine(status: TierResourceStatus, pin: StatusSnapshot["pin"]): string {
-  return `${resourceLabel(status.ref)} — ${status.health}${stateSuffix(status, pin)}`
-}
-
 /** Everything after the health state: capacity usage, window, breaker, pin. */
 function stateSuffix(status: TierResourceStatus, pin: StatusSnapshot["pin"]): string {
   let suffix = ""
@@ -78,7 +73,6 @@ export function statusTable(snapshot: StatusSnapshot): string[] {
     status.health,
     stateCell(status, snapshot.pin),
   ])
-  if (rows.length === 0) return []
   // Header and rows are built together, always four cells wide — the column
   // index cannot be out of range.
   const widths = header.map((cell, column) =>

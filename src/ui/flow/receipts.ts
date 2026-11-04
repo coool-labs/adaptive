@@ -3,7 +3,12 @@
  * text for the `/adaptive` receipts browser. No secrets — receipt content is
  * already bounded at write time; this layer only formats.
  */
-import type { Decision } from "../../core/scheduler/types.js"
+import type {
+  ApplyReason,
+  Decision,
+  ParkReason,
+  SchedulerDeferReason,
+} from "../../core/scheduler/types.js"
 import { resourceLabel } from "./tiers.js"
 import type { Receipt, ReceiptOutcome } from "../../state/receipts/types.js"
 
@@ -68,23 +73,17 @@ export function relativeTime(at: number, now: number): string {
 
 /**
  * Plain-language explanation for a receipt, keyed on the finite reason
- * vocabulary. Unknown reasons fall through to the raw summary.
+ * vocabulary (the maps are total over it).
  */
 export function whatHappened(receipt: Receipt): string {
   const decision = receipt.decision
   switch (decision.kind) {
     case "apply":
-      return (
-        applyExplanation[decision.reason] ??
-        `Adaptive routed this turn to ${resourceLabel(decision.model)}.`
-      )
+      return applyExplanation[decision.reason]
     case "defer":
-      return deferExplanation[decision.reason] ?? "Adaptive left the model choice to OpenCode."
+      return deferExplanation[decision.reason]
     case "park":
-      return (
-        parkExplanation[decision.reason] ??
-        "Adaptive could not route this turn and left it to OpenCode."
-      )
+      return parkExplanation[decision.reason]
     case "escalate":
       return `This turn needed stronger capability, so Adaptive moved it to ${resourceLabel(decision.target)}.`
     case "observe-only":
@@ -92,7 +91,7 @@ export function whatHappened(receipt: Receipt): string {
   }
 }
 
-const applyExplanation: Record<string, string> = {
+const applyExplanation: Record<ApplyReason, string> = {
   pin: "Adaptive routed to the resource you pinned.",
   preferred:
     "Adaptive chose this resource: it is the preferred resource for the tier and was available.",
@@ -103,10 +102,8 @@ const applyExplanation: Record<string, string> = {
   draining: "Adaptive routed to this resource while its provider was draining capacity.",
 }
 
-const deferExplanation: Record<string, string> = {
+const deferExplanation: Record<SchedulerDeferReason, string> = {
   "routing-defer": "No routing rule applied to this turn, so Adaptive left the choice to OpenCode.",
-  "tier-not-configured":
-    "The tier that would handle this turn has no models configured, so Adaptive left the choice to OpenCode.",
   "adaptive-off": "Adaptive is switched off, so every turn runs on OpenCode's own choice.",
   "pin-unverifiable":
     "The pinned resource could not be verified as available, so Adaptive left the choice to OpenCode.",
@@ -122,7 +119,7 @@ const deferExplanation: Record<string, string> = {
     "No stronger resource was eligible to escalate to (unavailable, blocked, or not configured).",
 }
 
-const parkExplanation: Record<string, string> = {
+const parkExplanation: Record<ParkReason, string> = {
   "all-blocked":
     "Every resource in the tier is currently unavailable, so the turn ran without Adaptive routing.",
   "no-candidates":

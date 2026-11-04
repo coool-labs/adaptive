@@ -8,7 +8,6 @@ import { TIERS } from "../../core/tier-policy/types.js"
 import type { TierName } from "../../core/tier-policy/types.js"
 import type { StatusSnapshot, TierResourceStatus } from "../../rpc/status.js"
 import type { SettingsV1 } from "../../state/settings/index.js"
-import type { PatchResult } from "../../state/settings/types.js"
 import type { SelectOption } from "./options.js"
 
 /** `provider/model` with an `@variant` suffix when pinned to one. */
@@ -31,7 +30,7 @@ export function healthTag(status: TierResourceStatus | undefined): string {
   return parts.length === 0 ? "" : ` [${parts.join(", ")}]`
 }
 
-export type TierEditorChoice = { kind: "add" } | { kind: "resource"; index: number }
+export type TierEditorChoice = { kind: "add" } | { kind: "resource"; index: number; ref: ModelRef }
 export function tierEditorOptions(
   settings: SettingsV1,
   tier: TierName,
@@ -44,7 +43,7 @@ export function tierEditorOptions(
   settings.tiers[tier].forEach((ref, index) => {
     options.push({
       title: `${resourceLabel(ref)}${healthTag(tierStatus?.[index])}`,
-      value: { kind: "resource", index },
+      value: { kind: "resource", index, ref },
       description: "Move or remove",
     })
   })
@@ -74,32 +73,12 @@ export interface ModelSummary {
   readonly variants: readonly string[]
 }
 
-export interface ModelPick {
-  providerID: string
-  modelID: string
-}
-
-export function modelMatches(info: ModelSummary, query: string): boolean {
-  const q = query.trim().toLowerCase()
-  if (q === "") return true
-  return (
-    info.providerID.toLowerCase().includes(q) ||
-    info.modelID.toLowerCase().includes(q) ||
-    info.name.toLowerCase().includes(q)
-  )
-}
-
-export function modelPickerOptions(
-  models: readonly ModelSummary[],
-  query: string,
-): SelectOption<ModelPick>[] {
-  return models
-    .filter((info) => modelMatches(info, query))
-    .map((info) => ({
-      title: `${info.providerID}/${info.modelID}`,
-      description: info.name,
-      value: { providerID: info.providerID, modelID: info.modelID },
-    }))
+export function modelPickerOptions(models: readonly ModelSummary[]): SelectOption<ModelSummary>[] {
+  return models.map((info) => ({
+    title: `${info.providerID}/${info.modelID}`,
+    description: info.name,
+    value: info,
+  }))
 }
 
 export interface VariantChoice {
@@ -118,9 +97,7 @@ export function variantOptions(variants: readonly string[]): SelectOption<Varian
 
 /** Move the resource at `index` to the front (make it primary); out-of-bounds is a no-op. */
 export function moveResourceToTop(resources: readonly ModelRef[], index: number): ModelRef[] {
-  const item = resources[index]
-  if (item === undefined) return [...resources]
-  return [item, ...resources.filter((_, i) => i !== index)]
+  return [...resources.filter((_, i) => i === index), ...resources.filter((_, i) => i !== index)]
 }
 
 /** Swap the resource at `index` with its `delta` neighbour; bounds are no-ops. */
@@ -141,12 +118,5 @@ export function moveResource(
 
 /** Drop the resource at `index`; out-of-bounds keeps the list unchanged. */
 export function removeResource(resources: readonly ModelRef[], index: number): ModelRef[] {
-  const item = resources[index]
-  if (item === undefined) return [...resources]
   return resources.filter((_, i) => i !== index)
-}
-
-/** First validation error line for an alert; undefined when the patch applied. */
-export function validationMessage(result: PatchResult): string | undefined {
-  return result.ok ? undefined : result.errors.join("; ")
 }

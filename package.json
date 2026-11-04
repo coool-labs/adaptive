@@ -45,6 +45,7 @@
     "format:check": "prettier --check .",
     "plugin-test": "opencode-plugin-test",
     "e2e:web": "playwright test",
+    "e2e:gui": "vitest run --config test/e2e-gui/vitest.config.ts --coverage",
     "e2e:tui": "termwright test -- --config test/e2e-tui/vitest.config.ts",
     "traceability": "vite-node scripts/traceability.ts",
     "verify:release": "vite-node scripts/verify-release.ts"

@@ -6,6 +6,7 @@ import type { OperatingMode } from "./core/scheduler/types.js"
 import type { Receipt } from "./state/receipts/index.js"
 import type { StatusSnapshot } from "./rpc.js"
 import { adaptiveGuiApi, type GuiApi } from "./ui/gui/api.js"
+import { openAdaptive } from "./ui/gui/flow.js"
 import { modeChoices, parseModeValue, receiptLines, statusRows } from "./ui/gui/view.js"
 
 const RECEIPTS_PREVIEW_LIMIT = 5
@@ -92,7 +93,8 @@ export function AdaptiveStatusPage(props: { api: GuiApi }): JSX.Element {
 
 /**
  * GUI plugin entry (the `./gui-experimental` bundle default export). Thin adapter: registers a native
- * SettingsPage and a palette command that opens it; no routing logic lives here (ADP-034/035).
+ * SettingsPage and a palette/`/adaptive` slash command that runs the same dialog flow as the TUI (ui/flow); no
+ * routing logic lives here (ADP-034/035).
  */
 export default Plugin.define({
   setup(context: Context): void {
@@ -113,9 +115,9 @@ export default Plugin.define({
       id: "open",
       title: "OpenCode Adaptive",
       group: "Adaptive",
-      run: () => {
-        context.layout.settings("adaptive")
-      },
+      suggested: true,
+      slash: { name: "adaptive" },
+      run: () => openAdaptive(context),
     })
   },
 })

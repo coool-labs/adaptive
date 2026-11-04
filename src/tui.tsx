@@ -19,11 +19,11 @@ import { PLUGIN_ID } from "./plugin-id.js"
 import { adaptiveRpc } from "./rpc/definition.js"
 import type { OperatingMode } from "./core/scheduler/types.js"
 import { parseMode } from "./state/settings/index.js"
-import { runAdaptive } from "./ui/tui/controller.js"
-import type { AdaptiveApi, AdaptiveView } from "./ui/tui/controller.js"
-import type { SelectOption } from "./ui/tui/options.js"
-import { errorText } from "./ui/tui/options.js"
-import type { ModelSummary } from "./ui/tui/tiers.js"
+import { runAdaptive } from "./ui/flow/controller.js"
+import type { AdaptiveApi, AdaptiveView } from "./ui/flow/controller.js"
+import { errorText } from "./ui/flow/options.js"
+import type { ModelSummary } from "./ui/flow/tiers.js"
+import { matchOptions } from "./ui/tui/search.js"
 
 /** Footer chip appearance: label plus foreground color (null = theme default). */
 export interface Chip {
@@ -72,10 +72,14 @@ export default define({
       setTierRequest: (sessionID, tier) => client["tier-request.set"]({ sessionID, tier }, at()),
     }
     const view: AdaptiveView = {
-      select: (options) => context.ui.dialog.select(options),
+      // A placeholder marks a searchable list (the model picker).
+      select: (options) =>
+        context.ui.dialog.select(
+          options.placeholder === undefined ? options : { ...options, search: matchOptions },
+        ),
       selectPaged: <Value,>(spec: {
         title: string
-        options: readonly SelectOption<Value>[]
+        options: readonly { title: string; value: Value }[]
         actions: readonly { title: string; value: string; bind: string }[]
       }) =>
         // Footer actions flip pages: triggering one closes the dialog and

@@ -7,6 +7,7 @@ import { render } from "solid-js/web"
 import guiPlugin, { AdaptiveStatusPage } from "../src/gui.js"
 import type { Receipt } from "../src/state/receipts/index.js"
 import type { StatusSnapshot } from "../src/rpc.js"
+import { defaultSettings } from "../src/state/settings/index.js"
 import type { GuiApi } from "../src/ui/gui/api.js"
 
 function tierMap(overrides: Partial<StatusSnapshot["tiers"]> = {}): StatusSnapshot["tiers"] {
@@ -230,16 +231,17 @@ describe("gui entry", () => {
   function fixture(options: { rpcCalls?: string[]; snapshot?: StatusSnapshot } = {}): {
     added: { registry: unknown; item: unknown }[]
     context: Record<string, unknown>
-    openedPage: () => string | undefined
+    menus: () => string[]
   } {
     const added: { registry: unknown; item: unknown }[] = []
-    let opened: string | undefined
+    const menus: string[] = []
     const rpcCalls = options.rpcCalls ?? []
     const context = {
       client: {
         rpc: (definition: unknown) => {
           expect(definition).toBeDefined()
           return {
+            "settings.get": () => Promise.resolve({ ...defaultSettings(), inviteDismissed: true }),
             "status.get": () => {
               rpcCalls.push("status.get")
               return Promise.resolve(options.snapshot ?? snapshot())
@@ -261,28 +263,41 @@ describe("gui entry", () => {
       add: (registry: unknown, item: unknown) => {
         added.push({ registry, item })
       },
-      layout: {
-        settings: (page: string) => {
-          opened = page
+      sessions: { current: () => undefined },
+      servers: { list: () => [], get: () => undefined },
+      dialogs: {
+        select: (selection: { title: string }) => {
+          menus.push(selection.title)
+          return Promise.resolve(undefined)
         },
       },
     }
-    return { added, context, openedPage: () => opened }
+    return { added, context, menus: () => menus }
   }
 
-  it("registers a settings page and a command that opens it", () => {
-    const { added, context, openedPage } = fixture()
+  it("registers a settings page and a command that opens the /adaptive menu", async () => {
+    const { added, context, menus } = fixture()
     requiredSetup()(context as never)
     expect(added).toHaveLength(2)
     const page = added[0]?.item as { id: string; title: string; entries: unknown[] }
     expect(page.id).toBe("adaptive")
     expect(page.title).toBe("OpenCode Adaptive")
     expect(page.entries).toHaveLength(1)
-    const command = added[1]?.item as { id: string; title: string; run: () => void }
+    const command = added[1]?.item as {
+      id: string
+      title: string
+      slash?: { name: string }
+      suggested?: boolean
+      run: () => Promise<void>
+    }
     expect(command.id).toBe("open")
     expect(command.title).toBe("OpenCode Adaptive")
-    command.run()
-    expect(openedPage()).toBe("adaptive")
+    // Without `slash` the command only reaches the palette: /adaptive never shows in the composer.
+    expect(command.slash).toEqual({ name: "adaptive" })
+    expect(command.suggested).toBe(true)
+    await command.run()
+    // The command drives the same dialog flow as the TUI, not just the settings page.
+    expect(menus()).toEqual(["Adaptive (observe)"])
   })
 
   it("renders the registered page against the typed RPC client", async () => {

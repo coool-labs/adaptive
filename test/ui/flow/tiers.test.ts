@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest"
 import fc from "fast-check"
 import {
   healthTag,
-  modelMatches,
   modelPickerOptions,
   moveResource,
   moveResourceToTop,
@@ -11,14 +10,12 @@ import {
   resourceLabel,
   tierEditorOptions,
   tierMenuOptions,
-  validationMessage,
   variantOptions,
   type ModelSummary,
-} from "../../../src/ui/tui/tiers.js"
+} from "../../../src/ui/flow/tiers.js"
 import type { StatusSnapshot, TierResourceStatus } from "../../../src/rpc/status.js"
 import type { ModelRef } from "../../../src/core/work-unit/types.js"
 import { defaultSettings, type SettingsV1 } from "../../../src/state/settings/index.js"
-import type { PatchResult } from "../../../src/state/settings/types.js"
 
 function tierResource(providerID: string, id: string): TierResourceStatus {
   return {
@@ -134,7 +131,7 @@ describe("tier menus", () => {
     expect(options[0]?.title).toBe("Add model…")
     expect(options[1]?.title).toBe("prov/a [unavailable]")
     expect(options[2]?.title).toBe("prov/b@v")
-    expect(options[1]?.value).toEqual({ kind: "resource", index: 0 })
+    expect(options[1]?.value).toEqual({ kind: "resource", index: 0, ref: ref("prov", "a") })
   })
 
   it("tierEditorOptions works without a status snapshot", () => {
@@ -162,49 +159,19 @@ describe("model search", () => {
   }
   const models: ModelSummary[] = [gpt, claude]
 
-  it("matches provider, model id, or name case-insensitively; empty query matches all", () => {
-    expect(modelMatches(gpt, "")).toBe(true)
-    expect(modelMatches(gpt, "  ")).toBe(true)
-    expect(modelMatches(gpt, "OPENAI")).toBe(true)
-    expect(modelMatches(gpt, "gpt")).toBe(true)
-    expect(modelMatches(gpt, "gpt-5")).toBe(true)
-    expect(modelMatches(claude, "claude x")).toBe(true)
-    expect(modelMatches(claude, "gpt")).toBe(false)
-  })
-
-  it("modelPickerOptions filters and maps to picks with names", () => {
-    expect(modelPickerOptions(models, "anthro")).toEqual([
+  it("modelPickerOptions maps every model to a pick with its name", () => {
+    expect(modelPickerOptions(models)).toEqual([
+      {
+        title: "openai/gpt-5",
+        description: "GPT-5",
+        value: gpt,
+      },
       {
         title: "anthropic/claude-x",
         description: "Claude X",
-        value: { providerID: "anthropic", modelID: "claude-x" },
+        value: claude,
       },
     ])
-    expect(modelPickerOptions(models, "")).toHaveLength(2)
-    expect(modelPickerOptions(models, "zzz")).toEqual([])
-  })
-
-  it("search is total over arbitrary queries and model lists", () => {
-    const arb = fc.array(
-      fc.record({
-        providerID: fc.string({ minLength: 1, maxLength: 6 }),
-        modelID: fc.string({ minLength: 1, maxLength: 6 }),
-        name: fc.string({ maxLength: 8 }),
-        variants: fc.constant([]),
-      }),
-      { maxLength: 6 },
-    )
-    fc.assert(
-      fc.property(arb, fc.string({ maxLength: 8 }), (list, query) => {
-        const options = modelPickerOptions(list, query)
-        const expected = list.filter((m) => modelMatches(m, query)).length
-        expect(options).toHaveLength(expected)
-        for (const option of options) {
-          expect(typeof option.value.providerID).toBe("string")
-        }
-      }),
-      { numRuns: 200 },
-    )
   })
 })
 
@@ -276,14 +243,5 @@ describe("moveResourceToTop", () => {
     const refs = [ref("p", "a"), ref("p", "b")]
     expect(moveResourceToTop(refs, 5)).toEqual(refs)
     expect(moveResourceToTop(refs, -1)).toEqual(refs)
-  })
-})
-
-describe("validationMessage", () => {
-  it("is undefined for a valid result and joins errors otherwise", () => {
-    const ok: PatchResult = { ok: true, settings: defaultSettings() }
-    expect(validationMessage(ok)).toBeUndefined()
-    const bad: PatchResult = { ok: false, errors: ["invalid mode", "invalid pin"] }
-    expect(validationMessage(bad)).toBe("invalid mode; invalid pin")
   })
 })

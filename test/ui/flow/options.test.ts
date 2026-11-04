@@ -7,7 +7,7 @@
 // covers: ["ADP-033"]
 import { describe, expect, it } from "vitest"
 
-import { errorText } from "../../../src/ui/tui/options.js"
+import { errorText } from "../../../src/ui/flow/options.js"
 
 describe("errorText", () => {
   it("uses the message of an Error instance", () => {

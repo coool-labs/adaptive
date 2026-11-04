@@ -9,7 +9,7 @@ import {
   sessionTierOptions,
   MAIN_MENU_ITEMS,
   modelsSummary,
-} from "../../../src/ui/tui/menu.js"
+} from "../../../src/ui/flow/menu.js"
 import { OPERATING_MODES } from "../../../src/core/scheduler/types.js"
 import type { OperatingMode } from "../../../src/core/scheduler/types.js"
 import type { TierName } from "../../../src/core/tier-policy/types.js"

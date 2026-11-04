@@ -9,7 +9,7 @@ import {
   RECEIPTS_PAGE_SIZE,
   summarizeDecision,
   whatHappened,
-} from "../../../src/ui/tui/receipts.js"
+} from "../../../src/ui/flow/receipts.js"
 import type { Decision } from "../../../src/core/scheduler/types.js"
 import type { Receipt, ReceiptOutcome } from "../../../src/state/receipts/types.js"
 import { TIERS } from "../../../src/core/tier-policy/types.js"
@@ -172,35 +172,6 @@ describe("whatHappened", () => {
     expect(
       whatHappened(receipt({ decision: { kind: "observe-only", would: applyDecision() } })),
     ).toMatch(/observing/)
-  })
-
-  it("falls back to a neutral sentence for reasons outside the vocabulary", () => {
-    expect(
-      whatHappened(
-        receipt({
-          decision: {
-            kind: "apply",
-            model: { providerID: "p", id: "m" },
-            reason: "brand-new-reason" as unknown as "preferred",
-            evidence: { skipped: [] },
-          },
-        }),
-      ),
-    ).toBe("Adaptive routed this turn to p/m.")
-    expect(
-      whatHappened(
-        receipt({
-          decision: { kind: "defer", reason: "brand-new-reason" as unknown as "routing-defer" },
-        }),
-      ),
-    ).toBe("Adaptive left the model choice to OpenCode.")
-    expect(
-      whatHappened(
-        receipt({
-          decision: { kind: "park", reason: "brand-new-reason" as unknown as "all-blocked" },
-        }),
-      ),
-    ).toBe("Adaptive could not route this turn and left it to OpenCode.")
   })
 })
 

@@ -1,8 +1,8 @@
 import { OPERATING_MODES, type OperatingMode } from "../../core/scheduler/types.js"
 import { TIERS } from "../../core/tier-policy/index.js"
 import type { StatusSnapshot } from "../../rpc.js"
-import { healthTag, resourceLabel } from "../tui/tiers.js"
-import { receiptLine } from "../tui/receipts.js"
+import { healthTag, resourceLabel } from "../flow/tiers.js"
+import { receiptLine } from "../flow/receipts.js"
 import type { Receipt } from "../../state/receipts/index.js"
 
 /** One display row of the GUI settings page. `tone` marks rows that need attention. */

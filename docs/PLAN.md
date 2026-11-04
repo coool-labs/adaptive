@@ -33,7 +33,7 @@ Package scaffolding: strictest tsconfig, package.json with the four exports, vit
 
 ## Step 4 — Surfaces
 
-17. `tui.tsx` + `ui/tui` — `/adaptive`, tiered editor, status, receipts view (ADP-033).
+17. `tui.tsx` + `ui/flow` — `/adaptive`, tiered editor, status, receipts view (ADP-033).
 18. `gui.tsx` + `ui/gui` — SettingsPage, thin adapter (ADP-034/035).
 
 ## Step 5 — Test infrastructure

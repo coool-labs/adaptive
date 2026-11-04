@@ -46,28 +46,19 @@ export interface AdaptiveView {
     title: string
     placeholder?: string
     options: readonly SelectOption<Value>[]
-    current?: Value
-    search?: (
-      query: string,
-      options: readonly SelectOption<Value>[],
-    ) => readonly SelectOption<Value>[]
   }): Promise<Value | undefined>
   /** A select with footer actions (page flips): the action closes the
    * dialog and is reported separately from an option pick. */
   selectPaged<Value>(spec: {
     title: string
-    options: readonly SelectOption<Value>[]
+    options: readonly { title: string; value: Value }[]
     actions: readonly { title: string; value: string; bind: string }[]
   }): Promise<{ picked: Value | undefined; action: string | undefined }>
-  confirm(options: {
-    title: string
-    message: string
-    label?: { confirm?: string; cancel?: string }
-  }): Promise<boolean | undefined>
+  confirm(options: { title: string; message: string }): Promise<boolean | undefined>
   alert(options: { title: string; message: string }): Promise<void>
   /** A column-aligned text table (header row first); Escape closes it. */
   table(spec: { title: string; lines: string[] }): Promise<void>
-  toast(message: string, variant: "info" | "success" | "warning" | "error"): void
+  toast(message: string, variant: "success" | "error"): void
 }
 
 export interface AdaptiveApi {
@@ -412,7 +403,7 @@ async function runTierEditor(env: AdaptiveEnv, feedback: SaveFeedback): Promise<
           pageSettings = next
         }
       } else {
-        const next = await runResourceMenu(env, pageSettings, tier, choice.index, feedback)
+        const next = await runResourceMenu(env, pageSettings, tier, choice, feedback)
         if (next !== undefined) {
           saved = next
           pageSettings = next
@@ -445,12 +436,10 @@ async function runAddModel(
   const pick = await env.view.select({
     title: "Add model",
     placeholder: "Search provider / model / name",
-    options: modelPickerOptions(models, ""),
-    search: (query) => modelPickerOptions(models, query),
+    options: modelPickerOptions(models),
   })
   if (pick === undefined) return undefined
-  const info = models.find((m) => m.providerID === pick.providerID && m.modelID === pick.modelID)
-  const variants = info?.variants ?? []
+  const variants = pick.variants
   let variant: string | undefined
   if (variants.length > 0) {
     const choice = await env.view.select({
@@ -483,11 +472,9 @@ async function runResourceMenu(
   env: AdaptiveEnv,
   settings: SettingsV1,
   tier: TierName,
-  index: number,
+  { index, ref }: { index: number; ref: ModelRef },
   feedback: SaveFeedback,
 ): Promise<SettingsV1 | undefined> {
-  const ref = settings.tiers[tier][index]
-  if (ref === undefined) return undefined
   const pick = await env.view.select({
     title: `Resource: ${resourceLabel(ref)}`,
     options: resourceMenuOptions(),

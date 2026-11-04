@@ -222,7 +222,7 @@ describe("tui entry: full flows", () => {
       "models",
       "standard",
       { kind: "add" },
-      { providerID: "prov", modelID: "a" },
+      { providerID: "prov", modelID: "a", name: "Alpha", variants: ["high", "low"] },
       { variant: "high" },
       undefined,
       undefined,
@@ -230,7 +230,9 @@ describe("tui entry: full flows", () => {
     run()
     await new Promise((resolve) => setTimeout(resolve, 0))
     const addSelect = dialogs.selects.find((entry) => entry.title === "Add model")
-    expect(addSelect?.values).toEqual([{ providerID: "prov", modelID: "a" }])
+    expect(addSelect?.values).toEqual([
+      { providerID: "prov", modelID: "a", name: "Alpha", variants: ["high", "low"] },
+    ])
     const variantSelect = dialogs.selects.find((entry) => entry.title.includes("Variant"))
     expect(variantSelect?.values).toEqual([
       { variant: undefined },

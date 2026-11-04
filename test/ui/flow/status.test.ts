@@ -4,10 +4,9 @@ import fc from "fast-check"
 import {
   clockTime,
   healthEntries,
-  statusLine,
   statusTable,
   STATUS_EMPTY_MESSAGE,
-} from "../../../src/ui/tui/status.js"
+} from "../../../src/ui/flow/status.js"
 import type { StatusSnapshot, TierResourceStatus } from "../../../src/rpc/status.js"
 
 function entry(overrides: Partial<TierResourceStatus> = {}): TierResourceStatus {
@@ -36,14 +35,14 @@ function snapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot {
 
 describe("status table", () => {
   it("distinguishes weekly reset dates even when their clock times match", () => {
-    const first = statusLine(
-      entry({ usedPercent: 100, resetAt: new Date(2026, 10, 3, 18, 42).getTime() }),
-      null,
-    )
-    const next = statusLine(
-      entry({ usedPercent: 100, resetAt: new Date(2026, 10, 10, 18, 42).getTime() }),
-      null,
-    )
+    const stateOf = (resetAt: number): string | undefined =>
+      statusTable(
+        snapshot({
+          tiers: { quick: [entry({ usedPercent: 100, resetAt })], standard: [], advanced: [] },
+        }),
+      )[1]
+    const first = stateOf(new Date(2026, 10, 3, 18, 42).getTime())
+    const next = stateOf(new Date(2026, 10, 10, 18, 42).getTime())
     expect(first).toContain("2026-11-03 18:42")
     expect(next).toContain("2026-11-10 18:42")
     expect(first).not.toBe(next)
@@ -149,29 +148,6 @@ describe("status table", () => {
     expect(lines[2]).toContain("probing")
   })
 
-  it("returns no lines when nothing is configured", () => {
-    expect(statusTable(snapshot())).toEqual([])
-  })
-
-  it("renders one line per resource without a tier prefix (statusLine)", () => {
-    const at = new Date(2026, 0, 1, 9, 5).getTime()
-    expect(
-      statusLine(entry({ health: "rate_limited", windowed: true, windowUntil: at }), null),
-    ).toBe("prov/m1 — rate_limited, windowed until 2026-01-01 09:05")
-    expect(statusLine(entry(), { providerID: "prov", id: "m1" })).toBe("prov/m1 — healthy (pinned)")
-    expect(
-      statusLine(entry({ ref: { providerID: "prov", id: "other" } }), {
-        providerID: "prov",
-        id: "m1",
-      }),
-    ).toBe("prov/other — healthy")
-    const capAt = new Date(2026, 0, 1, 18, 42).getTime()
-    expect(statusLine(entry({ usedPercent: 72, resetAt: capAt }), null)).toBe(
-      "prov/m1 — healthy, used 72%, resets 2026-01-01 18:42",
-    )
-    expect(statusLine(entry({ usedPercent: 30 }), null)).toBe("prov/m1 — healthy, used 30%")
-  })
-
   it("never throws over arbitrary snapshots (property)", () => {
     const healthArb = fc.constantFrom(
       "healthy",
@@ -210,9 +186,9 @@ describe("status table", () => {
           const s = snapshot({ mode, pin, tiers: { quick, standard, advanced } })
           const lines = statusTable(s)
           const count = quick.length + standard.length + advanced.length
-          // One table row per configured resource, plus the header row when
-          // anything is configured; every row has exactly four columns.
-          expect(lines).toHaveLength(count === 0 ? 0 : count + 1)
+          // One table row per configured resource plus the header row; every
+          // row has exactly four columns.
+          expect(lines).toHaveLength(count + 1)
           for (const line of lines) {
             expect(line.split(/ {2,}/)).toHaveLength(4)
           }
