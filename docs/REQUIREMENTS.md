@@ -49,7 +49,7 @@ Every requirement is objectively testable. IDs are stable; tests declare `covers
 ## UX
 
 - **ADP-033** — The TUI exposes `/adaptive` with tiered model lists supporting search over real OpenCode models, variant selection, reorder, remove, immediate validation, clear unavailable-resource display, keyboard-only operation, and graceful narrow terminals.
-- **ADP-034** — The GUI provides a native OpenCode SettingsPage via the experimental GUI plugin surface; no separate localhost website; `/adaptive` in the GUI runs the same dialog flow as the TUI (shared `ui/flow` controller over host dialogs); the GUI adapter is thin, uses typed RPC, and handles server disconnect/restart.
+- **ADP-034** — The GUI provides a native OpenCode SettingsPage via the experimental GUI plugin surface; no separate localhost website; `/adaptive` in the GUI runs the same dialog flow as the TUI (shared `ui/flow` controller over host dialogs); the GUI adapter is thin, uses typed RPC, and handles server disconnect/restart. Because the browser web app never mounts plugin GUI bundles, a server command `/web-adaptive` (status, and `on|off|observe|active`) is the web UI's way to see and switch the mode.
 - **ADP-035** — The Web UI is usable at desktop and narrow/mobile widths.
 - **ADP-036** — The server is the single source of truth: settings changed in one surface are visible in the other; state is versioned with defined migration from empty/new state.
 

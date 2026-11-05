@@ -86,6 +86,7 @@ An outage never moves work to a stronger tier. Work only moves up on real eviden
 - A task that moved up a tier stays there. The next task is routed again from scratch.
 - Usage figures come from response headers and are best effort. Providers that use WebSockets don't expose them.
 - The browser/desktop settings page is experimental. No released OpenCode loads it yet, so use `/adaptive`.
+- In the web UI (including on mobile) type `/web-adaptive` for the mode and model status, or `/web-adaptive on`, `off`, `observe`, `active` to switch the mode. It is a server command, which the web app lists in the composer's slash menu.
 
 ## Troubleshooting
 

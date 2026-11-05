@@ -106,7 +106,7 @@ export function modeOptions(current: OperatingMode): SelectOption<OperatingMode>
 }
 
 /** What one mode does — shared by the global and the per-session menus. */
-function modeDescription(mode: OperatingMode): string {
+export function modeDescription(mode: OperatingMode): string {
   switch (mode) {
     case "off":
       return "Adaptive does nothing"

@@ -93,6 +93,32 @@ type HandlerOf<Name extends MethodName> = (
   context: AdaptiveRpcCallContext<Name>,
 ) => Promise<Rpc.HandlerOutput<Methods[Name]["output"]> | HandlerErrorOf<Name>>
 
+/**
+ * One settings write for every surface (RPC and the web command): persist,
+ * then announce so open views refresh. An internal failure degrades to an
+ * error result (fail-open, ADP-031).
+ */
+export async function patchSettings(
+  source: Pick<AdaptiveRpcSource, "updateSettings">,
+  emit: AdaptiveRpcEmit | undefined,
+  patch: SettingsPatch,
+): Promise<PatchResult> {
+  try {
+    const result = await source.updateSettings(patch)
+    if (result.ok && emit !== undefined) {
+      try {
+        await emit("settings-changed", { version: result.settings.version })
+      } catch (error) {
+        logFailOpen("rpc-emit", error)
+      }
+    }
+    return result
+  } catch (error) {
+    logFailOpen("rpc-set", error)
+    return { ok: false, errors: ["internal error"] }
+  }
+}
+
 export function adaptiveRpcHandlers(
   source: AdaptiveRpcSource,
   emit?: AdaptiveRpcEmit,
@@ -104,22 +130,7 @@ export function adaptiveRpcHandlers(
         .catch((error: unknown) =>
           context.error("internal", String(error).slice(0, LOG_ERROR_LENGTH)),
         ),
-    "settings.set": async (patch) => {
-      try {
-        const result = await source.updateSettings(patch)
-        if (result.ok && emit !== undefined) {
-          try {
-            await emit("settings-changed", { version: result.settings.version })
-          } catch (error) {
-            logFailOpen("rpc-emit", error)
-          }
-        }
-        return result
-      } catch (error) {
-        logFailOpen("rpc-set", error)
-        return { ok: false, errors: ["internal error"] }
-      }
-    },
+    "settings.set": (patch) => patchSettings(source, emit, patch),
     "status.get": (_input, context) =>
       source
         .status()

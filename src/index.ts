@@ -1,6 +1,7 @@
 import { Plugin } from "@opencode/plugin"
 import { isCodexHeaderName } from "./adapters/codex-capacity/index.js"
 import {
+  adaptiveCommand,
   escalationTool,
   registerSessionHooks,
   subscribeSessions,
@@ -8,7 +9,7 @@ import {
 } from "./adapters/opencode/index.js"
 import { PLUGIN_ID } from "./plugin-id.js"
 import { adaptiveRpc } from "./rpc/definition.js"
-import { adaptiveRpcHandlers } from "./rpc/handlers.js"
+import { adaptiveRpcHandlers, patchSettings } from "./rpc/handlers.js"
 import type { RpcRegistration } from "@opencode/plugin/promise/rpc"
 import type { AdaptiveRpcEmit } from "./rpc/handlers.js"
 import { Supervisor, logFailOpen } from "./supervisor/index.js"
@@ -115,6 +116,23 @@ export default Plugin.define({
       )
       rpcHolder.registration = rpcRegistration
       disposals.push({ name: "rpc", dispose: () => rpcRegistration.dispose() })
+      // The web UI never mounts plugin GUI bundles, but it lists server
+      // commands in the composer's slash menu (ADP-034).
+      const commandRegistration = await context.command.transform((editor) => {
+        editor.add(
+          adaptiveCommand(
+            {
+              status: () => supervisor.status(),
+              setMode: (mode) => patchSettings(supervisor, emit, { mode }),
+            },
+            // The web timeline shows a synthetic message as a notice only when
+            // it has a description, and labels it with that description.
+            (sessionID, text) =>
+              context.session.synthetic({ sessionID, text, description: text, resume: false }),
+          ),
+        )
+      })
+      disposals.push({ name: "command", dispose: () => commandRegistration.dispose() })
     } catch (error) {
       // Roll back everything already registered so a failure at the tool or
       // rpc stage does not leak live hooks and the event pump.

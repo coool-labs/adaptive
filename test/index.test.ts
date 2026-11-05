@@ -38,6 +38,8 @@ function fakeContext(options: {
   events: ReturnType<typeof fakeEvents>
   infos?: ReturnType<typeof makeInfo>[]
   addedTools?: unknown[]
+  addedCommands?: unknown[]
+  said?: { sessionID: string; text: string; description: string; resume: boolean }[]
   registeredRpc?: (record: { definition: unknown; handlers: unknown }) => void
 }): Parameters<typeof adaptivePlugin.setup>[0] {
   const infos = options.infos ?? [makeInfo("prov", "a")]
@@ -53,7 +55,28 @@ function fakeContext(options: {
     },
   }
   return {
-    session: options.session.source,
+    session: {
+      ...options.session.source,
+      synthetic: (input: {
+        sessionID: string
+        text: string
+        description: string
+        resume: boolean
+      }) => {
+        options.said?.push(input)
+        return Promise.resolve()
+      },
+    },
+    command: {
+      transform: (cb: (editor: unknown) => void) => {
+        cb({
+          add: (command: unknown) => {
+            options.addedCommands?.push(command)
+          },
+        })
+        return Promise.resolve({ dispose: () => Promise.resolve() })
+      },
+    },
     model,
     storage: options.storage.source,
     event: options.events.source,
@@ -408,6 +431,42 @@ describe("plugin entry", () => {
       },
     )) as { content: { text: string }[] }
     expect(tierResult.content[0]?.text).toContain("Tier request recorded: quick")
+    cleanup()
+  })
+
+  it("registers the web command that reports and switches the mode", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
+    const events = fakeEvents()
+    const addedCommands: unknown[] = []
+    const said: { sessionID: string; text: string; description: string; resume: boolean }[] = []
+    const cleanup = (await adaptivePlugin.setup(
+      fakeContext({ storage, session, events, addedCommands, said }),
+    )) as () => void
+    const command = addedCommands[0] as {
+      name: string
+      execute: (input: { sessionID: string; prompt: { text: string } }) => Promise<void>
+    }
+    expect(command.name).toBe("web-adaptive")
+
+    await command.execute({ sessionID: "s1", prompt: { text: "/web-adaptive" } })
+    expect(said.every((message) => message.sessionID === "s1" && !message.resume)).toBe(true)
+    // Each line is a message of its own, labelled by a description (the web
+    // timeline only shows synthetic messages that have one).
+    expect(said.every((message) => message.description === message.text)).toBe(true)
+    expect(said.map((message) => message.text).slice(0, 2)).toEqual([
+      "Adaptive: active — Apply routing and recovery decisions.",
+      "prov/a (standard, healthy)",
+    ])
+    const count = said.length
+
+    await command.execute({ sessionID: "s1", prompt: { text: "/web-adaptive off" } })
+    expect(said.slice(count).map((message) => message.text)).toEqual([
+      "Adaptive switched to off — Adaptive does nothing.",
+    ])
+    await command.execute({ sessionID: "s1", prompt: { text: "/web-adaptive status" } })
+    expect(said[count + 1]?.text).toBe("Adaptive: off — Adaptive does nothing.")
     cleanup()
   })
 
