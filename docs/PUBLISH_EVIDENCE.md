@@ -1,19 +1,19 @@
 # Publish evidence
 
 Real final verification output. Every number below comes from an actual run of
-`npm run verify:release` on 2026-11-04 (full gate chain, single local command,
-abort-on-first-failure), for release 1.3.0: the GUI `/adaptive` dialog flow shared with the TUI and the GUI end-to-end suite, on top of the full post-1.0.0 correctness review,
+`npm run verify:release` on 2026-11-05 (full gate chain, single local command,
+abort-on-first-failure), for release 1.4.0: the `/web-adaptive` server command for the web UI (status and mode switching, with a Playwright web E2E), on top of the 1.3.0 GUI `/adaptive` dialog flow shared with the TUI and the GUI end-to-end suite and the full post-1.0.0 correctness review,
 expanded real-host E2E coverage, subscription-limit classification,
 health-blocked manual-selection fallback, the tier-editor save flow,
 automatic terminal-quota recovery with provider-scope quarantine and steering
 protection, and 429 quota-text classification (see CHANGELOG 1.0.1, 1.2.0,
-1.2.1, 1.2.2, 1.2.3, and 1.3.0). Machine-readable artifacts live under
+1.2.1, 1.2.2, 1.2.3, 1.3.0, and 1.4.0). Machine-readable artifacts live under
 `test-artifacts/` (`traceability.json`, `pack-check.json`, `e2e-tui-results/`,
 `e2e-web-results/`) and are gitignored.
 
 ## Revisions and runtimes
 
-- Commit/revision: the 1.2.0 release chain through `220dbb5` (tagged `v1.2.0`, published to npm) plus the post-publication fixes: `897d5f9` (automatic terminal-quota recovery, provider-scope quota quarantine, steering protection — see CHANGELOG 1.2.1), `899d9ef` (real-host exactly-once continuation tests), `1a956a0` (repository URL → coool-labs/opencode-adaptive — see CHANGELOG 1.2.2), `86698a8` (a 429 whose text says the quota is spent quarantines for the quota window, not 30s), `8cc4ec4` (the TUI status journey expects a quota window for its billing-quota 429), and `b25cd5c` (ADP-049 retired — no CI; `verify:release` is the only release gate). Release 1.3.0 adds `0f1c37a` (the GUI `/adaptive` flow shared with the TUI, plus the GUI E2E suite) and the commit after it (the GUI settings page calls the RPC with the session location). These release files and this evidence are recorded in commit `1.3.0`, tagged `v1.3.0`.
+- Commit/revision: the 1.2.0 release chain through `220dbb5` (tagged `v1.2.0`, published to npm) plus the post-publication fixes: `897d5f9` (automatic terminal-quota recovery, provider-scope quota quarantine, steering protection — see CHANGELOG 1.2.1), `899d9ef` (real-host exactly-once continuation tests), `1a956a0` (repository URL → coool-labs/opencode-adaptive — see CHANGELOG 1.2.2), `86698a8` (a 429 whose text says the quota is spent quarantines for the quota window, not 30s), `8cc4ec4` (the TUI status journey expects a quota window for its billing-quota 429), and `b25cd5c` (ADP-049 retired — no CI; `verify:release` is the only release gate). Release 1.3.0 adds `0f1c37a` (the GUI `/adaptive` flow shared with the TUI, plus the GUI E2E suite) and the commit after it (the GUI settings page calls the RPC with the session location). Release 1.4.0 adds `dbed9e8` (the `/web-adaptive` server command and its web E2E). These release files and this evidence are recorded in commit `1.4.0`, tagged `v1.4.0`.
 - OpenCode versions tested: **2.2.1** (minimum supported, packed-plugin suite), **2.2.5** (current and latest, packed-plugin suite + all runtime/web/TUI E2E).
 - Node: v26.4.0 (format/lint/typecheck/test/coverage/build/pack/traceability/plugin-test/web E2E); v24.15.0 (Termwright PTY E2E — the verify-release script auto-prefixes a certified Node 22/24 when the runtime is newer).
 
@@ -25,17 +25,17 @@ protection, and 429 quota-text classification (see CHANGELOG 1.0.1, 1.2.0,
 | lint (eslint)                                                                            | clean, 0 errors/warnings                                                                                                                                                                              |
 | lint:biome (style anti-patterns)                                                         | clean, 0 diagnostics (`--error-on-warnings`)                                                                                                                                                          |
 | typecheck (tsc --noEmit, strict + noUncheckedIndexedAccess + exactOptionalPropertyTypes) | 0 errors                                                                                                                                                                                              |
-| test (vitest, all projects)                                                              | **81 files, 1308 tests, all passed**                                                                                                                                                                  |
-| coverage (unit project)                                                                  | **100% statements (3259/3259), 100% branches (2159/2159), 100% functions (729/729), 100% lines (2849/2849)** on `src/**` — 69 files, 1256 tests. No exclusions, no `istanbul ignore`, no empty tests. |
+| test (vitest, all projects)                                                              | **82 files, 1324 tests, all passed**                                                                                                                                                                  |
+| coverage (unit project)                                                                  | **100% statements (3300/3300), 100% branches (2178/2178), 100% functions (746/746), 100% lines (2885/2885)** on `src/**` — 70 files, 1272 tests. No exclusions, no `istanbul ignore`, no empty tests. |
 | build                                                                                    | tsc build + vite GUI bundle OK                                                                                                                                                                        |
-| pack:check                                                                               | tarball OK (340 entries), publish dry-run OK                                                                                                                                                          |
+| pack:check                                                                               | tarball OK (343 entries), publish dry-run OK                                                                                                                                                          |
 | plugin-test                                                                              | **PASS on all 3 targets** — current (opencode 2.2.5), 2.2.1, latest (opencode 2.2.5)                                                                                                                  |
 | e2e:gui (vitest + jsdom, real server RPC)                                                | **66 passed**; **100% statements (578/578), branches (309/309), functions (173/173), lines (458/458)** on `src/gui.tsx`, `src/ui/gui/**`, `src/ui/flow/**                                             |
-| e2e:web (Playwright)                                                                     | **45 passed, 0 failed, 0 skipped** (33.7s) — desktop + narrow + webkit, zero conditional skips                                                                                                        |
-| e2e:tui (Termwright)                                                                     | **23/23 passed** (run `26291339-083d-47ea-a831-4ef085ac69c7`)                                                                                                                                         |
-| traceability                                                                             | **55 requirements, 91 declaring files, 35/35 E2E-applicable covered E2E — OK**                                                                                                                        |
+| e2e:web (Playwright)                                                                     | **57 passed, 0 failed, 0 skipped** (1.1m) — desktop + narrow + webkit, zero conditional skips                                                                                                         |
+| e2e:tui (Termwright)                                                                     | **23/23 passed** (run `c55b4bc1-bd2c-414e-9dba-8da1d6c6baac`)                                                                                                                                         |
+| traceability                                                                             | **55 requirements, 93 declaring files, 35/35 E2E-applicable covered E2E — OK**                                                                                                                        |
 
-## Test layers within the 1308 passing tests
+## Test layers within the 1324 passing tests
 
 - Unit: every `src/**` module, 100% coverage.
 - Property / state-machine (fast-check): classification totality, health-state legality, scheduler invariants (unavailable/incompatible never selected; availability failure never escalates; Observe ≡ Control decisions; pin wins; finite escalation budgets; one half-open probe; preferred resource returns only at a safe boundary), receipt no-secrets/boundedness.
@@ -54,7 +54,9 @@ protection, and 429 quota-text classification (see CHANGELOG 1.0.1, 1.2.0,
 
 ## Playwright Web E2E (ADP-042/044)
 
-45 tests across chromium (desktop 1280×800), chromium-narrow (390×844), webkit — **45 passed, 0 skipped** (the narrow skips were converted into real journeys via `/settings?tab=` URL routes; committed 1fb552d). Covered journeys: connection (first install, wrong password, keyboard operability), settings surfaces, models catalog search + empty state, plugin listing, plugin RPC integration (settings read/patch/reload persistence, invalid patch rejection, status mirroring), cross-surface sync both directions (web→TUI live, TUI→web after reload), server disconnect, and the GUI-mount limitation canary (no Adaptive settings surface mounts in the browser-served app on 2.2.5).
+57 tests across chromium (desktop 1280×800), chromium-narrow (390×844), webkit — **57 passed, 0 skipped** (the narrow skips were converted into real journeys via `/settings?tab=` URL routes; committed 1fb552d). Covered journeys: connection (first install, wrong password, keyboard operability), settings surfaces, models catalog search + empty state, plugin listing, plugin RPC integration (settings read/patch/reload persistence, invalid patch rejection, status mirroring), cross-surface sync both directions (web→TUI live, TUI→web after reload), server disconnect, and the GUI-mount limitation canary (no Adaptive settings surface mounts in the browser-served app on 2.2.5).
+
+Web command journeys (`test/e2e-web/command.spec.ts`, ADP-034, 12 of the 57 tests): the real composer's slash menu offers `/web-adaptive`; the status reply ends with the switching help; `on` and `off` switch the mode with the server state verified over RPC; an unknown argument replies with the usage and changes nothing. Run on desktop Chromium, narrow Chromium and WebKit. The replies are one synthetic message per line with a description, which is what the web timeline displays.
 
 ## Termwright TUI E2E (ADP-043)
 
@@ -62,7 +64,7 @@ protection, and 429 quota-text classification (see CHANGELOG 1.0.1, 1.2.0,
 
 ## Packaging validation (ADP-048/050)
 
-`npm run pack:check`: real `npm pack` tarball (340 entries) — all required files present (four exports + `.d.ts` files, LICENSE, README, manifest); forbidden-content scan clean (no `src/`, `test/`, `docs/`, `scripts/`, `node_modules`, `GOAL.md`, `coverage/` in the tarball — only LICENSE/README/package.json outside `dist/`); manifest name/semver/MIT verified; `npm publish --dry-run` OK. Artifact: `test-artifacts/pack-check.json`. Static publish contract additionally asserted by `test/package.test.ts` (exact exports key set, MIT, minimal runtime dependencies).
+`npm run pack:check`: real `npm pack` tarball (343 entries) — all required files present (four exports + `.d.ts` files, LICENSE, README, manifest); forbidden-content scan clean (no `src/`, `test/`, `docs/`, `scripts/`, `node_modules`, `GOAL.md`, `coverage/` in the tarball — only LICENSE/README/package.json outside `dist/`); manifest name/semver/MIT verified; `npm publish --dry-run` OK. Artifact: `test-artifacts/pack-check.json`. Static publish contract additionally asserted by `test/package.test.ts` (exact exports key set, MIT, minimal runtime dependencies).
 
 ## Visual inspection
 

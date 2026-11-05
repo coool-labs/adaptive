@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-11-05
+
+### Added
+
+- `/web-adaptive`: a server command for the web UI, including on mobile. The browser app never mounts plugin GUI bundles, but it lists server commands in the composer's slash menu. `/web-adaptive` shows the mode (off, observe, active) and every configured model with its tier and health, followed by help lines for switching. `/web-adaptive on` (same as `active`), `off` and `observe` switch the mode through the same settings write as the RPC, so an open TUI refreshes. Any other argument replies with the usage and changes nothing.
+- Playwright web E2E for the command (`test/e2e-web/command.spec.ts`): the real composer's slash menu, status, switching with the server state verified, and the usage reply, at desktop, narrow and WebKit.
+
+### Changed
+
+- The settings write behind the `settings.set` RPC is one shared function (`patchSettings`), used by the RPC and the web command.
+
 ## [1.3.0] — 2026-11-04
 
 ### Added
