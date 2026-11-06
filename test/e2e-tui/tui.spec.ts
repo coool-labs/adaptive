@@ -40,7 +40,6 @@ import { expect, step, test } from "@termwright/test"
 import type { TermwrightFixtures } from "@termwright/test"
 import { spawnSync } from "node:child_process"
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { REPO_ROOT } from "../runtime-e2e/helpers.js"
 
@@ -131,12 +130,14 @@ async function launchTui(
   })
   expect(sidecar.pid).toBeGreaterThan(0)
 
-  const home = options.paths?.home ?? mkdtempSync(join(tmpdir(), "adaptive-tui-home-"))
+  // Inside the test's own tmpdir, which Termwright removes after teardown:
+  // homes under os.tmpdir() were never removed and filled the disk.
+  const home = options.paths?.home ?? mkdtempSync(join(tw.tmpdir, "adaptive-tui-home-"))
   mkdirSync(join(home, "config", "opencode"), { recursive: true })
   mkdirSync(join(home, ".config", "opencode"), { recursive: true })
   mkdirSync(join(home, "data"), { recursive: true })
   mkdirSync(join(home, "cache"), { recursive: true })
-  const project = options.paths?.project ?? mkdtempSync(join(tmpdir(), "adaptive-tui-proj-"))
+  const project = options.paths?.project ?? mkdtempSync(join(tw.tmpdir, "adaptive-tui-proj-"))
   // The provider definition must be present in BOTH configs: the plugin's
   // server-side model inventory is scoped to the location the plugin loads
   // from — the global config in this sandbox — so a provider that exists
@@ -808,8 +809,8 @@ test(
   { timeout: 300_000 },
   async ({ termwright: tw, terminal }) => {
     const paths = {
-      home: mkdtempSync(join(tmpdir(), "adaptive-tui-home-")),
-      project: mkdtempSync(join(tmpdir(), "adaptive-tui-proj-")),
+      home: mkdtempSync(join(tw.tmpdir, "adaptive-tui-home-")),
+      project: mkdtempSync(join(tw.tmpdir, "adaptive-tui-proj-")),
     }
     // First boot: creates the plugin storage the seeding then fills.
     const first = await launchTui(tw, terminal, { paths })
