@@ -179,6 +179,26 @@ describe("classifyFailure: HTTP status layer", () => {
     expectConsistentPolicy(c)
   })
 
+  it.each([
+    "Insufficient Balance",
+    "insufficient_credits",
+    "This request requires more credits, or fewer max_tokens. You requested up to 4096 tokens, but can only afford 100.",
+    "",
+  ])("maps 402 to provider-wide quota exhaustion (%j)", (text) => {
+    const c = classifyFailure({ status: 402, text })
+    expect(c.category).toBe("quota_exhausted")
+    expect(c.layer).toBe("status")
+    expect(c.definitive).toBe(true)
+    expect(c.quotaScope).toBe("provider")
+    expectConsistentPolicy(c)
+  })
+
+  it("honors Retry-After on a 402", () => {
+    const c = classifyFailure({ status: 402, headers: { "retry-after": "30" } })
+    expect(c.quotaScope).toBe("provider")
+    expect(c.retry.retryAfterMs).toBe(30_000)
+  })
+
   it("leaves ambiguous statuses to lower layers", () => {
     for (const status of [400, 404, 409, 500]) {
       const c = classifyFailure({ status })

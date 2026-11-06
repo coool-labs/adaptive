@@ -9,6 +9,7 @@ import { SETTINGS_KEY } from "../../src/state/settings/types.js"
 import { parseReceiptsPayload } from "../../src/state/receipts/index.js"
 import { parseParkedPayload } from "../../src/state/parked-work/index.js"
 import { storedParked, storedReceipts } from "../supervisor/helpers.js"
+import { makeInfo } from "../adapters/opencode/helpers.js"
 import {
   StorageClock,
   activeStorage,
@@ -236,5 +237,72 @@ describe("fault-injection matrix", () => {
       target: ref("prov", "b"),
     })
     expect(parseParkedPayload(storedParked(storage))).toHaveLength(0)
+  })
+
+  describe("two models behind one gateway provider", () => {
+    function gatewaySupervisor(): {
+      storage: ReturnType<typeof activeStorage>
+      session: FakeSupervisorSession
+      supervisor: ReturnType<typeof makeSupervisor>
+    } {
+      const storage = activeStorage()
+      seed(
+        storage,
+        SETTINGS_KEY,
+        settingsJSON("active", {
+          standard: [wireRef("ofox", "a"), wireRef("ofox", "b"), wireRef("other", "c")],
+        }),
+      )
+      const session = new FakeSupervisorSession()
+      const supervisor = makeSupervisor({
+        storage,
+        session,
+        infos: [makeInfo("ofox", "a"), makeInfo("ofox", "b"), makeInfo("other", "c")],
+      })
+      return { storage, session, supervisor }
+    }
+
+    it("keeps the sibling model eligible when only one model is unavailable", async () => {
+      const { storage, session, supervisor } = gatewaySupervisor()
+      await startTracking(supervisor, ref("ofox", "a"))
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 20,
+        error: { type: "UnknownError", message: "Rate limit reached for model a", status: 429 },
+      })
+      await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
+      expect(parseReceiptsPayload(storedReceipts(storage))[1]?.decision).toMatchObject({
+        kind: "apply",
+        reason: "fallback",
+        model: ref("ofox", "b"),
+      })
+      expect(session.log).toEqual(["switch:s1:ofox/a", "switch:s1:ofox/b"])
+    })
+
+    it("skips the sibling model when the shared balance is exhausted (402)", async () => {
+      const { storage, session, supervisor } = gatewaySupervisor()
+      await startTracking(supervisor, ref("ofox", "a"))
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 20,
+        error: { type: "UnknownError", message: "Insufficient Balance", status: 402 },
+      })
+      await flush()
+      // The balance belongs to the provider account, so ofox/b would fail the
+      // same way — recovery moves to a separately configured provider.
+      expect(parseReceiptsPayload(storedReceipts(storage)).at(-1)?.decision).toMatchObject({
+        kind: "apply",
+        reason: "fallback",
+        model: ref("other", "c"),
+      })
+      expect(session.log).toEqual([
+        "switch:s1:ofox/a",
+        "wait:s1",
+        "switch:s1:other/c",
+        "prompt:s1:Continue the interrupted work from the current session state. Do not repeat completed work; resume from what the session already produced.",
+      ])
+    })
   })
 })

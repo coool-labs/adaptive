@@ -226,6 +226,9 @@ function classifyStatus(
   if (status === 401 || status === 403) {
     return "auth_failure"
   }
+  if (status === 402) {
+    return "quota_exhausted"
+  }
   if (status === 408) {
     return "timeout"
   }
@@ -283,6 +286,12 @@ export function classifyFailure(evidence: ErrorEvidence): FailureClassification 
     const category = classifyStatus(evidence.status, headers)
     if (category !== undefined) {
       const retryAfterMs = structuredRetryAfterMs ?? retryAfterHeaderMs(headers)
+      // Payment Required is the account's balance, not one model's limit:
+      // every model behind the provider ID (a gateway such as OpenRouter or
+      // Ofox) bills the same account, so a sibling model cannot help.
+      if (evidence.status === 402) {
+        return classification(category, "status", true, retryAfterMs, "provider")
+      }
       if (category === "rate_limited" && evidence.text !== undefined) {
         const bounded = evidence.text.slice(0, TEXT_BOUND)
         if (classifyText(bounded) === "quota_exhausted" && !RATE_LIMIT_TEXT.test(bounded)) {
