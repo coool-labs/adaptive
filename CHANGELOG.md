@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] — 2026-11-06
+
+### Fixed
+
+- HTTP 402 (Payment Required) is classified as quota exhaustion for the whole provider. Gateways such as OpenRouter and Ofox, and providers such as Anthropic and DeepSeek, return 402 when the account balance runs out. Adaptive used to treat it as an unknown error, so it was never failed over. Now every model under that provider ID is skipped and work moves to another configured provider. A failure limited to one model still leaves its sibling models under the same provider eligible.
+
 ## [1.4.0] — 2026-11-05
 
 ### Added
