@@ -78,6 +78,7 @@ describe("tier menus", () => {
         advanced: [],
       },
       parked: 0,
+      waiting: [],
       receipts: 0,
     }
     expect(tierMenuOptions(status)).toEqual([
@@ -124,6 +125,7 @@ describe("tier menus", () => {
         advanced: [],
       },
       parked: 0,
+      waiting: [],
       receipts: 0,
     }
     const options = tierEditorOptions(settings, "standard", status)

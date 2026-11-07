@@ -22,6 +22,7 @@ function emptyStatus(): StatusSnapshot {
     pin: null,
     tiers: { quick: [], standard: [], advanced: [] },
     parked: 0,
+    waiting: [],
     receipts: 0,
   }
 }

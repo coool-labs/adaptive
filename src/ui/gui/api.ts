@@ -2,6 +2,7 @@ import type { OpenCodeClient } from "@opencode/client/promise"
 
 import type { SettingsPatch } from "../../state/settings/index.js"
 import type { Receipt } from "../../state/receipts/index.js"
+import { waitingSessions } from "../flow/waiting.js"
 import { adaptiveRpc } from "../../rpc.js"
 import type { StatusSnapshot } from "../../rpc.js"
 
@@ -12,6 +13,8 @@ import type { StatusSnapshot } from "../../rpc.js"
  */
 export interface GuiApi {
   status(): Promise<StatusSnapshot | undefined>
+  /** Waiting sessions by id, each with when it resumes (`null`: unknown). */
+  waiting(): Promise<Record<string, number | null> | undefined>
   receipts(): Promise<Receipt[] | undefined>
   update(patch: SettingsPatch): Promise<boolean>
   /** Calls back whenever settings change on the server. Returns the unsubscribe function. */
@@ -23,9 +26,12 @@ export function adaptiveGuiApi(
   at: () => { location?: { directory: string } },
 ): GuiApi {
   const rpc = client.rpc(adaptiveRpc)
+  const unreachable = (): undefined => undefined
   return {
-    status: () => rpc["status.get"](undefined, at()).catch(() => undefined),
-    receipts: () => rpc["receipts.list"](undefined, at()).catch(() => undefined),
+    status: () => rpc["status.get"](undefined, at()).catch(unreachable),
+    // A snapshot from a server older than waiting sessions has none to read.
+    waiting: () => rpc["status.get"](undefined, at()).then(waitingSessions).catch(unreachable),
+    receipts: () => rpc["receipts.list"](undefined, at()).catch(unreachable),
     update: async (patch) => {
       try {
         const result = await rpc["settings.set"](patch, at())

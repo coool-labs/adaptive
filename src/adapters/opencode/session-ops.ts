@@ -23,6 +23,8 @@ export interface SessionOpsHooks {
    * can tag the switch as Adaptive's own (`noteOwnSwitch`).
    */
   readonly beforeSwitch?: (sessionID: string, model: ModelRef) => void
+  /** Called when the host rejects that switch: its tag must not linger. */
+  readonly switchFailed?: (sessionID: string) => void
   /**
    * Called before the adapter prompts a continuation, so wiring can mark the
    * upcoming prompt-hook admission as owned (the continuation belongs to the
@@ -42,16 +44,21 @@ export interface SessionOpsHooks {
 export function sessionOps(session: SessionOpsSource, hooks?: SessionOpsHooks): ContinuationOps {
   return {
     settle: (sessionID) => session.wait({ sessionID }),
-    switchModel: (sessionID, model) => {
+    switchModel: async (sessionID, model) => {
       hooks?.beforeSwitch?.(sessionID, model)
-      return session.switchModel({
-        sessionID,
-        model: {
-          providerID: model.providerID,
-          id: model.id,
-          ...(model.variant !== undefined ? { variant: model.variant } : {}),
-        },
-      })
+      try {
+        await session.switchModel({
+          sessionID,
+          model: {
+            providerID: model.providerID,
+            id: model.id,
+            ...(model.variant !== undefined ? { variant: model.variant } : {}),
+          },
+        })
+      } catch (error) {
+        hooks?.switchFailed?.(sessionID)
+        throw error
+      }
     },
     prompt: async (sessionID, text) => {
       hooks?.beforePrompt?.(sessionID)

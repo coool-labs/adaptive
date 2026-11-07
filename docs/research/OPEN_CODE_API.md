@@ -200,7 +200,8 @@ onTrigger, side?, selection?}]` — enough to build tier/model pickers with
    prompt/synthetic continuation, not a resurrected HTTP call.
 3. **`experimental.idle` does not run after interruption or failure** — the
    parking/continuation path cannot rely on it; use `session.execution.failed`
-   - own state + a continuation prompt at a safe boundary.
+   - own state + a continuation prompt at a safe boundary. Adaptive arms its
+     own wake timer for parked work (see ARCHITECTURE.md).
 4. **WebSocket-backed providers bypass `http.request`/`http.response`** (e.g.
    the OpenAI OAuth/Codex path in v2 uses WebSockets). `Retry-After`/quota
    header capture is not reliable for those providers; `experimental.ws.*` hooks

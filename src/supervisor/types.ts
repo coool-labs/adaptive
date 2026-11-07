@@ -9,6 +9,7 @@ import type { ModelRef } from "../core/work-unit/types.js"
 import type { SessionOpsSource } from "../adapters/opencode/session-ops.js"
 import type { ModelSource } from "../adapters/opencode/inventory.js"
 import type { StorageSource } from "../adapters/opencode/storage.js"
+import type { ProcessLedger } from "../adapters/opencode/process-ledger.js"
 
 /** The host session surface the supervisor actually uses. */
 export interface SupervisorSessionSource extends SessionOpsSource {
@@ -40,6 +41,10 @@ export interface SupervisorOptions {
   readonly storage: StorageSource
   /** Epoch-ms clock (injected so tests are deterministic). */
   readonly clock: () => number
+  /** One-shot timer for the parked-work wake; returns its cancel. */
+  readonly schedule: (callback: () => void, delayMs: number) => () => void
+  /** What every plugin instance in the process shares (ADP-056). */
+  readonly ledger: ProcessLedger
 }
 
 /** The Codex header sensor watches ChatGPT/Codex-backed resources. */

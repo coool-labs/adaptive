@@ -19,7 +19,7 @@ It is set up entirely from the `/adaptive` menu in OpenCode. There are no config
 - **Menu setup.** Models, order and mode are set in `/adaptive` with model search. No config files.
 - **Tiers.** Quick, standard and advanced work each get their own list, and a failure stays inside the tier the work needs. The agent can ask for a tier with the `adaptive_tier` tool. Routing follows fixed rules, not a prompt the model may or may not obey.
 - **Quota awareness.** It reads usage from provider response headers. When a subscription is nearly used up (about 10% left), new tasks go to the next ready model in the tier, and it is used again after the reset time when the provider reports one.
-- **Recovery that survives a restart.** If work is interrupted and cannot continue right away because no model in its tier is ready, it is saved and resumes when one returns — even after an OpenCode restart, without repeating finished tool calls.
+- **Recovery that survives a restart.** If work is interrupted and cannot continue right away because no model in its tier is ready, it is saved and resumes by itself when the first one returns (for example when a quota resets), without a new prompt and without repeating finished tool calls — even after an OpenCode restart. Meanwhile the footer shows `Adaptive · waiting · resumes 18:42`.
 - **Dry run.** In `observe` mode it records what it would have done, with the reason, before it changes anything. A session can have its own mode.
 - **Escalation on evidence only.** An outage never sends work to a more expensive tier. Moving up needs a context overflow, a policy rejection, or an explicit request from the agent.
 
@@ -75,6 +75,7 @@ No language model or keyword matching is involved. A model is skipped if it is u
 - **Rate limit, quota, timeout, outage:** if the error is clear-cut and another model in the same tier is ready, the task switches to it and carries on from the current session. Your prompt is not resent and finished tool calls are not repeated. If the error is unclear or no other model is ready, OpenCode's normal retry continues.
 - **A model fails repeatedly:** it is paused for a cooldown, then tried once. If that works, it is back.
 - **Every model in the tier is blocked as a task starts:** OpenCode's own model runs it, and the decision is recorded as a receipt with the reason. A task that fails to recover is saved and resumes when a model returns.
+- **Every model in the tier runs out of quota mid-task:** the task waits, and continues on whichever model resets first. The footer chip (and the GUI composer pill) says when. Sending your own prompt or picking a model yourself ends the wait.
 - **You cancel:** nothing is retried or switched.
 - **Auth error or unknown model:** the model is marked unavailable and skipped.
 

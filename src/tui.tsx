@@ -14,7 +14,7 @@
 import { define } from "@opencode/plugin/tui/plugin"
 import type { Context } from "@opencode/plugin/tui/plugin"
 import { TextAttributes } from "@opentui/core"
-import { createStore } from "solid-js/store"
+import { createStore, reconcile } from "solid-js/store"
 import { PLUGIN_ID } from "./plugin-id.js"
 import { adaptiveRpc } from "./rpc/definition.js"
 import type { OperatingMode } from "./core/scheduler/types.js"
@@ -23,6 +23,7 @@ import { runAdaptive } from "./ui/flow/controller.js"
 import type { AdaptiveApi, AdaptiveView } from "./ui/flow/controller.js"
 import { errorText } from "./ui/flow/options.js"
 import type { ModelSummary } from "./ui/flow/tiers.js"
+import { WAITING_POLL_MS, waitingLabel, waitingSessions } from "./ui/flow/waiting.js"
 import { matchOptions } from "./ui/tui/search.js"
 
 /** Footer chip appearance: label plus foreground color (null = theme default). */
@@ -46,6 +47,27 @@ export function chipFor(mode: OperatingMode): Chip {
     case "off":
       return { text: "Adaptive · off", fg: "#e57373" }
   }
+}
+
+/** A parked session's chip (ADP-024): amber like any pending state, with when it resumes. */
+export function waitingChip(resumeAt: number | null, now: number): Chip {
+  return { text: `Adaptive · ${waitingLabel(resumeAt, now)}`, fg: "#e5c07b" }
+}
+
+/**
+ * The prompt footer chip for one session: parked work waiting for quota wins
+ * over the mode, then the session's override, then the global mode (ADP-054).
+ * `override` is undefined until fetched; null means "follows global".
+ */
+export function sessionChip(state: {
+  mode: OperatingMode | null
+  override: OperatingMode | null | undefined
+  resumeAt: number | null | undefined
+  now: number
+}): Chip | null {
+  if (state.resumeAt !== undefined) return waitingChip(state.resumeAt, state.now)
+  const mode = state.override ?? state.mode
+  return mode === null ? null : chipFor(mode)
 }
 
 const BOOT_FETCH_RETRIES = 5
@@ -189,12 +211,15 @@ export default define({
     }))
 
     // Footer chip state: a reactive mirror of the server's operating mode,
-    // fetched once at boot and kept live via the settings-changed event, plus
-    // the per-session overrides seen so far (ADP-054).
+    // fetched once at boot and kept live via the settings-changed event, the
+    // per-session overrides seen so far (ADP-054), and the sessions parked
+    // until quota returns (ADP-024) with the clock they were read at.
     const [chip, setChip] = createStore<{
       mode: OperatingMode | null
       sessions: Record<string, OperatingMode | null>
-    }>({ mode: null, sessions: {} })
+      waiting: Record<string, number | null>
+      now: number
+    }>({ mode: null, sessions: {}, waiting: {}, now: Date.now() })
 
     const fetchMode = async (): Promise<boolean> => {
       try {
@@ -221,6 +246,26 @@ export default define({
       }
     }
 
+    /**
+     * Parked sessions come from the status snapshot. Work parks and resumes
+     * without any TUI action (a failed execution, the server's wake timer),
+     * so the chip polls; a failed read keeps the last known state.
+     */
+    let waitingReads = 0
+    const fetchWaiting = async (): Promise<void> => {
+      // A poll and an event-driven read can overlap: only the latest lands.
+      waitingReads += 1
+      const read = waitingReads
+      try {
+        const sessions = waitingSessions(await api.status())
+        if (read !== waitingReads) return
+        setChip("waiting", reconcile(sessions))
+        setChip("now", Date.now())
+      } catch {
+        // Keep the last known state until the next poll.
+      }
+    }
+
     const bootFetch = async (retriesLeft: number): Promise<void> => {
       if (await fetchMode()) return
       // The server plugin may not be registered yet at TUI boot; retry
@@ -232,9 +277,8 @@ export default define({
       }
     }
 
-    const renderChip = (mode: OperatingMode | null) => {
-      if (mode === null) return <text></text>
-      const entry = chipFor(mode)
+    const renderChip = (entry: Chip | null) => {
+      if (entry === null) return <text></text>
       // The accent-colored span cannot execute in-repo: the terminal renderer
       // cannot start headless and jsdom's HTML parser mangles the intrinsic
       // <text><span> template (null insert parent). The chipFor tests pin the
@@ -250,17 +294,21 @@ export default define({
     }
     const chipNode = (sessionID: string | undefined) => {
       // On home (no session id) the chip shows the global mode; in a session
-      // it shows the session's EFFECTIVE mode (override ?? global).
-      if (sessionID === undefined) return renderChip(chip.mode)
+      // it shows the session's wait or EFFECTIVE mode (override ?? global).
+      if (sessionID === undefined) return renderChip(chip.mode === null ? null : chipFor(chip.mode))
       const override = chip.sessions[sessionID]
-      if (override === undefined) {
-        // First render for this session: fetch the override; the store write
-        // re-renders this node with the fetched value. Until then the global
-        // mode is shown.
-        void fetchSessionMode(sessionID)
-        return renderChip(chip.mode)
-      }
-      return renderChip(override ?? chip.mode)
+      // First render for this session: fetch the override; the store write
+      // re-renders this node with the fetched value. Until then the global
+      // mode is shown.
+      if (override === undefined) void fetchSessionMode(sessionID)
+      return renderChip(
+        sessionChip({
+          mode: chip.mode,
+          override,
+          resumeAt: chip.waiting[sessionID],
+          now: chip.now,
+        }),
+      )
     }
     // The home footer slot only exists on the home screen; sessions render
     // the prompt footer — its slot input carries the open session's id, so
@@ -275,6 +323,8 @@ export default define({
 
     const disposeWatch = client.events.on("settings-changed", () => {
       void fetchMode()
+      // Only active sessions wait: a mode change can start or end a wait.
+      void fetchWaiting()
       // A global mode change re-renders override-less sessions reactively;
       // cached overrides are re-fetched so a stale mirror cannot stick.
       for (const sessionID of Object.keys(chip.sessions)) {
@@ -286,14 +336,18 @@ export default define({
       // payload is ignored (fail-open) instead of steering a bogus session.
       const sessionID = event.data.sessionID
       if (typeof sessionID === "string") void fetchSessionMode(sessionID)
+      void fetchWaiting()
     })
 
     void bootFetch(BOOT_FETCH_RETRIES)
+    void fetchWaiting()
+    const waitingPoll = setInterval(() => void fetchWaiting(), WAITING_POLL_MS)
 
     return () => {
       for (const dispose of disposeSlots) dispose()
       disposeWatch()
       disposeSessionWatch()
+      clearInterval(waitingPoll)
     }
   },
 })

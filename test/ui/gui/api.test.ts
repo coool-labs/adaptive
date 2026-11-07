@@ -94,7 +94,22 @@ describe("adaptiveGuiApi", () => {
     const { client } = fakeClient({ failStatus: true, failReceipts: true })
     const api = adaptiveGuiApi(client as Parameters<typeof adaptiveGuiApi>[0], noLocation)
     await expect(api.status()).resolves.toBeUndefined()
+    await expect(api.waiting()).resolves.toBeUndefined()
     await expect(api.receipts()).resolves.toBeUndefined()
+  })
+
+  it("reads waiting sessions, and none from a server older than them", async () => {
+    const { client, handlers } = fakeClient()
+    const api = adaptiveGuiApi(client as Parameters<typeof adaptiveGuiApi>[0], noLocation)
+    handlers["status.get"] = () =>
+      Promise.resolve({ waiting: [{ sessionID: "ses_1", tier: "standard", resumeAt: 5 }] })
+    await expect(api.waiting()).resolves.toEqual({ ses_1: 5 })
+    // The fake's default answer is a settings object: no `waiting` at all.
+    const older = adaptiveGuiApi(
+      fakeClient().client as Parameters<typeof adaptiveGuiApi>[0],
+      noLocation,
+    )
+    await expect(older.waiting()).resolves.toBeUndefined()
   })
 
   it("update returns the ok flag of the patch result", async () => {

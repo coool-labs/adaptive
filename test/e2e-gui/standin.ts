@@ -1,5 +1,5 @@
 import { expect } from "vitest"
-import { Command, SettingsPage } from "@opencode/plugin/gui"
+import { Command, ComposerPill, SettingsPage } from "@opencode/plugin/gui"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { render } from "solid-js/web"
@@ -10,8 +10,10 @@ import type { StartedHost } from "../runtime-e2e/helpers.js"
 
 /** What a GUI bundle default-exports: `Plugin.define({ setup })`. */
 export interface GuiPlugin {
-  setup?: (context: never) => void
+  setup?: (context: never) => unknown
 }
+
+const isCleanup = (value: unknown): value is () => void => typeof value === "function"
 
 /** One option of a host select, as the user sees it. */
 interface ShownOption {
@@ -79,6 +81,7 @@ export class StandIn {
   private flow: Promise<void> | undefined
   private flowEnded: Promise<never> | undefined
   private session: StandInOptions["session"]
+  private cleanup: (() => void) | undefined
 
   constructor(
     private readonly host: StartedHost,
@@ -93,15 +96,26 @@ export class StandIn {
   }
 
   /** Register the plugin against this host. */
-  install(plugin: GuiPlugin): { command: CommandItem; page: PageItem } {
+  install(plugin: GuiPlugin): { command: CommandItem; page: PageItem; pill: PillItem } {
     if (plugin.setup === undefined) throw new Error("the GUI plugin defines no setup")
-    plugin.setup(this.context() as never)
+    const cleanup = plugin.setup(this.context() as never)
+    this.cleanup = isCleanup(cleanup) ? cleanup : undefined
     const find = (registry: unknown): unknown => {
       const entry = this.added.find((candidate) => candidate.registry === registry)
       if (entry === undefined) throw new Error("the plugin did not register the expected item")
       return entry.item
     }
-    return { command: find(Command) as CommandItem, page: find(SettingsPage) as PageItem }
+    return {
+      command: find(Command) as CommandItem,
+      page: find(SettingsPage) as PageItem,
+      pill: find(ComposerPill) as PillItem,
+    }
+  }
+
+  /** Unload the plugin the way the app does: run the cleanup its setup returned. */
+  dispose(): void {
+    this.cleanup?.()
+    this.cleanup = undefined
   }
 
   /** Start the command like the palette would; dialogs arrive through `next()`. */
@@ -368,6 +382,13 @@ export interface CommandItem {
   slash?: { name: string }
   suggested?: boolean
   run: () => Promise<void>
+}
+
+export interface PillItem {
+  id: string
+  show: (input: {
+    session: { id: string }
+  }) => { label: string; icon?: string; tone?: string; title?: string } | undefined
 }
 
 export interface PageItem {

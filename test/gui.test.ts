@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// covers: ["ADP-034"]
-import { describe, expect, it } from "vitest"
+// covers: ["ADP-024", "ADP-034"]
+import { describe, expect, it, vi } from "vitest"
 import { createComponent } from "solid-js"
 import { render } from "solid-js/web"
 
@@ -9,6 +9,7 @@ import type { Receipt } from "../src/state/receipts/index.js"
 import type { StatusSnapshot } from "../src/rpc.js"
 import { defaultSettings } from "../src/state/settings/index.js"
 import type { GuiApi } from "../src/ui/gui/api.js"
+import { WAITING_POLL_MS } from "../src/ui/flow/waiting.js"
 
 function tierMap(overrides: Partial<StatusSnapshot["tiers"]> = {}): StatusSnapshot["tiers"] {
   return { quick: [], standard: [], advanced: [], ...overrides }
@@ -20,6 +21,7 @@ function snapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot {
     pin: null,
     tiers: tierMap(),
     parked: 0,
+    waiting: [],
     receipts: 0,
     ...overrides,
   }
@@ -58,6 +60,7 @@ function fakeApi(options: FakeApiOptions = {}): {
   const api: GuiApi = {
     status: () =>
       Promise.resolve(options.unreachable === true ? undefined : (options.status ?? snapshot())),
+    waiting: () => Promise.resolve({}),
     receipts: () => Promise.resolve("receipts" in options ? options.receipts : []),
     update: (patch) => {
       updates.push(patch)
@@ -109,6 +112,7 @@ describe("AdaptiveStatusPage", () => {
           ],
         }),
         parked: 3,
+        waiting: [],
         receipts: 9,
       }),
     })
@@ -222,10 +226,10 @@ describe("AdaptiveStatusPage", () => {
 })
 
 describe("gui entry", () => {
-  function requiredSetup(): (context: never) => void {
+  function requiredSetup(): (context: never) => (() => void) | undefined {
     const setup = guiPlugin.setup
     if (setup === undefined) throw new Error("gui setup was not defined")
-    return setup
+    return setup as (context: never) => (() => void) | undefined
   }
 
   function fixture(
@@ -234,6 +238,8 @@ describe("gui entry", () => {
       statusOptions?: unknown[]
       snapshot?: StatusSnapshot
       session?: unknown
+      statusFails?: () => boolean
+      unwatched?: string[]
     } = {},
   ): {
     added: { registry: unknown; item: unknown }[]
@@ -252,6 +258,7 @@ describe("gui entry", () => {
             "status.get": (_input: unknown, callOptions: unknown) => {
               rpcCalls.push("status.get")
               options.statusOptions?.push(callOptions)
+              if (options.statusFails?.() === true) return Promise.reject(new Error("gone"))
               return Promise.resolve(options.snapshot ?? snapshot())
             },
             "receipts.list": () => {
@@ -262,7 +269,9 @@ describe("gui entry", () => {
             events: {
               on: (name: string) => {
                 rpcCalls.push(name)
-                return () => undefined
+                return () => {
+                  options.unwatched?.push(name)
+                }
               },
             },
           }
@@ -286,7 +295,7 @@ describe("gui entry", () => {
   it("registers a settings page and a command that opens the /adaptive menu", async () => {
     const { added, context, menus } = fixture()
     requiredSetup()(context as never)
-    expect(added).toHaveLength(2)
+    expect(added).toHaveLength(3)
     const page = added[0]?.item as { id: string; title: string; entries: unknown[] }
     expect(page.id).toBe("adaptive")
     expect(page.title).toBe("OpenCode Adaptive")
@@ -325,7 +334,11 @@ describe("gui entry", () => {
     const disposeRoot = render(() => page.render() as Element, container)
     await Promise.resolve()
     await Promise.resolve()
-    expect(statusOptions).toEqual([{ location: { directory: "/work/app" } }])
+    // The waiting pill's boot read and the page's read both carry the session's location.
+    expect(statusOptions).toEqual([
+      { location: { directory: "/work/app" } },
+      { location: { directory: "/work/app" } },
+    ])
     disposeRoot()
   })
 
@@ -344,5 +357,102 @@ describe("gui entry", () => {
     expect(rpcCalls).toContain("status.get")
     expect(container.textContent).toContain("active")
     disposeRoot()
+  })
+
+  describe("waiting pill (ADP-024)", () => {
+    interface Pill {
+      id: string
+      show: (input: {
+        session: { id: string }
+      }) => { label: string; icon?: string; tone?: string; title?: string } | undefined
+    }
+
+    function pillOf(added: { item: unknown }[]): Pill {
+      return added[2]?.item as Pill
+    }
+
+    const RESUME_AT = new Date(2026, 10, 7, 18, 42).getTime()
+    const parked = snapshot({
+      mode: "active",
+      parked: 2,
+      waiting: [
+        { sessionID: "ses_1", tier: "standard", resumeAt: RESUME_AT },
+        { sessionID: "ses_2", tier: "advanced", resumeAt: null },
+      ],
+    })
+
+    it("shows a warning pill on parked sessions only", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] })
+      vi.setSystemTime(new Date(2026, 10, 7, 14, 5))
+      try {
+        const { added, context } = fixture({ snapshot: parked })
+        requiredSetup()(context as never)
+        const pill = pillOf(added)
+        expect(pill.id).toBe("waiting")
+        // Before the first read lands nothing is known to wait.
+        expect(pill.show({ session: { id: "ses_1" } })).toBeUndefined()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(pill.show({ session: { id: "ses_1" } })).toEqual({
+          label: "Waiting · resumes 18:42",
+          icon: "status",
+          tone: "warning",
+          title: "Waiting for quota: Adaptive continues this session automatically",
+        })
+        expect(pill.show({ session: { id: "ses_2" } })?.label).toBe("Waiting")
+        expect(pill.show({ session: { id: "ses_3" } })).toBeUndefined()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("polls, keeps the last state through a failed read, and stops on cleanup", async () => {
+      vi.useFakeTimers()
+      try {
+        const rpcCalls: string[] = []
+        const unwatched: string[] = []
+        let failing = false
+        const { added, context } = fixture({
+          rpcCalls,
+          unwatched,
+          snapshot: parked,
+          statusFails: () => failing,
+        })
+        const cleanup = requiredSetup()(context as never)
+        if (cleanup === undefined) throw new Error("gui setup did not return a cleanup")
+        await vi.advanceTimersByTimeAsync(0)
+        const reads = (): number => rpcCalls.filter((call) => call === "status.get").length
+        expect(reads()).toBe(1)
+        failing = true
+        await vi.advanceTimersByTimeAsync(WAITING_POLL_MS)
+        expect(reads()).toBe(2)
+        // A failed read is not "nothing waits": the pill stays until a read says otherwise.
+        expect(pillOf(added).show({ session: { id: "ses_1" } })?.tone).toBe("warning")
+        cleanup()
+        expect(unwatched).toEqual(["settings-changed"])
+        await vi.advanceTimersByTimeAsync(3 * WAITING_POLL_MS)
+        expect(reads()).toBe(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("shows nothing for a server that predates waiting sessions", async () => {
+      const rejections: unknown[] = []
+      const onRejection = (reason: unknown): void => {
+        rejections.push(reason)
+      }
+      process.on("unhandledRejection", onRejection)
+      try {
+        const older = { ...parked }
+        Reflect.deleteProperty(older, "waiting")
+        const { added, context } = fixture({ snapshot: older })
+        requiredSetup()(context as never)
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(pillOf(added).show({ session: { id: "ses_1" } })).toBeUndefined()
+        expect(rejections).toEqual([])
+      } finally {
+        process.off("unhandledRejection", onRejection)
+      }
+    })
   })
 })

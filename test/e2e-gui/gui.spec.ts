@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { adaptiveRpc } from "../../src/rpc.js"
 import type { StatusSnapshot } from "../../src/rpc.js"
@@ -11,6 +11,7 @@ import { rpc, startHost } from "../runtime-e2e/helpers.js"
 import type { StartedHost } from "../runtime-e2e/helpers.js"
 import { StandIn, interceptRpc, loadBuiltBundle, mountPage } from "./standin.js"
 import type { GuiPlugin, Shown } from "./standin.js"
+import type { FakeProviderScript } from "../fixtures/fake-provider/scenarios.js"
 
 const MODELS = { "fake-model": { name: "Fake Model" }, "fake-model-2": { name: "Fake Two" } }
 const FAKE = { providerID: "fake", id: "fake-model" }
@@ -217,8 +218,14 @@ describe.each(variants)("GUI /adaptive on a real host (%s)", (_name, load) => {
     await located(main).setTier(sessionID, null)
   })
 
+  const installed: StandIn[] = []
+  afterEach(() => {
+    for (const gui of installed.splice(0)) gui.dispose()
+  })
+
   const installOn = (host: StartedHost, options: ConstructorParameters<typeof StandIn>[1] = {}) => {
     const gui = new StandIn(host, options)
+    installed.push(gui)
     return { gui, ...gui.install(plugin) }
   }
 
@@ -1023,25 +1030,19 @@ describe.each(variants)("GUI /adaptive on a real host (%s)", (_name, load) => {
 
   describe("settings page under failure", () => {
     it("shows the disconnected row when the server stops answering", async () => {
-      let statusReads = 0
-      let receiptReads = 0
-      const client = interceptRpc(main.client, (method, call) => {
-        if (method === "status.get") {
-          statusReads += 1
-          return statusReads === 1 ? call() : fail(new Error("gone"))
-        }
-        if (method === "receipts.list") {
-          receiptReads += 1
-          return receiptReads === 1 ? call() : fail(new Error("gone"))
-        }
-        return call()
-      })
+      let gone = false
+      const client = interceptRpc(main.client, (method, call) =>
+        gone && (method === "status.get" || method === "receipts.list")
+          ? fail(new Error("gone"))
+          : call(),
+      )
       const { page } = installOn(main, { client })
       const { container, dispose } = mountPage(page)
       try {
         await vi.waitFor(() => {
           expect(container.querySelectorAll(".adaptive-receipt-line").length).toBeGreaterThan(0)
         })
+        gone = true
         await rpc(main).settings.set({ mode: "active" })
         await vi.waitFor(() => {
           expect(container.querySelector(".adaptive-row-value")?.textContent).toBe("disconnected")
@@ -1067,18 +1068,151 @@ describe.each(variants)("GUI /adaptive on a real host (%s)", (_name, load) => {
           expect(element.disabled).toBe(false)
           return element
         })
+        // The page and the waiting pill both read status; count from here on.
+        const before = statusReads
         select.value = "bogus"
         select.dispatchEvent(new Event("change", { bubbles: true }))
-        expect(statusReads).toBe(1)
+        expect(statusReads).toBe(before)
         select.value = "active"
         select.dispatchEvent(new Event("change", { bubbles: true }))
         await vi.waitFor(() => {
-          expect(statusReads).toBe(2)
+          expect(statusReads).toBe(before + 1)
         })
         expect(container.querySelector(".adaptive-saved")).toBeNull()
         expect(select.value).toBe("observe")
       } finally {
         dispose()
+      }
+    })
+  })
+
+  describe("waiting pill", () => {
+    const THREE = { providerID: "fake", id: "fake-model-3" }
+    const quotaFor = (seconds: number): FakeProviderScript => ({
+      behaviors: [
+        {
+          status: 429,
+          headers: { "retry-after": String(seconds) },
+          body: JSON.stringify({
+            error: { message: "You exceeded your current quota", type: "insufficient_quota" },
+          }),
+        },
+      ],
+    })
+    const unauthorized: FakeProviderScript = {
+      behaviors: [
+        {
+          status: 401,
+          body: JSON.stringify({
+            error: { message: "invalid api key", type: "invalid_request_error" },
+          }),
+        },
+      ],
+    }
+
+    it("marks a session parked until quota returns, with when it resumes", async () => {
+      const host = await startHost({
+        models: { ...MODELS, "fake-model-3": { name: "Fake Three" } },
+      })
+      // Settings go to the project's plugin instance: it runs the sessions and serves the GUI.
+      const project = host.client.rpc(adaptiveRpc)
+      const at = { location: { directory: host.project } }
+      const reads = async (): Promise<StatusSnapshot> => project["status.get"](undefined, at)
+      // The host also runs an unlocated instance that handles session events;
+      // settings are per-instance memory, so both get the same patch.
+      const settle = async (patch: Record<string, unknown>): Promise<void> => {
+        await rpc(host).settings.set(patch)
+        await project["settings.set"](patch, at)
+      }
+      try {
+        await settle({
+          mode: "active",
+          tiers: { quick: [THREE], standard: [FAKE, FAKE_TWO], advanced: [] },
+          inviteDismissed: true,
+        })
+        // Three days of quota: the session stays parked for the whole test.
+        const exhausted = quotaFor(3 * 24 * 3600)
+        host.provider.setModelScripts({
+          "fake-model": exhausted,
+          "fake-model-2": exhausted,
+          "fake-model-3": unauthorized,
+        })
+        const session = await host.client.session.create()
+        await host.client.session.prompt({ sessionID: session.id, text: "finish this" })
+        const parked = await vi.waitFor(
+          async () => {
+            const snap = await reads()
+            const entry = snap.waiting.find((item) => item.sessionID === session.id)
+            expect(entry?.resumeAt).toEqual(expect.any(Number))
+            return entry?.resumeAt ?? 0
+          },
+          { timeout: 60_000, interval: 250 },
+        )
+
+        const { pill } = installOn(host, { session: { id: session.id } })
+        expect(pill.id).toBe("waiting")
+        expect(pill.show({ session: { id: "elsewhere" } })).toBeUndefined()
+        // Three calendar days out: the weekday names the day it resumes.
+        const shown = await vi.waitFor(() => {
+          const view = pill.show({ session: { id: session.id } })
+          expect(view?.label).toMatch(/^Waiting · resumes (Sun|Mon|Tue|Wed|Thu|Fri|Sat) \d\d:\d\d$/)
+          return view
+        })
+        expect(shown).toMatchObject({ tone: "warning", icon: "status" })
+        expect(shown?.title).toContain("continues this session automatically")
+
+        // The GUI's clock, not the server's, decides how the label reads.
+        const viewedAt = async (now: number, label: RegExp): Promise<void> => {
+          vi.useFakeTimers({ toFake: ["Date"], now })
+          try {
+            await project["settings.set"]({ inviteDismissed: true }, at)
+            await vi.waitFor(
+              () => {
+                expect(pill.show({ session: { id: session.id } })?.label).toMatch(label)
+              },
+              { timeout: 15_000, interval: 100 },
+            )
+          } finally {
+            vi.useRealTimers()
+          }
+        }
+        await viewedAt(parked - 60_000, /^Waiting · resumes \d\d:\d\d$/)
+        await viewedAt(
+          parked - 10 * 24 * 3600_000,
+          /^Waiting · resumes [A-Z][a-z]{2} \d{1,2} \d\d:\d\d$/,
+        )
+        await viewedAt(parked + 60_000, /^Waiting · resuming$/)
+
+        // Pinned to a model whose key was rejected, nothing says when the session can go on.
+        const other = await host.client.session.create()
+        // Both instances route prompts, so both hear the tier request.
+        await rpc(host).tierRequest.set(other.id, "quick")
+        await project["tier-request.set"]({ sessionID: other.id, tier: "quick" }, at)
+        await host.client.session.prompt({ sessionID: other.id, text: "use the quick model" })
+        await vi.waitFor(
+          async () => {
+            expect((await reads()).tiers.quick[0]?.health).toBe("unavailable")
+          },
+          { timeout: 60_000, interval: 250 },
+        )
+        await settle({ pin: THREE })
+        await vi.waitFor(
+          () => {
+            expect(pill.show({ session: { id: session.id } })?.label).toBe("Waiting")
+          },
+          { timeout: 15_000, interval: 100 },
+        )
+
+        // Only active sessions wait: switching the session off ends the wait in the pill too.
+        await located(host).setMode(session.id, "off")
+        await vi.waitFor(
+          () => {
+            expect(pill.show({ session: { id: session.id } })).toBeUndefined()
+          },
+          { timeout: 15_000, interval: 100 },
+        )
+      } finally {
+        await host.close()
       }
     })
   })

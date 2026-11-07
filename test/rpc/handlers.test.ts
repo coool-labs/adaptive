@@ -24,6 +24,7 @@ function source(overrides: Partial<AdaptiveRpcSource> = {}): AdaptiveRpcSource {
         pin: null,
         tiers: { quick: [], standard: [], advanced: [] },
         parked: 0,
+        waiting: [],
         receipts: 0,
       }),
     receipts: () => Promise.resolve([]),
@@ -94,6 +95,7 @@ describe("adaptiveRpcHandlers", () => {
       pin: null,
       tiers: { quick: [], standard: [], advanced: [] },
       parked: 1,
+      waiting: [],
       receipts: 1,
     }
     const handlers = adaptiveRpcHandlers(

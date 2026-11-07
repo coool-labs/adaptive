@@ -31,6 +31,7 @@ import {
   activeStorage,
   FailAfterStorage,
   FakeSupervisorSession,
+  inertWake,
   flush,
   KeyFailStorage,
   makeSupervisor,
@@ -406,6 +407,7 @@ describe("supervisor", () => {
       model,
       storage: storage.source,
       clock: () => 1000,
+      ...inertWake(),
     })
     await supervisor.handleReport(STARTED_S1)
     expect(session.log).toEqual([])
@@ -697,15 +699,16 @@ describe("supervisor", () => {
       const storage = activeStorage()
       seedParked(storage)
       const supervisor = makeSupervisor({ storage, session })
-      // Block both candidates before the idle boundary.
+      // Block both candidates before the idle boundary (from another session:
+      // a manual pick on s1 itself would be a takeover that drops its work).
       for (const id of ["a", "b"]) {
         await supervisor.handleReport({
           kind: "model-selected",
-          sessionID: "s1",
+          sessionID: "s2",
           at: 5,
           model: ref("prov", id),
         })
-        await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 429 })
+        await supervisor.handleReport({ kind: "http-response", sessionID: "s2", status: 429 })
       }
       await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
       expect(session.log).toEqual([])
@@ -752,7 +755,7 @@ describe("supervisor", () => {
       expect(log).toEqual([`switch:a`, `prompt:${CONTINUATION_PROMPT}`])
     })
 
-    it("re-parks without a resume failure log when the user interrupts the settle", async () => {
+    it("drops the work without a resume failure log when the user interrupts the settle", async () => {
       const errors = spyErrors()
       try {
         const log: string[] = []
@@ -790,14 +793,12 @@ describe("supervisor", () => {
         gates[0]?.()
         await idle
         await flush()
-        // The stale decision must not act; the work is saved again, honestly —
-        // an aborted resume is steering, not an infrastructure failure, so no
-        // resume-failure log line is emitted (ADP-010/ADP-031).
+        // The stale decision must not act. Cancelling is the user taking the
+        // session over, not an infrastructure failure: no resume-failure log
+        // line (ADP-010), and the work is not resumed again behind their back.
         expect(log).toEqual([])
         expect(errors.lines.join("\n")).not.toContain("resume:")
-        const parked = parseParkedPayload(storedParked(storage))
-        expect(parked).toHaveLength(1)
-        expect(parked[0]).toMatchObject({ sessionID: "s1", attempts: 1 })
+        expect(parseParkedPayload(storedParked(storage))).toEqual([])
       } finally {
         errors.restore()
       }
@@ -809,6 +810,7 @@ describe("supervisor", () => {
       seedParked(storage, 5)
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+      await flush()
       const parked = parseParkedPayload(storedParked(storage))
       expect(parked).toHaveLength(1)
       expect(parked[0]?.parkedAt).toBe(1000)
@@ -1044,6 +1046,7 @@ describe("supervisor", () => {
         model,
         storage: storage.source,
         clock: () => 1000,
+        ...inertWake(),
       })
       const input = {
         sessionID: "s1",
@@ -1124,6 +1127,7 @@ describe("supervisor", () => {
         model,
         storage: storage.source,
         clock: () => 1000,
+        ...inertWake(),
       })
       await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
       expect(session.log).toEqual([])
@@ -1164,6 +1168,7 @@ describe("supervisor", () => {
       )
       const supervisor = makeSupervisor({ storage, session })
       await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+      await flush()
       // First PARKED_KEY write (the resume pop) succeeded; the re-park failed,
       // so the last persisted payload no longer contains the record.
       expect(errors.lines.join("\n")).toContain("[coool.adaptive] parked:")
@@ -2195,6 +2200,7 @@ describe("supervisor", () => {
         model,
         storage: storage.source,
         clock: () => 1000,
+        ...inertWake(),
       })
       await supervisor.handleReport(STARTED)
       await supervisor.handleReport({
@@ -2581,6 +2587,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
       model,
       storage: storage.source,
       clock: () => 1000,
+      ...inertWake(),
     })
     await supervisor.handleReport(PROMPT_S1)
     expect(session.log).toEqual([])
@@ -4291,6 +4298,7 @@ describe("per-session mode overrides (ADP-054)", () => {
       model,
       storage: storage.source,
       clock: () => 1000,
+      ...inertWake(),
     })
     return { supervisor, session }
   }
@@ -4500,6 +4508,7 @@ describe("per-session mode overrides (ADP-054)", () => {
       model,
       storage: storage.source,
       clock: () => 1000,
+      ...inertWake(),
     })
     supervisor.noteTierRequest("s1", "quick")
     await supervisor.handleReport({ kind: "idle", sessionID: "s2" })
@@ -4554,6 +4563,7 @@ describe("tier requests (ADP-055)", () => {
       model,
       storage: storage.source,
       clock: () => 1000,
+      ...inertWake(),
     })
     return { supervisor, session }
   }

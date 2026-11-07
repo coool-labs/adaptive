@@ -31,11 +31,20 @@ export interface TierResourceStatus {
   resetAt: number | null
 }
 
+/** A session whose parked work waits for its tier to recover (ADP-024). */
+export interface WaitingSession {
+  sessionID: string
+  tier: TierName
+  /** When the wake resumes it (ms epoch); null when no resource states a reset. */
+  resumeAt: number | null
+}
+
 export interface StatusSnapshot {
   mode: OperatingMode
   pin: ModelRef | null
   tiers: Readonly<Record<TierName, readonly TierResourceStatus[]>>
   parked: number
+  waiting: readonly WaitingSession[]
   receipts: number
 }
 
@@ -44,6 +53,7 @@ export function buildStatus(input: {
   health: readonly ResourceRecord[]
   capacity: Readonly<Record<string, CapacityReading | null>>
   parked: number
+  waiting: readonly WaitingSession[]
   receipts: number
 }): StatusSnapshot {
   const byKey = new Map<string, ResourceRecord>()
@@ -69,6 +79,7 @@ export function buildStatus(input: {
     pin: input.settings.pin,
     tiers,
     parked: input.parked,
+    waiting: input.waiting,
     receipts: input.receipts,
   }
 }

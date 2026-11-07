@@ -50,6 +50,7 @@ function snapshot(
       advanced: [],
     },
     parked: 0,
+    waiting: [],
     receipts: 0,
   }
 }

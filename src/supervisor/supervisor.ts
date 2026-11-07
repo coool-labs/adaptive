@@ -81,9 +81,13 @@ import { ParkedWorkStore, PARKED_KEY } from "../state/parked-work/index.js"
 import type { ParkedRecord } from "../state/parked-work/types.js"
 import {
   decideRetry,
+  earliestUsable,
   executeContinuation,
   forMode as retryForMode,
+  MAX_PARKED_ATTEMPTS,
   planContinuation,
+  planWake,
+  resourceUsableAt,
   selectResumable,
 } from "../execution/index.js"
 import { escalationDetail } from "../execution/escalation/index.js"
@@ -201,9 +205,17 @@ export class Supervisor {
    * Sessions with an owned recovery in flight (between veto/resume and the
    * delivered continuation prompt). The host settle inside it can take
    * unbounded time; an interruption arriving during that window must abort
-   * the stale decision instead of acting after it.
+   * the stale decision instead of acting after it. The value settles when
+   * the recovery does (it never rejects).
    */
-  readonly #recoveryPending = new Set<string>()
+  readonly #recoveryPending = new Map<string, Promise<void>>()
+  /**
+   * Units opened by an owned continuation's prompt. Such a unit can fail
+   * before the recovery that started it returns from its prompt call; its
+   * terminal failure is its own, not an echo of the superseded unit.
+   * Cleared at unit close.
+   */
+  readonly #continuationUnits = new Set<string>()
   /** Snapshot-sized budget shared by a task's terminal quota continuations. */
   readonly #quotaRecoveriesRemaining = new Map<string, number>()
   /** Interruptions observed while a recovery was pending on the session. */
@@ -248,7 +260,7 @@ export class Supervisor {
    * open. Consumed by execution-started, which then skips re-routing (the
    * model is already applied to the very turn that triggered admission).
    */
-  readonly #promptAdmission = new Map<string, { tier?: TierName }>()
+  readonly #promptAdmission = new Map<string, { tier?: TierName; continuation?: true }>()
   /**
    * Tier intent for an owned continuation (retry recovery, escalation,
    * parked resume) set before its prompt is delivered. The continuation's
@@ -259,6 +271,28 @@ export class Supervisor {
    * unit opens, its prompt is rejected, or the session dies.
    */
   readonly #continuationTiers = new Map<string, TierName>()
+  /**
+   * Parked-work wake (ADP-024): idle only follows successful work, so when a
+   * whole tier is blocked one timer stands in for the safe boundary at the
+   * earliest moment a candidate resource recovers. `dueAt` may lie past the
+   * timer when the delay was capped — an early fire only re-arms.
+   */
+  #wake: { readonly cancel: () => void; readonly dueAt: number } | undefined
+  /** Consecutive wake sweeps that resumed nothing (backs the timer off). */
+  #fruitless = 0
+  #disposed = false
+  /**
+   * Whether this instance receives host reports. The host's other plugin
+   * instance (ADP-056) never does: its in-memory health is only what it
+   * hydrated, so it re-reads persisted health before a wake sweep.
+   */
+  #live = false
+  /**
+   * Session → resume cycles spent on its current task: a resumed unit that
+   * parks again carries the count, so park → wake → fail loops stay bounded
+   * by MAX_PARKED_ATTEMPTS. Cleared on success or a fresh user prompt.
+   */
+  readonly #resumeCycles = new Map<string, number>()
   readonly #ready: Promise<SettingsV1>
   readonly #ops: ReturnType<typeof sessionOps>
 
@@ -284,8 +318,21 @@ export class Supervisor {
     this.#ops = sessionOps(options.session, {
       beforeSwitch: (sessionID, model) => {
         this.#tracker.noteOwnSwitch(sessionID, model)
+        options.ledger.noteSwitch(sessionID, model, options.clock())
+      },
+      switchFailed: (sessionID) => {
+        options.ledger.withdrawSwitch(sessionID)
       },
       beforePrompt: (sessionID) => {
+        // The other plugin instance may be the one that hears this prompt:
+        // the ledger lets it recognize the continuation as Adaptive's.
+        const tier = this.#continuationTiers.get(sessionID)
+        const cycles = this.#resumeCycles.get(sessionID)
+        options.ledger.noteContinuation(
+          sessionID,
+          { ...(tier === undefined ? {} : { tier }), ...(cycles === undefined ? {} : { cycles }) },
+          options.clock(),
+        )
         this.#continuationPending.add(sessionID)
         this.#continuationsInFlight.set(
           sessionID,
@@ -305,9 +352,10 @@ export class Supervisor {
             // its ownership mark would swallow the next user prompt's
             // admission, so it is dropped here (the hook can no longer fire).
             // The continuation's tier intent dies with it — no episode will
-            // open to carry it.
+            // open to carry it. The other instance's view of it goes too.
             this.#continuationPending.delete(sessionID)
             this.#continuationTiers.delete(sessionID)
+            options.ledger.withdrawContinuation(sessionID)
           }
         } else {
           this.#continuationsInFlight.set(sessionID, depth - 1)
@@ -336,7 +384,10 @@ export class Supervisor {
         if (episode > (floors.get(sessionID) ?? 0)) floors.set(sessionID, episode)
       }
       for (const receipt of this.#receipts.snapshot()) bump(receipt.unitID)
-      for (const record of this.#parked.list()) bump(record.id)
+      for (const record of this.#parked.list()) {
+        bump(record.id)
+        options.ledger.noteParked(record.sessionID)
+      }
       this.#tracker.seedEpisodes(floors)
       // Health records hydrate the registry: the host's TUI-mode plugin
       // reconciliation can serve RPC from an instance whose hooks (event
@@ -357,6 +408,25 @@ export class Supervisor {
       return this.#settings.load()
     }
     this.#ready = loadState()
+    // Parked work survives restarts; its wake must too.
+    void this.#armWake()
+  }
+
+  /** Stop the wake timer; a disposed supervisor never re-arms it. */
+  dispose(): void {
+    this.#disposed = true
+    this.#options.ledger.leave()
+    this.#wake?.cancel()
+    this.#wake = undefined
+  }
+
+  /**
+   * This instance hears the host. The ledger ignores it from a disposed
+   * instance (a late report during teardown), so the survivor still sweeps.
+   */
+  #markLive(): void {
+    this.#live = true
+    this.#options.ledger.markLive()
   }
 
   /** Settings as of the latest load/patch (awaits the constructor load). */
@@ -378,14 +448,21 @@ export class Supervisor {
 
   /** Handle one host report (event pump or session hook). */
   async handleReport(report: EventReport): Promise<void> {
+    this.#markLive()
     try {
       const settings = await this.#ensureSettings()
       // An OFF session is fully inert — no supervision, no receipts, no
       // health evidence. Idle is the exception: it is the bookkeeping
       // boundary (parked-work sweep, dead-session override pruning) and runs
       // for every report so other sessions' overrides are maintained; the
-      // sweep itself gates per parked session below.
-      if (report.kind !== "idle" && this.#modeFor(report.sessionID, settings) === "off") return
+      // sweep itself gates per parked session below. A prompt still marks
+      // the user taking the session over (its parked work is dropped).
+      if (
+        report.kind !== "idle" &&
+        report.kind !== "prompt" &&
+        this.#modeFor(report.sessionID, settings) === "off"
+      )
+        return
       await this.#dispatch(report, settings)
     } catch (error) {
       logFailOpen("report", error)
@@ -439,6 +516,7 @@ export class Supervisor {
    * untouched and OpenCode's native retry policy stands.
    */
   async handleRetry(input: RetryHookInput): Promise<void> {
+    this.#markLive()
     try {
       const settings = await this.#ensureSettings()
       if (this.#modeFor(input.sessionID, settings) === "off") return
@@ -520,6 +598,8 @@ export class Supervisor {
       // (ADP-028): manual-selection suppression lifts for every session.
       this.#manualSelections.clear()
     }
+    // Mode and tier changes move which parked work is due and when.
+    if (result.ok) await this.#rearmWake()
     return result
   }
 
@@ -539,6 +619,7 @@ export class Supervisor {
     await this.#sessionModes.set(sessionID, mode)
     // A mode change is the user steering Adaptive explicitly (ADP-028).
     this.#manualSelections.delete(sessionID)
+    await this.#rearmWake()
   }
 
   /**
@@ -550,12 +631,54 @@ export class Supervisor {
    */
   async status(): Promise<StatusSnapshot> {
     const settings = await this.#ensureSettings()
-    await this.#healthRecords.load()
-    // The persisted mirror serves the status surface: a serving instance
-    // without the event-pump hooks must still report sensed capacity.
-    await this.#capacityStore.load()
+    // Parked work too: the other instance may have parked or resumed it.
+    await this.#parked.refresh()
     const now = this.#options.clock()
+    const { records, capacity, usableAt } = await this.#persistedView(settings, now)
+    // The wake that will actually resume the session may come later than the
+    // reset (backoff after fruitless wakes). It is this instance's own when
+    // it sweeps, else the one the live instance published.
+    const { ledger } = this.#options
+    const wakeAt = this.#live || !ledger.liveElsewhere() ? this.#wake?.dueAt : ledger.liveWake()
+    const waiting = this.#parked
+      .list()
+      .filter((record) => this.#wakeable(record, settings))
+      .map((record) => {
+        const usable = parkedResumeAt(record, settings, usableAt)
+        return {
+          sessionID: record.sessionID,
+          tier: record.tier,
+          resumeAt: usable === undefined ? null : Math.max(usable, wakeAt ?? usable),
+        }
+      })
+    return buildStatus({
+      settings,
+      health: records,
+      capacity,
+      parked: this.#parked.count(),
+      waiting,
+      receipts: this.#receipts.snapshot().length,
+    })
+  }
+
+  /**
+   * Health and capacity as persisted by every instance, with when each ref
+   * becomes usable. The status surface reads this (its instance's registry
+   * can be empty when the host placed the event pump on another instance),
+   * and so does the wake of an instance that hears no host reports.
+   */
+  async #persistedView(
+    settings: SettingsV1,
+    now: number,
+  ): Promise<{
+    records: ResourceRecord[]
+    capacity: Record<string, CapacityReading | null>
+    usableAt: (ref: ModelRef) => number | undefined
+  }> {
+    await this.#healthRecords.load()
+    await this.#capacityStore.load()
     const records = this.#healthRecords.snapshot().map((record) => sweepRecord(record, now))
+    const recordsByID = new Map(records.map((record) => [resourceKeyID(record.key), record]))
     // Capacity readings are gathered per configured ref (mirroring the health
     // input shape) so buildStatus stays a pure function of its inputs.
     const capacity: Record<string, CapacityReading | null> = {}
@@ -569,13 +692,13 @@ export class Supervisor {
         capacity[schedulerHealthKey(ref)] = mergeReadings(candidates, now)
       }
     }
-    return buildStatus({
-      settings,
-      health: records,
-      capacity,
-      parked: this.#parked.count(),
-      receipts: this.#receipts.snapshot().length,
-    })
+    const usableAt = (ref: ModelRef): number | undefined =>
+      resourceUsableAt(
+        resourceChain(refKey(ref)).map((key) => recordsByID.get(resourceKeyID(key))),
+        capacity[schedulerHealthKey(ref)] ?? null,
+        now,
+      )
+    return { records, capacity, usableAt }
   }
 
   /** Newest-first bounded receipt view (ADP-030). */
@@ -612,8 +735,16 @@ export class Supervisor {
         // carries the attribution the tracker resolved. Only the two
         // selection sources reach this event kind.
         const { source } = result.transition
-        if (source === "selected-adaptive") this.#manualSelections.delete(report.sessionID)
-        else this.#noteManualSelection(report.sessionID)
+        if (
+          source === "selected-adaptive" ||
+          // The host's other plugin instance (ADP-056) may have switched it.
+          this.#options.ledger.takeSwitch(report.sessionID, report.model, this.#options.clock())
+        ) {
+          this.#manualSelections.delete(report.sessionID)
+          return
+        }
+        this.#noteManualSelection(report.sessionID)
+        await this.#takeOver(report.sessionID)
         return
       }
       case "model-request":
@@ -670,14 +801,29 @@ export class Supervisor {
    */
   async #onPrompt(sessionID: string, settings: SettingsV1): Promise<void> {
     const mode = this.#modeFor(sessionID, settings)
-    if (mode !== "active") return
-    if (this.#continuationPending.delete(sessionID)) {
+    const own = this.#continuationPending.delete(sessionID)
+    // The host's other plugin instance (ADP-056) may have sent it.
+    const foreign = own
+      ? undefined
+      : this.#options.ledger.takeContinuation(sessionID, this.#options.clock())
+    if (mode !== "active") {
+      // An OFF or OBSERVE session is not routed, but the user's own turn
+      // there still supersedes its parked work: turning Adaptive back on
+      // must not replay a continuation the user has moved past.
+      if (!own && foreign === undefined) await this.#takeOver(sessionID)
+      return
+    }
+    if (own || foreign !== undefined) {
       // An owned continuation (retry recovery, escalation, parked resume)
       // already owns this unit's routing: re-arm the admission marker from
       // the continuation's tier intent so execution-started skips a fresh
       // (continuation-unaware) admission.
-      const tier = this.#continuationTiers.get(sessionID)
-      this.#promptAdmission.set(sessionID, tier !== undefined ? { tier } : {})
+      const tier = own ? this.#continuationTiers.get(sessionID) : foreign?.tier
+      if (foreign?.cycles !== undefined) this.#resumeCycles.set(sessionID, foreign.cycles)
+      this.#promptAdmission.set(sessionID, {
+        ...(tier !== undefined ? { tier } : {}),
+        continuation: true,
+      })
       return
     }
     // Prompt hooks also admit steering messages into an active episode. They
@@ -690,6 +836,7 @@ export class Supervisor {
     this.#promptAdmission.delete(sessionID)
     this.#escalations.delete(sessionID)
     this.#quotaRecoveriesRemaining.delete(sessionID)
+    await this.#takeOver(sessionID)
     // A pending probe ticket from an earlier prompt admission (or a failed
     // recovery) can only be carried by the unit the ORIGINAL prompt opens;
     // a fresh admission means that episode never ran, so the ticket is
@@ -759,6 +906,10 @@ export class Supervisor {
     // it before the close cleanup: a superseding start would otherwise
     // discard it and re-route an already-admitted turn.
     const admitted = this.#promptAdmission.get(report.sessionID)
+    // A run Adaptive did not continue — the user's shell or slash command
+    // skips the prompt hook — moves the session past any resume waiting to
+    // settle on it.
+    if (admitted?.continuation !== true) this.#options.ledger.noteTakeover(report.sessionID)
     // A superseding start closes the previous episode — release its
     // per-unit bookkeeping (veto budget) too.
     this.#afterUnitClose(opened)
@@ -768,6 +919,7 @@ export class Supervisor {
       this.#promptAdmission.delete(report.sessionID)
       this.#continuationTiers.delete(report.sessionID)
       if (admitted.tier !== undefined) this.#admissionTiers.set(unit.id, admitted.tier)
+      if (admitted.continuation === true) this.#continuationUnits.add(unit.id)
       // The prompt-time admission receipt was recorded before this unit
       // existed; adopt it so outcomes attach to it like any unit receipt.
       try {
@@ -963,6 +1115,7 @@ export class Supervisor {
       at: report.at,
     })
     this.#afterUnitClose(closed)
+    this.#resumeCycles.delete(report.sessionID)
     if (model !== undefined) {
       this.#observeHealth({ kind: "success", key: refKey(model) })
     }
@@ -987,6 +1140,10 @@ export class Supervisor {
     // Tool evidence is captured pre-close like the other per-unit maps.
     const toolEvidence = unitID !== undefined ? (this.#escalationEvidence.get(unitID) ?? []) : []
     const probeTicket = this.#takeProbeTicket(unitID)
+    // A vetoed continuation unit's failure is an echo: its own veto owns the
+    // next continuation.
+    const continuation =
+      unitID !== undefined && this.#continuationUnits.has(unitID) && !this.#vetoes.has(unitID)
     // The terminal classifies and dedups BEFORE the close: the close clears
     // the unit's attempt-failure entry, and the terminal must consult it —
     // it repeats the episode's last attempt, which an attempt signal
@@ -1026,7 +1183,7 @@ export class Supervisor {
       model !== undefined &&
       classification.category === "quota_exhausted"
     ) {
-      await this.#recoverTerminalQuota(unit, admissionTier, settings)
+      await this.#recoverTerminalQuota(unit, admissionTier, continuation, settings)
       return
     }
     await this.#escalateOnFailure(
@@ -1044,11 +1201,17 @@ export class Supervisor {
   async #recoverTerminalQuota(
     unit: ActiveUnit,
     requiredTier: TierName | undefined,
+    continuation: boolean,
     settings: SettingsV1,
   ): Promise<void> {
     const sessionID = unit.sessionID
-    // A retry veto already owns the continuation; its terminal echo must not
-    // start another. OBSERVE computes the same admission without applying it.
+    // The continuation unit itself can run out of quota before the recovery
+    // that started it returns from its prompt call. Its failure is its own:
+    // wait for that recovery to settle, then recover (or park) like any unit.
+    if (continuation) await this.#recoveryPending.get(sessionID)
+    // Otherwise a pending continuation owns the session (a retry veto's
+    // terminal echo must not start another). OBSERVE computes the same
+    // admission without applying it.
     const mode = this.#modeFor(sessionID, settings)
     if (
       mode === "off" ||
@@ -1072,19 +1235,22 @@ export class Supervisor {
       (tier === undefined ? 0 : settings.tiers[tier].length)
     if (decision.kind === "apply" && remaining === 0) {
       if (probeTicket !== undefined) this.#health.releaseProbe(probeTicket)
+      // The ladder is spent but the work is not done: park it so the wake
+      // resumes it with a fresh budget instead of leaving the session stuck.
+      if (tier !== undefined) {
+        await this.#recordReceipt({
+          sessionID,
+          tier,
+          decision: { kind: "park", reason: "all-blocked", detail: "quota recovery budget spent" },
+        })
+        await this.#parkUnit(unit.id, sessionID, tier, "quota exhausted")
+      }
       return
     }
     await this.#recordReceipt({ sessionID, tier, decision })
     if (decision.kind !== "apply") {
       if (decision.kind === "park" && tier !== undefined) {
-        await this.#parked.park({
-          id: unit.id,
-          sessionID,
-          tier,
-          reason: "all-blocked",
-          detail: "quota exhausted",
-          parkedAt: this.#options.clock(),
-        })
+        await this.#parkUnit(unit.id, sessionID, tier, "quota exhausted")
       }
       return
     }
@@ -1226,6 +1392,9 @@ export class Supervisor {
     }
     const unit = this.#tracker.active(report.sessionID)
     const probeTicket = this.#takeProbeTicket(unit?.id)
+    // The user cancelling is the user steering: a resume waiting on this
+    // session (on either instance) drops its work instead of re-parking it.
+    if (reason === "user") this.#options.ledger.noteTakeover(report.sessionID)
     // An interruption while a recovery is pending on this session aborts it
     // at its post-settle guard (the pending recovery's decision predates the
     // interruption and must not act after it).
@@ -1329,6 +1498,7 @@ export class Supervisor {
     const unitID = closedUnitID(closed)
     if (unitID !== undefined) {
       this.#vetoes.delete(unitID)
+      this.#continuationUnits.delete(unitID)
       this.#admissionTiers.delete(unitID)
       this.#escalationEvidence.delete(unitID)
       const leftover = this.#probeTickets.get(unitID)
@@ -1514,18 +1684,7 @@ export class Supervisor {
           this.#health.releaseProbe(probeTicket)
         }
         if (unitID === undefined || routingTier === undefined) return
-        try {
-          await this.#parked.park({
-            id: unitID,
-            sessionID: input.sessionID,
-            tier: routingTier,
-            reason: "all-blocked",
-            detail: "continuation failed",
-            parkedAt: this.#options.clock(),
-          })
-        } catch (parkError) {
-          logFailOpen("parked", parkError)
-        }
+        await this.#parkUnit(unitID, input.sessionID, routingTier, "continuation failed")
       })
   }
 
@@ -1535,16 +1694,31 @@ export class Supervisor {
    * continuation's prompt hook re-arms the admission marker (the unit must
    * not be re-routed: that would discard the recovery/escalation decision).
    */
-  async #ownRecovery(
+  #ownRecovery(
+    sessionID: string,
+    model: ModelRef,
+    tier: TierName | undefined,
+    stillValid: () => boolean,
+  ): Promise<void> {
+    const run = this.#continueSession(sessionID, model, tier, stillValid)
+    // The guard window opens in the same tick the recovery starts (before
+    // its first await completes) so an interrupt pumped during the admission
+    // race is still seen.
+    const pending = run.catch(() => undefined)
+    this.#recoveryPending.set(sessionID, pending)
+    return run.finally(() => {
+      // A later recovery on the session owns the entry now.
+      if (this.#recoveryPending.get(sessionID) === pending) this.#recoveryPending.delete(sessionID)
+    })
+  }
+
+  async #continueSession(
     sessionID: string,
     model: ModelRef,
     tier: TierName | undefined,
     stillValid: () => boolean,
   ): Promise<void> {
     if (tier !== undefined) this.#continuationTiers.set(sessionID, tier)
-    // The guard window opens before the first await so an interrupt pumped
-    // during the admission race is still seen.
-    this.#recoveryPending.add(sessionID)
     try {
       const alive = await this.#isSessionAlive(sessionID)
       const recovery: RecoveryOption = { kind: "switch", model }
@@ -1572,21 +1746,128 @@ export class Supervisor {
       // wipes and mislabel a later user prompt's admission.
       if (tier !== undefined) this.#continuationTiers.delete(sessionID)
       throw error
-    } finally {
-      this.#recoveryPending.delete(sessionID)
     }
   }
 
-  // ---------- parked-work resume (safe boundary: idle) ----------
+  // ---------- parked-work resume (safe boundaries: idle, wake) ----------
 
   async #onIdle(settings: SettingsV1): Promise<void> {
+    await this.#sweepParked(settings)
+    await this.#armWake()
+  }
+
+  /**
+   * The wake timer's safe boundary. Fires only when no unit of a parked
+   * session can reach idle on its own; it runs the same sweep (same
+   * safeguards) as idle, then re-plans. An early fire (capped delay) only
+   * re-plans: no sweep, no receipts while a long window is still open.
+   */
+  async #onWake(dueAt: number, capped: boolean): Promise<void> {
+    this.#setWake(undefined)
+    try {
+      const settings = await this.#ensureSettings()
+      if (!this.#disposed && (!capped || this.#options.clock() >= dueAt)) {
+        if (!this.#live && this.#options.ledger.liveElsewhere()) {
+          // The instance that hears the host has current health and sees
+          // the resumed unit's reports: it resumes, this one backs off.
+          this.#fruitless += 1
+        } else {
+          if (!this.#live) {
+            // No instance hears the host yet (fresh start): persisted health
+            // is the only current evidence.
+            await this.#healthRecords.load()
+            this.#health.hydrate(this.#healthRecords.snapshot())
+          }
+          // A taken record's delivery settles the backoff itself.
+          if (!(await this.#sweepParked(settings))) this.#fruitless += 1
+        }
+      }
+    } catch (error) {
+      logFailOpen("wake", error)
+    }
+    await this.#armWake()
+  }
+
+  /**
+   * Plans the one wake timer from the parked work due for resume (ADP-024).
+   * Never throws: a failed plan leaves parked work to the idle boundary.
+   */
+  async #armWake(): Promise<void> {
+    try {
+      const settings = await this.#ensureSettings()
+      const now = this.#options.clock()
+      // An instance that hears no host has no current health or capacity of
+      // its own: it plans from what the live one persisted, as status does.
+      const usableAt = this.#live
+        ? (ref: ModelRef): number | undefined =>
+            resourceUsableAt(
+              resourceChain(refKey(ref)).map((key) => this.#health.recordFor(key)),
+              this.#capacity.reading(refKey(ref)),
+              now,
+            )
+        : (await this.#persistedView(settings, now)).usableAt
+      // Disposal may land during either read above.
+      if (this.#disposed) return
+      const targets = this.#parked
+        .list()
+        .filter((record) => this.#wakeable(record, settings))
+        .map((record) => parkedResumeAt(record, settings, usableAt))
+      const plan = planWake(targets, now, this.#fruitless)
+      if (plan !== undefined && plan.dueAt === this.#wake?.dueAt) return
+      this.#wake?.cancel()
+      this.#setWake(undefined)
+      if (plan === undefined) return
+      const { dueAt, capped } = plan
+      this.#setWake({
+        dueAt,
+        cancel: this.#options.schedule(() => void this.#onWake(dueAt, capped), plan.delayMs),
+      })
+    } catch (error) {
+      logFailOpen("wake", error)
+    }
+  }
+
+  /** Keeps the published wake (what status shows elsewhere) in step. */
+  #setWake(wake: { readonly cancel: () => void; readonly dueAt: number } | undefined): void {
+    this.#wake = wake
+    this.#options.ledger.noteWake(wake?.dueAt)
+  }
+
+  /** A change the user or a new park made: re-plan without backoff. */
+  async #rearmWake(): Promise<void> {
+    this.#fruitless = 0
+    await this.#armWake()
+  }
+
+  /**
+   * Parked work the wake serves: an ACTIVE session (observe never resumes,
+   * off is inert), a configured tier (else it is held), attempts left.
+   */
+  #wakeable(record: ParkedRecord, settings: SettingsV1): boolean {
+    return (
+      this.#modeFor(record.sessionID, settings) === "active" &&
+      configuredTiers(settings).includes(record.tier) &&
+      (record.attempts ?? 0) < MAX_PARKED_ATTEMPTS
+    )
+  }
+
+  /**
+   * Resumes due parked work once per session; true when any record was
+   * taken for resume. Reloads parked work first: the host's other plugin
+   * instance may have parked or resumed records since this one last looked.
+   */
+  async #sweepParked(settings: SettingsV1): Promise<boolean> {
+    await this.#parked.refresh()
     const records = this.#parked.list()
+    for (const record of records) this.#options.ledger.noteParked(record.sessionID)
     // Override holders join the alive sweep: a dead session's override is
     // pruned here (its per-session steering is worthless once the session is
     // gone), in the same sweep that clears the other per-session maps.
     const overrideIDs = this.#sessionModes.snapshot().map((record) => record.sessionID)
     const tierRequestIDs = this.#tierRequests.snapshot().map((record) => record.sessionID)
-    if (records.length === 0 && overrideIDs.length === 0 && tierRequestIDs.length === 0) return
+    if (records.length === 0 && overrideIDs.length === 0 && tierRequestIDs.length === 0) {
+      return false
+    }
     // OFF sessions are not supervised: their parked records are neither
     // dropped nor resumed, and no alive probe runs for them.
     const supervised = new Set(
@@ -1629,12 +1910,14 @@ export class Supervisor {
     // a safe boundary), and several back-to-back continuation prompts could
     // redo work an earlier one already completed (ADP-023).
     const attempted = new Set<string>()
+    let resumed = false
     for (const record of plan.attempt) {
+      if (this.#disposed) break
       if (this.#modeFor(record.sessionID, settings) === "off") continue
       if (this.#tracker.active(record.sessionID) !== undefined) continue
       if (attempted.has(record.sessionID)) continue
       attempted.add(record.sessionID)
-      await this.#resumeAttempt(record, settings)
+      if (await this.#resumeAttempt(record, settings)) resumed = true
     }
     for (const [sessionID, isAlive] of alive) {
       if (!isAlive) {
@@ -1643,6 +1926,8 @@ export class Supervisor {
         this.#continuationPending.delete(sessionID)
         this.#escalations.delete(sessionID)
         this.#quotaRecoveriesRemaining.delete(sessionID)
+        this.#resumeCycles.delete(sessionID)
+        this.#options.ledger.clearParked(sessionID)
         if (this.#sessionModes.get(sessionID) !== null) {
           try {
             await this.#sessionModes.set(sessionID, null)
@@ -1652,6 +1937,7 @@ export class Supervisor {
         }
       }
     }
+    return resumed
   }
 
   async #dropParked(record: ParkedRecord): Promise<void> {
@@ -1662,8 +1948,86 @@ export class Supervisor {
     }
   }
 
-  /** One parked record's fresh routing attempt at the idle boundary. */
-  async #resumeAttempt(record: ParkedRecord, settings: SettingsV1): Promise<void> {
+  /**
+   * The user took the session over (own prompt or model pick): a resume in
+   * flight on either plugin instance aborts after its settle, and parked
+   * work is dropped — resuming it would replay a continuation the user has
+   * already moved past.
+   */
+  async #takeOver(sessionID: string): Promise<void> {
+    const { ledger } = this.#options
+    ledger.noteTakeover(sessionID)
+    this.#resumeCycles.delete(sessionID)
+    const parkedHere = (): ParkedRecord[] =>
+      this.#parked.list().filter((record) => record.sessionID === sessionID)
+    // A session that never parked costs no storage read (OFF stays free).
+    if (parkedHere().length === 0 && !ledger.mayBeParked(sessionID)) return
+    await this.#parked.refresh()
+    const records = parkedHere()
+    ledger.clearParked(sessionID)
+    if (records.length === 0) return
+    for (const record of records) await this.#dropParked(record)
+    await this.#rearmWake()
+  }
+
+  /**
+   * Parks a unit whose tier has no usable resource. A unit that was itself
+   * a resume carries the session's resume cycles, so repeated park → wake →
+   * fail rounds exhaust MAX_PARKED_ATTEMPTS instead of looping.
+   */
+  async #parkUnit(id: string, sessionID: string, tier: TierName, detail: string): Promise<void> {
+    const attempts = this.#resumeCycles.get(sessionID)
+    if (
+      await this.#storeParked({
+        id,
+        sessionID,
+        tier,
+        reason: "all-blocked",
+        detail,
+        parkedAt: this.#options.clock(),
+        ...(attempts !== undefined ? { attempts } : {}),
+      })
+    ) {
+      await this.#rearmWake()
+    }
+  }
+
+  /**
+   * Persists parked work; false when nothing waits. Work out of resume
+   * attempts is not kept: it gets a receipt saying so instead of lingering
+   * unresumable behind a waiting chip.
+   */
+  async #storeParked(record: ParkedRecord): Promise<boolean> {
+    if ((record.attempts ?? 0) >= MAX_PARKED_ATTEMPTS) {
+      await this.#recordReceipt({
+        sessionID: record.sessionID,
+        unitID: record.id,
+        tier: record.tier,
+        decision: {
+          kind: "park",
+          reason: "all-blocked",
+          detail: `gave up after ${String(MAX_PARKED_ATTEMPTS)} resume attempts`,
+        },
+      })
+      return false
+    }
+    this.#options.ledger.noteParked(record.sessionID)
+    try {
+      await this.#parked.park(record)
+    } catch (error) {
+      logFailOpen("parked", error)
+      return false
+    }
+    return true
+  }
+
+  /**
+   * One parked record's fresh routing attempt at a safe boundary; true when
+   * the record was taken for resume. Its continuation is delivered in the
+   * background: the prompt call stays open while the continued unit runs,
+   * and the sweep must not hold every other due session behind it.
+   */
+  async #resumeAttempt(record: ParkedRecord, settings: SettingsV1): Promise<boolean> {
     // The parked session resumes under ITS effective mode, not the idle
     // report's session's mode.
     const mode = this.#modeFor(record.sessionID, settings)
@@ -1675,59 +2039,102 @@ export class Supervisor {
       probeTicket = admission.probeTicket
     } catch (error) {
       logFailOpen("resume", error)
-      return
+      return false
     }
-    if (mode === "observe") {
+    if (mode === "observe" || decision.kind !== "apply") {
+      // Observed, or still no usable resource (or the routing deferred) —
+      // stay parked. A non-apply admission held no probe ticket: #admit keeps
+      // a ticket only for apply decisions and releases every other one.
       if (probeTicket !== undefined) this.#health.releaseProbe(probeTicket)
-      await this.#recordReceipt({
-        sessionID: record.sessionID,
-        unitID: record.id,
-        tier: record.tier,
-        decision: { kind: "observe-only", would: decision },
-      })
-      return
+      await this.#noteStillParked(
+        record,
+        mode === "observe" ? { kind: "observe-only", would: decision } : decision,
+      )
+      return false
     }
-    if (decision.kind !== "apply") {
-      // Still no usable resource (or the routing deferred) — stay parked. The
-      // admission held no probe ticket: #admit keeps a ticket only for apply
-      // decisions and releases every other one itself.
-      await this.#recordReceipt({
-        sessionID: record.sessionID,
-        unitID: record.id,
-        tier: record.tier,
-        decision,
-      })
-      return
-    }
-    const popped = await this.#popParked(record)
-    if (popped === undefined) {
+    // The takeover baseline is read before the claim, synchronously with it:
+    // a user prompt landing while the record is popped still counts. The
+    // claim spans the pop and the continuation's delivery: the host's other
+    // plugin instance sweeping the same record backs off, then finds it gone
+    // once it re-reads the parked store.
+    const { ledger } = this.#options
+    const takeovers = ledger.takeovers(record.sessionID)
+    if (!ledger.claim(record.sessionID)) {
       if (probeTicket !== undefined) this.#health.releaseProbe(probeTicket)
-      return
+      return false
     }
-    // The resume continuation is not re-admitted (owned continuation), so
-    // the freshly routed admission is recorded here, unit-less; the unit
-    // that opens next adopts it and carries the outcome.
+    let delivering = false
+    try {
+      const popped = await this.#popParked(record)
+      if (popped === undefined) {
+        if (probeTicket !== undefined) this.#health.releaseProbe(probeTicket)
+        return false
+      }
+      // The resumed unit is a new round of the same task: a fresh quota
+      // ladder, and one more spent resume cycle should it park again.
+      this.#resumeCycles.set(record.sessionID, (record.attempts ?? 0) + 1)
+      this.#quotaRecoveriesRemaining.delete(record.sessionID)
+      if (probeTicket !== undefined) this.#sessionProbeTickets.set(record.sessionID, probeTicket)
+      // The resume continuation is not re-admitted (owned continuation), so
+      // the freshly routed admission is recorded here, unit-less; the unit
+      // that opens next adopts it and carries the outcome.
+      await this.#recordReceipt({ sessionID: record.sessionID, tier: record.tier, decision })
+      delivering = true
+      const takenOver = (): boolean => ledger.takeovers(record.sessionID) !== takeovers
+      void this.#deliverResume(record, decision.model, settings, probeTicket, takenOver).finally(
+        () => {
+          ledger.release(record.sessionID)
+        },
+      )
+      return true
+    } finally {
+      if (!delivering) ledger.release(record.sessionID)
+    }
+  }
+
+  /**
+   * Records why parked work stays parked. A wake that finds nothing changed
+   * adds no receipt: a tier with no stated recovery would otherwise log the
+   * same decision every few minutes.
+   */
+  async #noteStillParked(record: ParkedRecord, decision: Receipt["decision"]): Promise<void> {
+    const last = this.#receipts.snapshot().findLast((receipt) => receipt.unitID === record.id)
+    if (last !== undefined && JSON.stringify(last.decision) === JSON.stringify(decision)) return
     await this.#recordReceipt({
       sessionID: record.sessionID,
+      unitID: record.id,
       tier: record.tier,
       decision,
     })
-    // The resume continuation is an owned recovery: settle first, apply the
-    // freshly routed model, then prompt — the episode's first LLM call must
-    // not hit the model the work was parked away from.
+  }
+
+  /**
+   * The resume continuation is an owned recovery: settle first, apply the
+   * freshly routed model, then prompt — the episode's first LLM call must
+   * not hit the model the work was parked away from. Never rejects.
+   */
+  async #deliverResume(
+    record: ParkedRecord,
+    model: ModelRef,
+    settings: SettingsV1,
+    probeTicket: ProbeTicket | undefined,
+    takenOver: () => boolean,
+  ): Promise<void> {
     try {
-      if (probeTicket !== undefined) this.#sessionProbeTickets.set(record.sessionID, probeTicket)
       await this.#ownRecovery(
         record.sessionID,
-        decision.model,
+        model,
         record.tier,
         // The parked session's own effective mode and its still-open unit
         // window are re-checked after the settle; a session that gained an
-        // active unit must not be prompted (not a safe boundary).
+        // active unit must not be prompted (not a safe boundary), and one the
+        // user took over (on either instance) has moved past the work.
         () =>
+          !(takenOver() || this.#disposed) &&
           this.#modeFor(record.sessionID, settings) !== "off" &&
           this.#tracker.active(record.sessionID) === undefined,
       )
+      this.#fruitless = 0
     } catch (error) {
       if (
         probeTicket !== undefined &&
@@ -1737,7 +2144,14 @@ export class Supervisor {
         this.#health.releaseProbe(probeTicket)
       }
       if (!(error instanceof RecoveryAbortedError)) logFailOpen("resume", error)
+      this.#resumeCycles.delete(record.sessionID)
+      // Work the user took over is gone for good; anything else waits again,
+      // and a failed resume backs off like a fruitless wake rather than
+      // retrying a second later.
+      if (takenOver()) return
+      this.#fruitless += 1
       await this.#rePark(record)
+      await this.#armWake()
     }
   }
 
@@ -1751,15 +2165,11 @@ export class Supervisor {
   }
 
   async #rePark(record: ParkedRecord): Promise<void> {
-    try {
-      await this.#parked.park({
-        ...record,
-        attempts: (record.attempts ?? 0) + 1,
-        parkedAt: this.#options.clock(),
-      })
-    } catch (error) {
-      logFailOpen("parked", error)
-    }
+    await this.#storeParked({
+      ...record,
+      attempts: (record.attempts ?? 0) + 1,
+      parkedAt: this.#options.clock(),
+    })
   }
 
   // ---------- shared helpers ----------
@@ -1856,6 +2266,19 @@ function candidateRef(candidate: {
     id: candidate.modelID,
     ...(candidate.variant !== undefined ? { variant: candidate.variant } : {}),
   }
+}
+
+/**
+ * When a parked record can resume: the earliest usable candidate its
+ * resume admission would route to (a standing pin wins over the tier).
+ */
+function parkedResumeAt(
+  record: ParkedRecord,
+  settings: SettingsV1,
+  usableAt: (ref: ModelRef) => number | undefined,
+): number | undefined {
+  const candidates = settings.pin !== null ? [settings.pin] : settings.tiers[record.tier]
+  return earliestUsable(candidates.map(usableAt))
 }
 
 /** ResourceKey for a model ref (no account level is observable in v1). */

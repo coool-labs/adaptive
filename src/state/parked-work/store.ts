@@ -6,6 +6,11 @@
  * failures propagate to the caller (fail-open is the wiring layer's call), and
  * the in-memory list is only advanced after a successful write — memory and
  * disk never diverge.
+ *
+ * Storage is shared: the host may load the plugin twice in one process, and
+ * only one instance's store changes on each event. Every mutation therefore
+ * re-reads storage first, so a stale instance can neither resurrect a record
+ * another instance resumed nor resume it a second time.
  */
 import { parseParkedPayload } from "./parse.js"
 import { MAX_PARKED, MAX_PARKED_TEXT, PARKED_VERSION } from "./types.js"
@@ -37,6 +42,24 @@ export class ParkedWorkStore {
     this.#records = parseParkedPayload(raw)
   }
 
+  /**
+   * Re-read storage without the load-time failure policy: a read failure
+   * keeps the current records instead of forgetting parked work.
+   */
+  refresh(): Promise<void> {
+    return this.#serialize(() => this.#refresh())
+  }
+
+  async #refresh(): Promise<void> {
+    let raw: unknown
+    try {
+      raw = await this.storage.read()
+    } catch {
+      return
+    }
+    this.#records = parseParkedPayload(raw)
+  }
+
   /** All parked records, insertion order. */
   list(): readonly ParkedRecord[] {
     return this.#records
@@ -51,6 +74,7 @@ export class ParkedWorkStore {
   }
 
   async #park(record: ParkedRecord): Promise<void> {
+    await this.#refresh()
     const bounded: ParkedRecord = {
       ...record,
       ...(record.detail !== undefined ? { detail: boundDetail(record.detail) } : {}),
@@ -72,6 +96,7 @@ export class ParkedWorkStore {
   }
 
   async #resume(id: string): Promise<ParkedRecord | undefined> {
+    await this.#refresh()
     const record = this.#records.find((entry) => entry.id === id)
     if (record === undefined) return undefined
     const next = this.#records.filter((entry) => entry.id !== id)

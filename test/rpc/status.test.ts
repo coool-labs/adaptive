@@ -37,7 +37,14 @@ describe("buildStatus", () => {
       ...defaultSettings(),
       tiers: { ...defaultSettings().tiers, standard: [ref("prov", "a")] },
     }
-    const snapshot = buildStatus({ settings, health: [], capacity: {}, parked: 0, receipts: 0 })
+    const snapshot = buildStatus({
+      settings,
+      health: [],
+      capacity: {},
+      parked: 0,
+      waiting: [],
+      receipts: 0,
+    })
     expect(snapshot.mode).toBe("observe")
     expect(snapshot.pin).toBeNull()
     expect(snapshot.tiers.standard).toEqual([
@@ -70,7 +77,14 @@ describe("buildStatus", () => {
         { health: "healthy", breaker: { state: "open", failures: 5, openCount: 1, reopenAt: 50 } },
       ),
     ]
-    const snapshot = buildStatus({ settings, health, capacity: {}, parked: 2, receipts: 7 })
+    const snapshot = buildStatus({
+      settings,
+      health,
+      capacity: {},
+      parked: 2,
+      waiting: [],
+      receipts: 7,
+    })
     const [a, b] = snapshot.tiers.standard
     expect(a).toEqual({
       ref: ref("prov", "a"),
@@ -101,7 +115,14 @@ describe("buildStatus", () => {
       tiers: { ...defaultSettings().tiers, quick: [ref("p", "m", "v")] },
     }
     const health = [record({ providerID: "p", modelID: "m", variantID: "v" })]
-    const snapshot = buildStatus({ settings, health, capacity: {}, parked: 0, receipts: 0 })
+    const snapshot = buildStatus({
+      settings,
+      health,
+      capacity: {},
+      parked: 0,
+      waiting: [],
+      receipts: 0,
+    })
     expect(snapshot.tiers.quick[0]?.health).toBe("degraded")
   })
 
@@ -114,7 +135,14 @@ describe("buildStatus", () => {
       record({ providerID: "p", modelID: "m" }, { health: "degraded" }),
       record({ providerID: "p", modelID: "m" }, { health: "unavailable" }),
     ]
-    const snapshot = buildStatus({ settings, health, capacity: {}, parked: 0, receipts: 0 })
+    const snapshot = buildStatus({
+      settings,
+      health,
+      capacity: {},
+      parked: 0,
+      waiting: [],
+      receipts: 0,
+    })
     expect(snapshot.tiers.standard[0]?.health).toBe("unavailable")
   })
 
@@ -166,7 +194,14 @@ describe("buildStatus", () => {
             },
           ),
         )
-        const snapshot = buildStatus({ settings, health, capacity: {}, parked: 1, receipts: 2 })
+        const snapshot = buildStatus({
+          settings,
+          health,
+          capacity: {},
+          parked: 1,
+          waiting: [],
+          receipts: 2,
+        })
         expect(snapshot.tiers.standard).toHaveLength(refs.length)
         for (const entry of snapshot.tiers.standard) {
           expect(typeof entry.health).toBe("string")
@@ -202,6 +237,7 @@ describe("buildStatus", () => {
         [schedulerHealthKey(ref("prov", "d"))]: null,
       },
       parked: 0,
+      waiting: [],
       receipts: 0,
     })
     const [a, b, c, d] = snapshot.tiers.standard

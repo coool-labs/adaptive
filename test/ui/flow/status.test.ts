@@ -28,6 +28,7 @@ function snapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot {
     pin: null,
     tiers: { quick: [], standard: [], advanced: [] },
     parked: 0,
+    waiting: [],
     receipts: 0,
     ...overrides,
   }

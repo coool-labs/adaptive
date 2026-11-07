@@ -41,6 +41,9 @@ export function fakeTuiContext(options: {
   route?: Route | undefined
   /** The status snapshot the fake rpc serves (empty tiers when absent). */
   status?: unknown
+  failStatusGet?: boolean
+  /** Answers each status read in place of `status`/`failStatusGet`. */
+  statusGet?: () => Promise<unknown>
   /** The session-mode override the fake rpc serves (null = no override). */
   sessionMode?: OperatingMode | null
   failSessionModeGet?: boolean
@@ -69,6 +72,7 @@ export function fakeTuiContext(options: {
     settingsGets: number
     sessionModeGets: number
     tierRequestGets: number
+    statusGets: number
   }
 } {
   const dialogs: DialogRecord = {
@@ -93,6 +97,7 @@ export function fakeTuiContext(options: {
     settingsGets: 0,
     sessionModeGets: 0,
     tierRequestGets: 0,
+    statusGets: 0,
   }
   const select = (spec: {
     title: string
@@ -173,16 +178,22 @@ export function fakeTuiContext(options: {
             options.clientPatches.push(patch)
             return Promise.resolve({ ok: true, settings: options.settings })
           },
-          "status.get": () =>
-            Promise.resolve(
-              options.status ?? {
-                mode: "observe",
-                pin: null,
-                tiers: { quick: [], standard: [], advanced: [] },
-                parked: 0,
-                receipts: 0,
-              },
-            ),
+          "status.get": () => {
+            counts.statusGets += 1
+            if (options.statusGet !== undefined) return options.statusGet()
+            return options.failStatusGet
+              ? Promise.reject(new Error("boom"))
+              : Promise.resolve(
+                  options.status ?? {
+                    mode: "observe",
+                    pin: null,
+                    tiers: { quick: [], standard: [], advanced: [] },
+                    parked: 0,
+                    waiting: [],
+                    receipts: 0,
+                  },
+                )
+          },
           "receipts.list": () => Promise.resolve(options.receipts ?? []),
           "session-mode.get": (input: { sessionID: string }) => {
             counts.sessionModeGets += 1

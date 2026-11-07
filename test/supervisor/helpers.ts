@@ -9,6 +9,7 @@ import type { StorageSource } from "../../src/adapters/opencode/storage.js"
 import type { ModelRef } from "../../src/core/work-unit/types.js"
 import type { ModelSource } from "../../src/adapters/opencode/inventory.js"
 import type { SupervisorSessionSource } from "../../src/supervisor/types.js"
+import { processLedger, type ProcessLedger } from "../../src/adapters/opencode/process-ledger.js"
 import { Supervisor } from "../../src/supervisor/index.js"
 import { makeInfo, wireRef } from "../adapters/opencode/helpers.js"
 import { RECEIPTS_KEY } from "../../src/state/receipts/types.js"
@@ -185,12 +186,54 @@ export function ref(providerID: string, id: string): { providerID: string; id: s
   return { providerID, id }
 }
 
+export interface FakeTimer {
+  readonly callback: () => void
+  readonly delayMs: number
+  cancelled: boolean
+}
+
+/** Records scheduled wakes; nothing fires until a test calls `fire()`. */
+export class FakeScheduler {
+  readonly timers: FakeTimer[] = []
+
+  readonly schedule = (callback: () => void, delayMs: number): (() => void) => {
+    const timer: FakeTimer = { callback, delayMs, cancelled: false }
+    this.timers.push(timer)
+    return () => {
+      timer.cancelled = true
+    }
+  }
+
+  /** The live (uncancelled) timers. */
+  pending(): FakeTimer[] {
+    return this.timers.filter((timer) => !timer.cancelled)
+  }
+
+  /** Fire the single live timer (marking it spent), then let its sweep settle. */
+  async fire(): Promise<void> {
+    const live = this.pending()
+    if (live.length !== 1) throw new Error(`expected one live timer, found ${String(live.length)}`)
+    const [timer] = live as [FakeTimer]
+    timer.cancelled = true
+    timer.callback()
+    await flush()
+  }
+}
+
+/** Wake/ledger options that never fire, for hand-built supervisors (a private process each). */
+export function inertWake(): { schedule: FakeScheduler["schedule"]; ledger: ProcessLedger } {
+  return { schedule: new FakeScheduler().schedule, ledger: processLedger({}) }
+}
+
 /** A supervisor over one fake session and a fixed clock. */
 export function makeSupervisor(options: {
   storage: KeyFailStorage
   session: FakeSupervisorSession
   infos?: ReturnType<typeof makeInfo>[]
   clock?: () => number
+  scheduler?: FakeScheduler
+  /** Pass one `processLedger(holder)` view per supervisor over a shared holder to model one process. */
+  ledger?: ProcessLedger
 }): Supervisor {
   const infos = options.infos ?? [makeInfo("prov", "a"), makeInfo("prov", "b")]
   const model = {
@@ -209,6 +252,8 @@ export function makeSupervisor(options: {
     model,
     storage: options.storage.source,
     clock: options.clock ?? (() => 1000),
+    schedule: (options.scheduler ?? new FakeScheduler()).schedule,
+    ledger: options.ledger ?? processLedger({}),
   })
 }
 

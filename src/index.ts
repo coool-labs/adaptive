@@ -3,9 +3,11 @@ import { isCodexHeaderName } from "./adapters/codex-capacity/index.js"
 import {
   adaptiveCommand,
   escalationTool,
+  processLedger,
   registerSessionHooks,
   subscribeSessions,
   tierTool,
+  unrefTimeout,
 } from "./adapters/opencode/index.js"
 import { PLUGIN_ID } from "./plugin-id.js"
 import { adaptiveRpc } from "./rpc/definition.js"
@@ -31,6 +33,33 @@ export default Plugin.define({
       model: context.model,
       storage: context.storage,
       clock: () => Date.now(),
+      schedule: unrefTimeout,
+      ledger: processLedger(),
+    })
+    // Every disposal settles independently: a failing dispose is logged, never
+    // allowed to mask the other disposals or (during rollback) the original
+    // setup error. Disposals are awaited so a late rejection cannot land after
+    // the host considers the plugin gone.
+    const disposals: { name: string; dispose: () => void | Promise<void> }[] = []
+    const settled = async (name: string, dispose: () => void | Promise<void>): Promise<void> => {
+      try {
+        await dispose()
+      } catch (error) {
+        logFailOpen(name, error)
+      }
+    }
+    const settledAll = async (): Promise<void> => {
+      for (const { name, dispose } of disposals) {
+        await settled(name, dispose)
+      }
+    }
+    // The supervisor arms its parked-work wake on construction, so it is
+    // disposed even when a later setup step throws.
+    disposals.push({
+      name: "wake",
+      dispose: () => {
+        supervisor.dispose()
+      },
     })
     const hooks = await registerSessionHooks(
       context.session,
@@ -52,7 +81,10 @@ export default Plugin.define({
         },
       },
       { capture: isCodexHeaderName },
-    )
+    ).catch(async (error: unknown) => {
+      await settledAll()
+      throw error
+    })
     const subscription = subscribeSessions(
       context.event,
       (report) => {
@@ -62,23 +94,6 @@ export default Plugin.define({
         logFailOpen("events", error)
       },
     )
-    // Every disposal settles independently: a failing dispose is logged, never
-    // allowed to mask the other disposals or (during rollback) the original
-    // setup error. Disposals are awaited so a late rejection cannot land after
-    // the host considers the plugin gone.
-    const disposals: { name: string; dispose: () => void | Promise<void> }[] = []
-    const settled = async (name: string, dispose: () => void | Promise<void>): Promise<void> => {
-      try {
-        await dispose()
-      } catch (error) {
-        logFailOpen(name, error)
-      }
-    }
-    const settledAll = async (): Promise<void> => {
-      for (const { name, dispose } of disposals) {
-        await settled(name, dispose)
-      }
-    }
     for (const [index, hookRegistration] of hooks.entries()) {
       disposals.push({ name: `hook ${String(index)}`, dispose: () => hookRegistration.dispose() })
     }

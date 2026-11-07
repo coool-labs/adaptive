@@ -5,10 +5,11 @@
  * object through an explicit cast instead of faking the rest.
  */
 // covers: ["ADP-029", "ADP-031"]
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import adaptivePlugin, { PLUGIN_ID } from "../src/index.js"
 import { SETTINGS_KEY } from "../src/state/settings/types.js"
+import { PARKED_KEY } from "../src/state/parked-work/types.js"
 import { parseReceiptsPayload } from "../src/state/receipts/index.js"
 import { makeInfo, fakeEvents, wireRef } from "./adapters/opencode/helpers.js"
 import type { ModelSource } from "../src/adapters/opencode/index.js"
@@ -21,6 +22,12 @@ import {
   storedReceipts,
   storedSettings,
 } from "./supervisor/helpers.js"
+
+// Every entry instance shares the process-wide ledger; a mark one test's
+// supervisor leaves (a continuation, a claim) must not reach the next test.
+beforeEach(() => {
+  Reflect.deleteProperty(globalThis, Symbol.for("coool.adaptive/process-ledger"))
+})
 
 const HOOK_NAMES = [
   "retry",
@@ -192,6 +199,64 @@ describe("plugin entry", () => {
     expect([...session.registered.keys()].sort()).toEqual([...HOOK_NAMES].sort())
     expect(events.signal()).toBeInstanceOf(AbortSignal)
     expect(cleanup).toBeTypeOf("function")
+  })
+
+  it("arms the parked-work wake at setup and cancels it on cleanup", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    try {
+      const session = new FakeSupervisorSession()
+      const storage = new KeyFailStorage("unused")
+      seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
+      seed(storage, PARKED_KEY, {
+        version: 1,
+        parked: [
+          { id: "s1#1", sessionID: "s1", tier: "standard", reason: "all-blocked", parkedAt: 5 },
+        ],
+      })
+      const cleanup = (await adaptivePlugin.setup(
+        fakeContext({ storage, session, events: fakeEvents() }),
+      )) as () => void
+      await vi.waitFor(() => {
+        expect(vi.getTimerCount()).toBe(1)
+      })
+      cleanup()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("cancels the parked-work wake when hook registration fails", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    try {
+      const session = new FakeSupervisorSession()
+      const storage = new KeyFailStorage("unused")
+      seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
+      seed(storage, PARKED_KEY, {
+        version: 1,
+        parked: [
+          { id: "s1#1", sessionID: "s1", tier: "standard", reason: "all-blocked", parkedAt: 5 },
+        ],
+      })
+      const context = fakeContext({ storage, session, events: fakeEvents() })
+      const failure = new Error("hooks failed")
+      let reject: (error: Error) => void = () => undefined
+      vi.spyOn(context.session, "hook").mockImplementation(
+        () =>
+          new Promise((_, rejectHook: (error: Error) => void) => {
+            reject = rejectHook
+          }),
+      )
+      const setup = adaptivePlugin.setup(context)
+      await vi.waitFor(() => {
+        expect(vi.getTimerCount()).toBe(1)
+      })
+      reject(failure)
+      await expect(setup).rejects.toBe(failure)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("pumps execution events into admission (switch + receipt)", async () => {

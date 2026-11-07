@@ -40,6 +40,7 @@ function snapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot {
     pin: null,
     tiers: { quick: [], standard: [], advanced: [] },
     parked: 0,
+    waiting: [],
     receipts: 0,
     ...overrides,
   }
@@ -74,6 +75,7 @@ describe("statusRows", () => {
         pin: ref("prov", "p"),
         tiers: { ...snapshot().tiers, standard: [tierResource("prov", "a")] },
         parked: 2,
+        waiting: [],
         receipts: 7,
       }),
     )
@@ -169,6 +171,7 @@ describe("properties", () => {
         advanced: fc.array(resourceArb, { maxLength: 3 }),
       }),
       parked: fc.nat(),
+      waiting: fc.constant([]),
       receipts: fc.nat(),
     })
     fc.assert(

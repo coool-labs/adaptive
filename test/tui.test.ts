@@ -1,10 +1,11 @@
-// covers: ["ADP-032", "ADP-033", "ADP-054", "ADP-055"]
-import { describe, expect, it } from "vitest"
+// covers: ["ADP-024", "ADP-032", "ADP-033", "ADP-054", "ADP-055"]
+import { describe, expect, it, vi } from "vitest"
 
-import tuiPlugin, { chipFor } from "../src/tui.js"
+import tuiPlugin, { chipFor, sessionChip, waitingChip } from "../src/tui.js"
 import { settingsJSON } from "./supervisor/helpers.js"
 import { fakeTuiContext, modelInfo } from "./tui/fake-context.js"
 import type { OperatingMode } from "../src/core/scheduler/types.js"
+import { WAITING_POLL_MS } from "../src/ui/flow/waiting.js"
 
 function observedSettings(
   mode: Parameters<typeof settingsJSON>[0],
@@ -326,6 +327,118 @@ describe("tui entry: footer chip", () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     // The cached override is refreshed so a stale mirror cannot stick.
     expect(counts.sessionModeGets).toBe(2)
+  })
+})
+
+describe("tui entry: waiting chip (ADP-024)", () => {
+  it("reads parked sessions at boot, polls them, and stops polling on dispose", async () => {
+    vi.useFakeTimers()
+    try {
+      const { context, counts } = fakeTuiContext({
+        settings: settingsJSON("active"),
+        clientPatches: [],
+      })
+      const dispose = await tuiPlugin.setup(context)
+      if (dispose === undefined) throw new Error("setup did not return a dispose function")
+      await vi.advanceTimersByTimeAsync(0)
+      expect(counts.statusGets).toBe(1)
+      // Work parks and resumes on the server without any TUI action: the chip polls.
+      await vi.advanceTimersByTimeAsync(WAITING_POLL_MS)
+      expect(counts.statusGets).toBe(2)
+      await dispose()
+      await vi.advanceTimersByTimeAsync(3 * WAITING_POLL_MS)
+      expect(counts.statusGets).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("re-reads parked sessions when a mode changes", async () => {
+    const { context, events, counts } = fakeTuiContext({
+      settings: settingsJSON("active"),
+      clientPatches: [],
+    })
+    await tuiPlugin.setup(context)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(counts.statusGets).toBe(1)
+    for (const event of events) event.handler({ data: { version: 1, sessionID: "ses_1" } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(counts.statusGets).toBe(3)
+  })
+
+  it("lets only the latest of overlapping status reads land", async () => {
+    // Regression: a slow poll answering after an event-driven read restored
+    // the older snapshot's wait.
+    const replies: ((snapshot: unknown) => void)[] = []
+    const snapshot = (waiting: unknown[]) => ({
+      mode: "active",
+      pin: null,
+      tiers: { quick: [], standard: [], advanced: [] },
+      parked: waiting.length,
+      waiting,
+      receipts: 0,
+    })
+    const { context, slots, events } = fakeTuiContext({
+      // OBSERVE: its chip is uncolored, which jsdom can render.
+      settings: settingsJSON("observe"),
+      clientPatches: [],
+      sessionMode: null,
+      statusGet: () =>
+        new Promise((resolve) => {
+          replies.push(resolve)
+        }),
+    })
+    await tuiPlugin.setup(context)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    for (const event of events) event.handler({ data: { version: 1, sessionID: "ses_1" } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const [boot, ...later] = replies
+    for (const reply of later) reply(snapshot([]))
+    boot?.(snapshot([{ sessionID: "ses_1", tier: "standard", resumeAt: null }]))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const node = slots[1]?.render({ sessionID: "ses_1", mode: "normal", showDetails: false })
+    if (!(node instanceof Element)) throw new Error("the slot did not render a node")
+    expect(node.textContent).toBe("Adaptive · observe")
+  })
+
+  it("keeps the chip on the mode when the status read fails", async () => {
+    const { context, slots, counts } = fakeTuiContext({
+      settings: settingsJSON("observe"),
+      clientPatches: [],
+      sessionMode: null,
+      failStatusGet: true,
+    })
+    await tuiPlugin.setup(context)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(counts.statusGets).toBe(1)
+    const node = slots[1]?.render({ sessionID: "ses_1", mode: "normal", showDetails: false })
+    if (!(node instanceof Element)) throw new Error("the slot did not render a node")
+    expect(node.textContent).toBe("Adaptive · observe")
+  })
+})
+
+describe("sessionChip", () => {
+  const NOW = new Date(2026, 10, 7, 14, 5).getTime()
+  const AT = new Date(2026, 10, 7, 18, 42).getTime()
+
+  it("shows a parked session's wait over its mode", () => {
+    expect(sessionChip({ mode: "active", override: null, resumeAt: AT, now: NOW })).toEqual({
+      text: "Adaptive · waiting · resumes 18:42",
+      fg: "#e5c07b",
+    })
+    expect(sessionChip({ mode: null, override: undefined, resumeAt: null, now: NOW })).toEqual(
+      waitingChip(null, NOW),
+    )
+  })
+
+  it("falls back to the override, then the global mode", () => {
+    const base = { resumeAt: undefined, now: NOW }
+    expect(sessionChip({ ...base, mode: "active", override: "off" })).toEqual(chipFor("off"))
+    expect(sessionChip({ ...base, mode: "active", override: null })).toEqual(chipFor("active"))
+    expect(sessionChip({ ...base, mode: "observe", override: undefined })).toEqual(
+      chipFor("observe"),
+    )
+    expect(sessionChip({ ...base, mode: null, override: undefined })).toBeNull()
   })
 })
 

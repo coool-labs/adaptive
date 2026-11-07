@@ -33,7 +33,7 @@ Every requirement is objectively testable. IDs are stable; tests declare `covers
 - **ADP-021** — Draining: `healthy → draining → exhausted` where `draining` admits no new work when an equivalent healthy configured resource exists; no user-facing threshold sliders.
 - **ADP-022** — No hidden cross-tier borrowing: if a tier has no available resource, work parks/waits unless escalation was independently justified.
 - **ADP-023** — Partial-work safety: after tool side effects, Adaptive prefers native continuation; if the retry lifecycle cannot continue, it starts a clean continuation work unit from existing session/workspace state and never replays the original instruction.
-- **ADP-024** — Durable park/resume: work with no compatible healthy resource before dispatch is parked with persisted state that survives restart; resumption is a clean continuation, not resurrection of a failed network call.
+- **ADP-024** — Durable park/resume: work with no compatible healthy resource before dispatch is parked with persisted state that survives restart; resumption is a clean continuation, not resurrection of a failed network call. Parked work resumes without user input as soon as a resource in its tier becomes usable (wake timer; bounded attempts; at most once across plugin instances), a user prompt or manual model pick ends the wait, and the status surfaces show which sessions wait and until when.
 
 ## OpenCode compatibility and control
 

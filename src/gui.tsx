@@ -1,4 +1,4 @@
-import { Command, Plugin, SettingsPage, type Context } from "@opencode/plugin/gui"
+import { Command, ComposerPill, Plugin, SettingsPage, type Context } from "@opencode/plugin/gui"
 import { For, Show, createSignal, onCleanup } from "solid-js"
 import type { JSX } from "solid-js"
 
@@ -8,6 +8,7 @@ import type { StatusSnapshot } from "./rpc.js"
 import { adaptiveGuiApi, type GuiApi } from "./ui/gui/api.js"
 import { openAdaptive, rpcLocation } from "./ui/gui/flow.js"
 import { modeChoices, parseModeValue, receiptLines, statusRows } from "./ui/gui/view.js"
+import { WAITING_POLL_MS, waitingLabel } from "./ui/flow/waiting.js"
 
 const RECEIPTS_PREVIEW_LIMIT = 5
 
@@ -93,11 +94,11 @@ export function AdaptiveStatusPage(props: { api: GuiApi }): JSX.Element {
 
 /**
  * GUI plugin entry (the `./gui-experimental` bundle default export). Thin adapter: registers a native
- * SettingsPage and a palette/`/adaptive` slash command that runs the same dialog flow as the TUI (ui/flow); no
- * routing logic lives here (ADP-034/035).
+ * SettingsPage, a palette/`/adaptive` slash command that runs the same dialog flow as the TUI (ui/flow), and a
+ * composer pill on sessions parked until quota returns; no routing logic lives here (ADP-024/034/035).
  */
 export default Plugin.define({
-  setup(context: Context): void {
+  setup(context: Context): () => void {
     const api = adaptiveGuiApi(context.client, () => rpcLocation(context))
     context.add(SettingsPage, {
       id: "adaptive",
@@ -119,5 +120,39 @@ export default Plugin.define({
       slash: { name: "adaptive" },
       run: () => openAdaptive(context),
     })
+    // Work parks and resumes on the server without any GUI action (a failed execution, the wake timer), so the
+    // pill polls; a failed read keeps the last known state.
+    const [waiting, setWaiting] = createSignal<{
+      sessions: Record<string, number | null>
+      now: number
+    }>({ sessions: {}, now: 0 })
+    const refreshWaiting = (): void => {
+      void api.waiting().then((sessions) => {
+        if (sessions !== undefined) setWaiting({ sessions, now: Date.now() })
+      })
+    }
+    refreshWaiting()
+    const poll = setInterval(refreshWaiting, WAITING_POLL_MS)
+    // Only active sessions wait: a mode change can start or end a wait.
+    const unwatch = api.watchSettings(refreshWaiting)
+    context.add(ComposerPill, {
+      id: "waiting",
+      show: (input) => {
+        const { sessions, now } = waiting()
+        const resumeAt = sessions[input.session.id]
+        if (resumeAt === undefined) return undefined
+        const label = waitingLabel(resumeAt, now)
+        return {
+          label: label.charAt(0).toUpperCase() + label.slice(1),
+          icon: "status",
+          tone: "warning",
+          title: "Waiting for quota: Adaptive continues this session automatically",
+        }
+      },
+    })
+    return () => {
+      clearInterval(poll)
+      unwatch()
+    }
   },
 })

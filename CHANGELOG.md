@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.5.0] — 2026-11-07
+
+### Added
+
+- Parked work resumes by itself. When every model in a session's tier is out of quota, the session waits and continues on the first model whose quota resets, without a new prompt. Before, parked work only resumed when some other turn finished in that session, which never happens after a failure, so the session stayed stuck. The wake time comes from the quota or rate-limit window, breaker cooldown, or sensed reset time; when nothing says when, Adaptive checks again after 5 minutes, backing off to every 30 minutes. The wait survives an OpenCode restart, and a session is resumed once even when the host loads the plugin twice. Waiting sessions resume independently: one long continued run does not hold up the others. A resume that fails backs off like a wake that found nothing, and a wait that keeps finding no usable model records its receipt once rather than on every check. After 5 resume cycles that each ran out of quota again, Adaptive gives up on that work and records a receipt saying so.
+- The waiting session shows it: the TUI footer chip reads `Adaptive · waiting · resumes 18:42` (with a weekday or date when the reset is not today), the GUI composer shows a warning pill, and `status.get` returns `waiting` entries with the session, tier and the time the wake is due.
+
+### Fixed
+
+- A continuation that ran out of quota before the call that started it returned was mistaken for the earlier failure and ignored, leaving the session stuck. It now waits or moves on like any other quota failure.
+- When the quota recovery budget for a task was used up, the task stopped silently. It now waits for a reset.
+- Sending your own prompt or picking a model yourself in a session with saved work ends the wait, so that work no longer resumes on top of yours. The same goes for cancelling a run or starting one without a prompt (a shell or slash command). This holds in a session Adaptive is not driving (OFF or OBSERVE), and while a resume is still settling. A prompt in a session that never waited costs no extra storage read, so OFF still costs nothing.
+- When the host loads the plugin twice, the two instances now share one process-wide record of Adaptive's own model switches and continuations. Before, the instance that heard the host could take a switch or continuation the other one made for a manual pick or a new user prompt, re-routing the unit and suppressing routing for the session. A switch the host rejects or a continuation it never delivers is withdrawn from that record, so the user's next prompt is not mistaken for one. A disposed instance can no longer pose as the one hearing the host, and the status the TUI and GUI read shows the wake time of the instance that will resume.
+
 ## [1.4.1] — 2026-11-06
 
 ### Fixed
