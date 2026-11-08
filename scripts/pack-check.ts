@@ -6,22 +6,16 @@
  * `verify:release` gates on it.
  */
 import { spawnSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { packageContext } from "./package-context.js"
+import { readPackPolicy } from "./pack-policy.js"
 
-const REQUIRED_FILES = [
-  "package/package.json",
-  "package/README.md",
-  "package/LICENSE",
-  "package/dist/index.js",
-  "package/dist/index.d.ts",
-  "package/dist/tui.js",
-  "package/dist/tui.d.ts",
-  "package/dist/rpc.js",
-  "package/dist/rpc.d.ts",
-  "package/dist/gui-experimental.cjs",
-]
+const context = packageContext(process.argv.slice(2), process.cwd(), existsSync)
+process.chdir(context.directory)
+const policy = readPackPolicy(JSON.parse(readFileSync("pack-manifest.json", "utf8")))
+const REQUIRED_FILES = policy.requiredFiles
 
 /** Anything shipped in the tarball that is not part of the published artifact. */
 const FORBIDDEN = [
@@ -101,7 +95,7 @@ try {
   ) {
     throw new Error("tarball package.json is not a record with name/version/license")
   }
-  if (manifest.name !== "@coool/opencode-adaptive") {
+  if (manifest.name !== policy.name) {
     problems.push(`manifest name is ${String(manifest.name)}`)
   }
   if (typeof manifest.version !== "string" || !/^\d+\.\d+\.\d+/.test(manifest.version)) {

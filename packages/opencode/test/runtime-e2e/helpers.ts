@@ -13,6 +13,14 @@ import { ADAPTIVE_RPC_ID } from "../../src/rpc/definition.js"
 export const REPO_ROOT = ((): string => {
   let dir = process.cwd()
   for (;;) {
+    const nested = join(dir, "packages", "opencode")
+    if (
+      existsSync(join(nested, "package.json")) &&
+      readFileSync(join(nested, "package.json"), "utf8").includes(
+        `"name": "@coool/opencode-adaptive"`,
+      )
+    )
+      return nested
     if (
       existsSync(join(dir, "package.json")) &&
       readFileSync(join(dir, "package.json"), "utf8").includes(`"name": "@coool/opencode-adaptive"`)

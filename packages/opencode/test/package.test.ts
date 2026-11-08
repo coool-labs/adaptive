@@ -87,8 +87,10 @@ describe("package publish contract (ADP-048)", () => {
   })
 
   it("embeds original sources in JavaScript maps without dangling declaration maps", () => {
-    const config = ts.readConfigFile("tsconfig.build.json", (path) => ts.sys.readFile(path))
-    const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, process.cwd())
+    const config = ts.readConfigFile(join(REPO_ROOT, "tsconfig.build.json"), (path) =>
+      ts.sys.readFile(path),
+    )
+    const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, REPO_ROOT)
     expect(parsed.errors).toEqual([])
     const source = "export const packaged = 42\n"
     const output = ts.transpileModule(source, {

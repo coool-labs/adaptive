@@ -342,12 +342,8 @@ Size targets: no file over about 300 lines. The OpenCode `supervisor.ts` (2,322 
    1. **base tier** = the pinned tier from the virtual model id (a user pin) ?? the
       session's sticky `adaptive_tier` request (ADP-055; only with `adaptive/auto`) ??
       `standard`;
-   2. if this route continues a task that escalated (`state.pendingRecovery.kind ===
-"escalation"`), the escalated tier, which is exactly one tier above the tier the
-      task last ran on (ADP-015).
-
-   A plain new prompt never inherits an escalation: the budget and the raised tier belong
-   to the task that earned them.
+      A new user prompt clears pending recovery and never inherits an escalation: the
+      budgets and the raised tier belong to the task that earned them.
 
 2. Run the core scheduler on (settings, inventory from the registry, health and capacity
    from the store, context, clock). It returns one of:
@@ -356,10 +352,20 @@ Size targets: no file over about 300 lines. The OpenCode `supervisor.ts` (2,322 
    - **defer:** Pi has no "own choice" while a virtual model is selected. Fall back to the
      tier's first configured resource that has credentials **and passes the
      compatibility gates** (ADP-017), then the last manually selected model (remembered
-     from `model_select`) if it passes the gates. If neither exists, show "set up tiers".
+     from `model_select`) only if it belongs to this same tier and passes the gates.
+     If neither exists, show "set up tiers". Defer is not permission to cross tiers.
      The receipt uses the Pi `HostCopy` explanation for defer.
 3. Persist the routing state `{taskId, unitId, tier, resource, hops, restarts,
 escalationsUsed, pendingRecovery?}`.
+
+**Continuation (`reason: "continuation"`):** Pi's hidden custom messages use this reason,
+not `user` (verified in the SDK spike). First check for a claimed Adaptive recovery
+token associated with this task and branch. If present, consume it once, start a new
+unit within the same task, and admit on the recorded recovery tier (same tier for a
+restart, exactly one tier up for escalation). Otherwise return the unit's existing
+resource unchanged. An arbitrary extension message must never consume Adaptive's
+pending recovery. A new user prompt, manual model selection, session switch, or abort
+invalidates the token. Persist token consumption with the wake claim before dispatch.
 
 **Retry (`reason: "retry"`, Pi's own retry, 2/4/8 s backoff):**
 
@@ -382,7 +388,7 @@ task, because each restart starts a new unit):
 
 1. pick a same-tier resource or park;
 2. send the hidden continuation message;
-3. the next `route(reason:"user")` sees `state.pendingRecovery` (`kind: "restart"`) and
+3. the next owned `route(reason:"continuation")` consumes `state.pendingRecovery` (`kind: "restart"`) and
    continues the **same task**, keeping its budgets.
 
 User aborts (`stopReason:"aborted"`, `agent_settled.aborted`) never recover (ADP-010).
@@ -392,7 +398,8 @@ normally a new task, so escalation cannot wait for it; it is evaluated when the 
 
 - `adaptive_escalate {reason, evidence}` only records the request on the current unit
   (shared `execution/escalation` parser and budget). The run keeps its model: every
-  `route(continuation)` returns `previous`, so nothing switches mid-run.
+  ordinary in-unit `route(continuation)` returns the current resource, so nothing
+  switches mid-run. Only an owned post-settle recovery starts a new unit.
 - On `agent_settled{aborted:false}` with a terminal failure (last assistant message
   `stopReason:"error"`), the unit is evaluated with the shared escalation logic: the
   failure's classification (a capability class only, never infra, ADP-013) plus the
@@ -492,8 +499,8 @@ The ADP catalogue gets applicability tags (monorepo plan, step 6). Proposed tags
 
 | Id      | Requirement                                                                                                                                                                                                                                                 |
 | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ADP-057 | Virtual models `adaptive/auto                                                                                                                                                                                                                               | quick   | standard | advanced` are registered; picking a non-virtual model hands control back immediately and notes it. |
-| ADP-058 | Routing changes and parking produce transcript notes that never enter model context; verbosity `quiet                                                                                                                                                       | changes | all`.    |
+| ADP-057 | Virtual models `adaptive/auto`, `adaptive/quick`, `adaptive/standard`, and `adaptive/advanced` are registered; picking a non-virtual model hands control back immediately and notes it.                                                                     |
+| ADP-058 | Routing changes and parking produce transcript notes that never enter model context; verbosity is `quiet`, `changes`, or `all`.                                                                                                                             |
 | ADP-059 | Health, capacity, receipts and parked work are shared across Pi processes with cross-process locking; half-open admits one probe across processes.                                                                                                          |
 | ADP-060 | Parking: in-place waits ≤ 2 min with countdown and Esc; pre-dispatch park never dispatches the parked message twice; mid-run resume uses one hidden continuation message; ≤ 3 automatic wakes per task; a wake is claimed at most once across Pi processes. |
 | ADP-061 | Non-retried infra failures restart the same task at most 2 times; user aborts never restart.                                                                                                                                                                |
@@ -521,8 +528,9 @@ the user's own key only for the opt-in error-capture item. Each check's result g
    `previous`/`failed` are populated as documented.
 4. A quota error is not retried by Pi, `agent_settled` fires, and
    `sendMessage({display:false},{triggerTurn:true})` starts a run with `route` reason
-   `user`. Also in `print` and `json` modes: does the process stay alive for that run, or
-   exit after the first settle? → whether headless restart and escalation work (UX §8).
+   `continuation` (not `user`). **Verified in the SDK and actual `--print` text and
+   JSON CLI modes:** immediate post-settle recovery completes before the process
+   exits. Delayed parked wakes still need a separate process-lifetime check.
 5. Can the `input` event consume a message without running the agent? → whether the
    pre-dispatch park is possible.
 6. Virtual models in the picker: four entries, Ctrl+P cycling, `defaultModel:

@@ -12,8 +12,12 @@
  * Always writes test-artifacts/traceability.json, then exits 1 with concise
  * error lines or 0 with a short summary. Run via `npm run traceability`.
  */
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { packageContext } from "./package-context.js"
+
+const context = packageContext(process.argv.slice(2), process.cwd(), existsSync)
+process.chdir(context.directory)
 
 interface RequirementCoverage {
   id: string
@@ -112,9 +116,7 @@ const requirementIdsAll = requirementIds(readFileSync("../../docs/REQUIREMENTS.m
 
 // Coverage sources: the test suite plus the repo-level files that carry
 // `covers:` declarations (config gate, policy docs, repo scripts).
-const scriptFiles = readdirSync("scripts")
-  .filter((name) => name.endsWith(".ts"))
-  .map((name) => join("scripts", name))
+const scriptFiles = walkFiles(join(context.root, "scripts")).filter((file) => file.endsWith(".ts"))
 const sources: string[] = [
   ...walkFiles("test").filter((file) => /\.(test|spec)\.ts$/.test(file)),
   "test/plugin-test/scenarios.ts",

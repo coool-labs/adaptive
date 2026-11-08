@@ -1,6 +1,6 @@
 covers: ["ADP-046"]
 
-# Contributing to @coool/opencode-adaptive
+# Contributing to Adaptive
 
 An OpenCode v2 plugin that supervises execution episodes: capability-tier routing (quick / standard / advanced), structured-evidence escalation, horizontal failure recovery, and resource-health tracking. The requirements live in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) and the test layers in [packages/opencode/docs/TEST_STRATEGY.md](packages/opencode/docs/TEST_STRATEGY.md).
 
@@ -18,7 +18,26 @@ Use Node 26 for the normal OpenCode build and Node 24 for Termwright.
 
 ## Gates
 
-Every change must pass all of these before it is done — not merely compile:
+Run these commands from the repository root:
+
+```sh
+npm test                         # all unit projects; no host startup
+npm run check                    # fast gates for affected workspaces
+npm run check -- --all           # fast gates for every workspace
+npm run verify -- --all          # complete release verification
+npm run verify -- --pkg opencode # complete OpenCode verification
+npm run doctor                   # diagnose local prerequisites
+```
+
+`check` compares against `main` and includes staged, unstaged, and untracked
+changes. Shared/root changes select every workspace. `verify` adds build,
+packaging, packed-host checks, runtime E2E, UI E2E, and traceability in order.
+It builds before runtime E2E so a clean checkout needs no stale artifacts.
+Logs land in `test-artifacts/run/<workspace>/<step>.log`; failures show the
+last 40 lines. Explicit `--skip <step>` options appear in the final verdict;
+a skipped run is not release evidence.
+
+Individual gates remain available:
 
 ```sh
 npm run format:check   # prettier
@@ -30,14 +49,15 @@ npm run coverage       # vitest + 100% statement/branch/function/line gate on sr
 npm run build          # tsc build + GUI bundle
 npm run pack:check     # tarball inspection + publish dry-run (ADP-048)
 npm run plugin-test    # packed plugin against real OpenCode hosts (2.2.1 / current / latest)
+npm run e2e:runtime    # real-host routing, recovery, persistence and RPC
 npm run e2e:gui        # GUI /adaptive journeys: built bundle + stand-in host on a real server (100% coverage gate)
 npm run e2e:web        # Playwright web E2E (Chromium + WebKit, desktop + narrow)
 npm run e2e:tui        # Termwright PTY TUI E2E (80x24 / narrow / wide)
 npm run traceability   # requirement-coverage gate (ADP-047)
 ```
 
-`npm run verify:release` chains all of the above in one command and is the only
-release gate (there is no CI). The Termwright PTY leg runs on macOS only.
+`npm run verify -- --all` is the complete release gate (there is no CI).
+The runner selects Node 24 for the Termwright PTY leg, which runs on macOS only.
 
 Environment constraint: `npm run e2e:tui` (Termwright) needs Node 22/24 — e.g.
 `PATH="$HOME/.nvm/versions/node/v24.15.0/bin:$PATH" npm run e2e:tui` — and macOS

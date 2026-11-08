@@ -1,36 +1,8 @@
 {
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2023",
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "moduleDetection": "force",
-    "types": ["node"],
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
-    "noImplicitOverride": true,
-    "noFallthroughCasesInSwitch": true,
-    "noPropertyAccessFromIndexSignature": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "useDefineForClassFields": true,
-    "useUnknownInCatchVariables": true,
-    "verbatimModuleSyntax": true,
-    "isolatedModules": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "skipLibCheck": true,
-    "noEmit": true,
     "jsx": "react-jsx",
     "jsxImportSource": "solid-js"
   },
-  "include": [
-    "src/**/*.ts",
-    "src/**/*.tsx",
-    "test/**/*.ts",
-    "scripts/**/*.ts",
-    "vitest.config.ts",
-    "playwright.config.ts"
-  ]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "scripts/**/*.ts", "*.ts"]
 }

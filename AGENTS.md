@@ -157,19 +157,23 @@ before relying on them on a new surface:
 ## Verification workflow
 
 ```sh
-npm install          # once
-npm run typecheck    # tsc --noEmit — must be clean
-npm test             # vitest
-npm run coverage     # vitest + 100% coverage gate
-npm run lint         # eslint
-npm run lint:biome   # biome: style anti-patterns (config: biome.json)
-npm run format:check # prettier
-npm run build        # tsc build + vite GUI bundle
-npm run plugin-test  # packed plugin tests against real OpenCode hosts
+npm install                       # once; see CONTRIBUTING.md for native PTY prerequisite
+npm run doctor                    # check local runtimes, dependencies and host
+npm test                          # all unit projects, no real host startup
+npm run check                     # affected-workspace fast gates (includes tooling)
+npm run check -- --all             # all fast gates
+npm run verify -- --all            # full build, pack, runtime/UI E2E, traceability
+npm run verify -- --pkg opencode   # scoped full verification
 ```
 
-A change is done when typecheck, tests, coverage, and lint are clean — not
-merely when it compiles.
+Run commands from the repository root. Package-scoped scripts use npm workspaces.
+OpenCode code, configuration, and tests currently live in `packages/opencode/`;
+paths in the OpenCode-specific rules above are relative to that package.
+`npm test` deliberately excludes runtime E2E; `verify` runs it after building.
+Logs are in `test-artifacts/run/<workspace>/<step>.log`. The runner stops on the
+first failure and prints any explicitly skipped gates. Do not call a skipped run
+release-ready. A change is done when typecheck, tests, coverage, and lint are
+clean — not merely when it compiles.
 
 ## Style
 

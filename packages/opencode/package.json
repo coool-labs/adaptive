@@ -36,16 +36,19 @@
   "scripts": {
     "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc -p tsconfig.build.json && vite build --config guiconfig.ts",
-    "pack:check": "vite-node scripts/pack-check.ts",
+    "pack:check": "vite-node ../../scripts/pack-check.ts --pkg opencode",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check": "npm --prefix ../.. run check -- --pkg opencode",
+    "verify": "npm --prefix ../.. run verify -- --pkg opencode",
     "test": "vitest run",
-    "coverage": "vitest run --coverage --project unit",
+    "coverage": "vitest run --coverage",
+    "e2e:runtime": "vitest run --config vitest.e2e.config.ts",
     "plugin-test": "opencode-plugin-test",
     "e2e:web": "playwright test",
     "e2e:gui": "vitest run --config test/e2e-gui/vitest.config.ts --coverage",
     "e2e:tui": "termwright test -- --config test/e2e-tui/vitest.config.ts",
-    "traceability": "vite-node scripts/traceability.ts",
-    "verify:release": "vite-node scripts/verify-release.ts"
+    "traceability": "vite-node ../../scripts/traceability.ts --pkg opencode",
+    "verify:release": "npm run verify"
   },
   "peerDependencies": {
     "@opencode/plugin": ">=2.2.1 <3"
