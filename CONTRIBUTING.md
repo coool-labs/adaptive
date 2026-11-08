@@ -46,7 +46,7 @@ npm run lint:biome     # biome (style anti-patterns; biome.json)
 npm run typecheck      # tsc --noEmit (strictest sensible config)
 npm test               # vitest
 npm run coverage       # vitest + 100% statement/branch/function/line gate on src/**
-npm run build          # tsc build + GUI bundle
+npm run build          # bundled plugins + GUI bundle
 npm run pack:check     # tarball inspection + publish dry-run (ADP-048)
 npm run plugin-test    # packed plugin against real OpenCode hosts (2.2.1 / current / latest)
 npm run e2e:runtime    # real-host routing, recovery, persistence and RPC
@@ -96,6 +96,28 @@ return. The regression test is kept forever.
 
 ## Releases
 
-A version bump is a commit named exactly after the version (for example
-`0.1.1`), tagged `v0.1.1`, with a CHANGELOG entry. `npm run verify:release`
-must be green before publishing.
+```sh
+npm run release:status           # changed publishable packages since their last tags
+npm run release -- --dry-run     # preview default patch bumps and shared-core notes
+npm run release                 # choose bumps and edit release notes interactively
+```
+
+Shared core/testkit commits select both publishable plugins. Private packages are
+never published. Explicit choices work without prompts:
+`npm run release -- --opencode patch --pi minor --notes opencode=notes/opencode.md --notes pi=notes/pi.md --yes`.
+Omit a nonexistent package or use `--pi skip` to leave an existing package unchanged.
+Notes files must be committed or outside the working tree; the real release
+requires a clean `main` branch and npm authentication. Without `--notes`, set
+`EDITOR`; drafts survive failed verification in `test-artifacts/release/`.
+
+The CLI bumps manifests and the lockfile, updates changelogs, and runs full scoped
+verification **on the bumped artifacts**. A failed preparation or verification
+restores its file edits. It then commits, tags each package, publishes, and pushes.
+Tags are `opencode-adaptive@X.Y.Z` and `pi-adaptive@X.Y.Z`; historical `vX.Y.Z`
+tags are OpenCode releases. If tagging or publication fails after the commit,
+run `npm run release -- --resume` on that exact release commit. It rebuilds and
+verifies, repairs missing tags, queries npm, and publishes only missing versions.
+Registry errors other than a confirmed E404 stop recovery.
+
+Dry-run only previews: it does not write files, verify artifacts, authenticate,
+create tags, publish, or push. Use `npm run verify -- --all` for release evidence.

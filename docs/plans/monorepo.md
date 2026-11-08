@@ -251,7 +251,7 @@ Agents read the nearest file.
 
 Other modes:
 
-- `--dry-run` prints the plan and the changelog text, runs `npm publish --dry-run`, and
+- `--dry-run` prints the plan and the changelog text (without verifying artifacts), and
   writes nothing.
 - `--resume` is for when one publish failed after the commit: it checks
   `npm view <name>@<version>` per package and publishes only what is missing.

@@ -187,4 +187,6 @@ clean — not merely when it compiles.
   dialog-driven; its one JSX exception is the footer status chip in
   `src/tui.tsx` (host UI slots via `@opentui/solid`, mirroring the host's own
   slot pattern — the file-level `@jsxImportSource` pragma is required).
-- Version bumps are commits named exactly after the version, tagged `vX.Y.Z`.
+- Release only with `npm run release`. It verifies bumped artifacts before the
+  release commit and uses per-package tags (`opencode-adaptive@X.Y.Z` and
+  `pi-adaptive@X.Y.Z`). Historical `vX.Y.Z` tags belong to OpenCode only.

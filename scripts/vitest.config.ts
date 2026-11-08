@@ -14,6 +14,8 @@ export default defineConfig({
         "check-runner.ts",
         "package-context.ts",
         "pack-policy.ts",
+        "release/plan.ts",
+        "release/execute.ts",
       ],
       thresholds: { statements: 100, branches: 100, functions: 100, lines: 100 },
     },

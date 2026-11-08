@@ -37,7 +37,9 @@
     "test:tooling": "vitest run --config scripts/vitest.config.ts",
     "coverage:tooling": "vitest run --config scripts/vitest.config.ts --coverage",
     "typecheck:tooling": "tsc -p scripts/tsconfig.json --noEmit && tsc -p tsconfig.json --noEmit",
-    "verify:release": "npm run verify -- --all"
+    "verify:release": "npm run verify -- --all",
+    "release": "vite-node scripts/release.ts",
+    "release:status": "vite-node scripts/release.ts --status"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",
