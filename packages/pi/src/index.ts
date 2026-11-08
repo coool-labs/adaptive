@@ -1,17 +1,16 @@
+import { randomUUID } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { applyPatch, defaultSettings } from "@coool/adaptive-core/state/settings/parse"
 import { registerAdaptive } from "./host/extension.js"
 import { loadToolCapabilities } from "./capabilities.js"
 
-export default function adaptive(
-  pi: Pick<ExtensionAPI, "registerVirtualModel" | "getActiveTools">,
-): void {
+export default function adaptive(pi: Parameters<typeof registerAdaptive>[0]): void {
   const path = join(getAgentDir(), "adaptive", "settings.json")
-  registerAdaptive(
-    pi,
-    async () => {
+  registerAdaptive(pi, {
+    newId: randomUUID,
+    settings: async () => {
       let text: string
       try {
         text = await readFile(path, "utf8")
@@ -30,9 +29,9 @@ export default function adaptive(
       if (!parsed.ok) throw new Error(`Adaptive settings: ${parsed.errors.join(", ")}`)
       return parsed.settings
     },
-    () =>
+    capabilities: () =>
       loadToolCapabilities(join(getAgentDir(), "adaptive", "capabilities.json"), (file) =>
         readFile(file, "utf8"),
       ),
-  )
+  })
 }

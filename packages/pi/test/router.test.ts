@@ -10,8 +10,8 @@ const settings = {
   tiers: { quick: [a], standard: [b], advanced: [a] },
 }
 const input: RouteInput = {
-  id: "auto",
-  reason: "user",
+  tier: "standard",
+  sticky: false,
   previous: undefined,
   settings,
   inventory: [a, b].map((ref) => ({
@@ -24,32 +24,30 @@ const input: RouteInput = {
   demand: {},
 }
 
-it("registers exactly the four intended virtual IDs and defaults ambiguity to standard", () => {
+it("registers exactly the four intended virtual IDs and admits within the planned tier", () => {
   expect(VIRTUAL_IDS).toEqual(["auto", "quick", "standard", "advanced"])
-  for (const id of VIRTUAL_IDS) {
-    expect(routeAdmission({ ...input, id })).toMatchObject({
+  for (const tier of ["quick", "standard", "advanced"] as const) {
+    expect(routeAdmission({ ...input, tier })).toMatchObject({
       kind: "apply",
-      model: id === "auto" || id === "standard" ? b : a,
+      model: tier === "standard" ? b : a,
     })
   }
 })
 
-it("keeps continuations and native retries on their physical model", () => {
-  for (const reason of ["continuation", "retry"] as const) {
-    expect(routeAdmission({ ...input, reason, previous: a })).toMatchObject({
-      kind: "apply",
-      model: a,
-      reason: "pin",
-    })
-    expect(routeAdmission({ ...input, reason })).toMatchObject({ kind: "apply", model: b })
-  }
+it("keeps in-unit requests on their physical model and honours the user pin otherwise", () => {
+  expect(routeAdmission({ ...input, sticky: true, previous: a })).toMatchObject({
+    kind: "apply",
+    model: a,
+    reason: "pin",
+  })
+  expect(routeAdmission({ ...input, sticky: true })).toMatchObject({ kind: "apply", model: b })
+  expect(routeAdmission({ ...input, previous: a })).toMatchObject({ model: b })
   expect(routeAdmission({ ...input, settings: { ...settings, pin: a } })).toMatchObject({
     model: a,
   })
 })
 
-it("uses quick for direct requests and never borrows from another tier", () => {
-  expect(routeAdmission({ ...input, reason: "direct" })).toMatchObject({ model: a })
+it("never borrows from another tier and gates compatibility", () => {
   expect(
     routeAdmission({
       ...input,

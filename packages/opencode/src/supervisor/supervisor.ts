@@ -102,7 +102,11 @@ import {
   resourceUsableAt,
   selectResumable,
 } from "@coool/adaptive-core/execution/index"
-import { escalationDetail } from "@coool/adaptive-core/execution/escalation/index"
+import {
+  CAPABILITY_FAILURE_CATEGORIES,
+  escalationDetail,
+  MAX_ESCALATIONS_PER_TASK,
+} from "@coool/adaptive-core/execution/escalation/index"
 import type { RecoveryOption } from "@coool/adaptive-core/execution/index"
 import { listCandidates, sessionOps, storageSeam } from "../adapters/opencode/index.js"
 import type { EventReport } from "../adapters/opencode/index.js"
@@ -124,19 +128,6 @@ function interruptReason(reason: string): InterruptReason | undefined {
     ? (reason as InterruptReason)
     : undefined
 }
-
-/**
- * Failure categories that count as structured capability evidence (ADP-015).
- * The remaining evidence kinds (agent request, reviewer rejection) have no
- * structured host source in v2 and are never inferred from free text.
- */
-const CAPABILITY_EVIDENCE_CATEGORIES: readonly FailureCategory[] = [
-  "context_overflow",
-  "content_policy",
-]
-
-/** Finite per-task escalation budget (ADP-017). */
-const MAX_ESCALATIONS_PER_TASK = 2
 
 /**
  * The recovery's post-settle guard aborted it (the session went OFF or the
@@ -1341,7 +1332,7 @@ export class Supervisor {
       unitID === undefined ||
       model === undefined ||
       admissionTier === undefined ||
-      !CAPABILITY_EVIDENCE_CATEGORIES.includes(classification.category)
+      !CAPABILITY_FAILURE_CATEGORIES.includes(classification.category)
     ) {
       return
     }

@@ -1,42 +1,33 @@
 import { expect, it, vi } from "vitest"
-import type { SettingsV1 } from "@coool/adaptive-core/state/settings/types"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import type { ToolCapability } from "../src/capabilities.js"
+import type { AdaptiveSources } from "../src/host/extension.js"
 
 const bindings: {
   read: ReturnType<typeof vi.fn<() => Promise<string>>>
-  load: (() => Promise<SettingsV1>) | undefined
-  capabilities: (() => Promise<readonly ToolCapability[]>) | undefined
-} = vi.hoisted(() => ({
-  read: vi.fn<() => Promise<string>>(),
-  load: undefined,
-  capabilities: undefined,
-}))
+  sources: AdaptiveSources | undefined
+} = vi.hoisted(() => ({ read: vi.fn<() => Promise<string>>(), sources: undefined }))
 vi.mock("node:fs/promises", () => ({ readFile: bindings.read }))
 vi.mock("../src/host/extension.js", () => ({
-  registerAdaptive: (
-    _pi: unknown,
-    load: () => Promise<SettingsV1>,
-    capabilities: () => Promise<readonly ToolCapability[]>,
-  ) => {
-    bindings.load = load
-    bindings.capabilities = capabilities
+  registerAdaptive: (_pi: unknown, sources: AdaptiveSources) => {
+    bindings.sources = sources
   },
 }))
 import adaptive from "../src/index.js"
 
-const pi: Pick<ExtensionAPI, "registerVirtualModel" | "getActiveTools"> = {
-  registerVirtualModel: vi.fn(),
-  getActiveTools: () => [],
-}
-
 it("loads defaults only for a missing file and rejects malformed settings with field feedback", async () => {
-  adaptive(pi)
-  if (bindings.capabilities === undefined) throw new Error("capabilities binding missing")
+  adaptive({
+    registerVirtualModel: vi.fn(),
+    getActiveTools: () => [],
+    registerTool: vi.fn(),
+    on: vi.fn(),
+    sendMessage: vi.fn(),
+  })
+  const sources = bindings.sources
+  if (sources === undefined) throw new Error("binding missing")
+  expect(sources.newId()).toMatch(/^[0-9a-f-]{36}$/)
+  expect(sources.newId()).not.toBe(sources.newId())
   bindings.read.mockResolvedValueOnce('{"models":[]}')
-  expect(await bindings.capabilities()).toEqual([])
-  const load = bindings.load
-  if (load === undefined) throw new Error("binding missing")
+  expect(await sources.capabilities()).toEqual([])
+  const load = sources.settings
   bindings.read.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }))
   expect((await load()).mode).toBe("observe")
   bindings.read.mockResolvedValueOnce('{"mode":"active"}')

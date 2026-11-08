@@ -12,8 +12,9 @@ export const VIRTUAL_IDS = ["auto", "quick", "standard", "advanced"] as const
 export type VirtualID = (typeof VIRTUAL_IDS)[number]
 
 export interface RouteInput {
-  readonly id: VirtualID
-  readonly reason: "user" | "continuation" | "retry" | "direct"
+  readonly tier: TierName
+  /** In-unit request: keep the previous physical model when there is one. */
+  readonly sticky: boolean
   readonly settings: SettingsV1
   readonly previous: ModelRef | undefined
   readonly inventory: SchedulerInput["inventory"]
@@ -21,20 +22,17 @@ export interface RouteInput {
 }
 
 export function routeAdmission(input: RouteInput): AdmissionDecision {
-  let tier: TierName = input.id === "auto" ? "standard" : input.id
-  if (input.reason === "direct") tier = "quick"
   // Native retries stay sticky until the health/recovery milestone owns them.
   // Ordinary tool continuations must never be repriced or re-tiered mid-unit.
-  const sticky = input.reason === "continuation" || input.reason === "retry"
-  const pin = sticky ? input.previous : input.settings.pin
+  const pin = input.sticky ? input.previous : input.settings.pin
   return admit({
     routing:
       pin === undefined || pin === null
-        ? { kind: "tier", tier, source: "default" }
+        ? { kind: "tier", tier: input.tier, source: "default" }
         : { kind: "pin", model: pin },
     inventory: input.inventory,
     demand: input.demand,
-    tierCandidates: input.settings.tiers[tier],
+    tierCandidates: input.settings.tiers[input.tier],
     health: {},
     capacity: {},
   })

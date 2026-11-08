@@ -6,6 +6,7 @@
  * current work unit and applies at the next safe boundary within the finite
  * per-unit budget; a completing unit discards it (routing re-runs fresh).
  */
+import type { FailureCategory } from "../../health/classifier/types.js"
 
 /** The tool name as registered with the host. */
 export const ESCALATION_TOOL_NAME = "adaptive_escalate"
@@ -52,3 +53,16 @@ export function parseEscalationRequest(input: unknown): EscalationRequest | unde
 export function escalationDetail(request: EscalationRequest): string {
   return truncateBounded(`${request.reason}: ${request.evidence}`, MAX_ESCALATION_FIELD_LENGTH)
 }
+
+/**
+ * Failure categories that count as structured capability evidence (ADP-015).
+ * The remaining evidence kinds (agent request, reviewer rejection) have no
+ * structured host source and are never inferred from free text.
+ */
+export const CAPABILITY_FAILURE_CATEGORIES: readonly FailureCategory[] = [
+  "context_overflow",
+  "content_policy",
+]
+
+/** Finite per-task escalation budget (ADP-017). */
+export const MAX_ESCALATIONS_PER_TASK = 2

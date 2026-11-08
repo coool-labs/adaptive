@@ -26,8 +26,19 @@ remain unknown; `tools: false` explicitly excludes a model from tool-enabled
 requests. Declarations do not add providers, tier memberships, or credentials.
 Invalid files stop routing with field-specific feedback instead of guessing.
 Real Pi SDK tests exercise a complete tool call and its same-model continuation.
-Interactive capability setup, tier-request tools, and recovery are still pending;
-do not use this development package for normal coding sessions yet.
+
+Two agent tools steer Adaptive Auto. `adaptive_tier` declares the tier of the
+next task; it applies from the next user prompt and stays in force on the
+session branch. `adaptive_escalate` records why the current task needs more
+capability. Recording alone switches nothing: only when a run then fails on a
+capability gap (context overflow, content-policy rejection) does the task
+continue one tier up, via a hidden continuation message, at most twice per task.
+A new prompt starts a new task at the base tier. Pinned tier entries, a pinned
+model, a manually picked model, observe and off modes never escalate. Task state
+lives on the session branch, so forking or rewinding also rewinds it.
+
+Interactive setup, provider-failure recovery, and parking are still pending; do
+not use this development package for normal coding sessions yet.
 
 Development checks: `npm run check -- --pkg pi`; runtime SDK and built-entry CLI
 checks: `npm run verify -- --pkg pi`. The latter does not yet include all planned
