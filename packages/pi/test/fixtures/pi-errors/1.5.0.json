@@ -1,0 +1,119 @@
+[
+  {
+    "source": "user abort (pi-agent-core stopReason)",
+    "stopReason": "aborted",
+    "category": "user_cancelled",
+    "definitive": true
+  },
+  {
+    "source": "openai SDK, insufficient_quota",
+    "stopReason": "error",
+    "errorMessage": "429 You exceeded your current quota, please check your plan and billing details.",
+    "category": "quota_exhausted",
+    "definitive": true
+  },
+  {
+    "source": "openai SDK, tokens-per-minute limit",
+    "stopReason": "error",
+    "errorMessage": "429 Rate limit reached for gpt-4o in organization org-x on tokens per min (TPM): Limit 30000, Used 29800, Requested 900.",
+    "category": "rate_limited",
+    "definitive": true
+  },
+  {
+    "source": "openai SDK, bodyless gateway failure (pi-ai utils/error-body.js)",
+    "stopReason": "error",
+    "errorMessage": "503 status code (no body)",
+    "category": "outage",
+    "definitive": true
+  },
+  {
+    "source": "pi-ai formatProviderError without prefix",
+    "stopReason": "error",
+    "errorMessage": "502: <html>Bad Gateway</html>",
+    "category": "outage",
+    "definitive": true
+  },
+  {
+    "source": "openai SDK, bad key",
+    "stopReason": "error",
+    "errorMessage": "401 Incorrect API key provided: sk-***. You can find your API key at https://platform.openai.com/account/api-keys.",
+    "category": "auth_failure",
+    "definitive": true
+  },
+  {
+    "source": "anthropic SDK, request too large (pi-ai utils/overflow.js)",
+    "stopReason": "error",
+    "errorMessage": "413 {\"error\":{\"type\":\"request_too_large\",\"message\":\"Request exceeds the maximum size\"}}",
+    "category": "context_overflow",
+    "definitive": true
+  },
+  {
+    "source": "github-copilot formatProviderError with prefix (pi-ai utils/overflow.js)",
+    "stopReason": "error",
+    "errorMessage": "github-copilot API error (413): {\"message\":\"failed to parse request\",\"code\":\"\"}",
+    "category": "context_overflow",
+    "definitive": true
+  },
+  {
+    "source": "anthropic token overflow (pi-ai utils/overflow.js)",
+    "stopReason": "error",
+    "errorMessage": "prompt is too long: 213462 tokens > 200000 maximum",
+    "category": "context_overflow",
+    "definitive": false
+  },
+  {
+    "source": "openai context window (pi-ai utils/overflow.js)",
+    "stopReason": "error",
+    "errorMessage": "Your input exceeds the context window of this model",
+    "category": "context_overflow",
+    "definitive": false
+  },
+  {
+    "source": "bedrock ThrottlingException (pi-ai api/bedrock-converse-stream.js)",
+    "stopReason": "error",
+    "errorMessage": "Throttling error: Too many tokens, please wait before trying again.",
+    "category": "rate_limited",
+    "definitive": true
+  },
+  {
+    "source": "bedrock ServiceUnavailableException (pi-ai api/bedrock-converse-stream.js)",
+    "stopReason": "error",
+    "errorMessage": "Service unavailable: The service is temporarily unable to handle the request.",
+    "category": "outage",
+    "definitive": true
+  },
+  {
+    "source": "anthropic overloaded (HTTP 529 has no status mapping)",
+    "stopReason": "error",
+    "errorMessage": "529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}",
+    "category": "overload",
+    "definitive": false
+  },
+  {
+    "source": "codex subscription limit",
+    "stopReason": "error",
+    "errorMessage": "You've hit your usage limit. Upgrade to Pro or try again in 2 hours.",
+    "category": "quota_exhausted",
+    "definitive": false
+  },
+  {
+    "source": "pi-ai classifier timeout (api/classifier-shared.js)",
+    "stopReason": "error",
+    "errorMessage": "Request timed out after 30000ms",
+    "category": "timeout",
+    "definitive": false
+  },
+  {
+    "source": "anthropic refusal (api/anthropic-messages.js)",
+    "stopReason": "error",
+    "errorMessage": "The model refused to complete the request",
+    "category": "unknown",
+    "definitive": false
+  },
+  {
+    "source": "error stop without a message",
+    "stopReason": "error",
+    "category": "unknown",
+    "definitive": false
+  }
+]
