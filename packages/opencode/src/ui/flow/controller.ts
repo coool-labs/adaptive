@@ -15,7 +15,7 @@ import type { ModelRef } from "../../core/work-unit/types.js"
 import type { SettingsPatch, SettingsV1 } from "../../state/settings/index.js"
 import type { PatchResult } from "../../state/settings/types.js"
 import type { SessionModeSetResult } from "../../state/session-modes/index.js"
-import type { TierRequestSetResult } from "../../rpc/handlers.js"
+import type { TierRequestSetResult } from "../../state/tier-requests/types.js"
 import type { Receipt } from "../../state/receipts/types.js"
 import type { StatusSnapshot } from "../../rpc/status.js"
 import { STATUS_EMPTY_MESSAGE, statusTable } from "./status.js"
@@ -39,6 +39,7 @@ import {
   type ModelSummary,
 } from "./tiers.js"
 import { errorText, type SelectOption } from "./options.js"
+import type { HostCopy } from "./host-copy.js"
 import { receiptDetail, receiptLine, receiptPage, RECEIPTS_PAGE_SIZE } from "./receipts.js"
 
 export interface AdaptiveView {
@@ -77,6 +78,7 @@ export interface AdaptiveApi {
 export type ModelLister = () => readonly ModelSummary[]
 
 export interface AdaptiveEnv {
+  copy: HostCopy
   api: AdaptiveApi
   view: AdaptiveView
   models: ModelLister
@@ -88,7 +90,6 @@ export interface AdaptiveEnv {
   sessionID?: string | undefined
 }
 
-export const INVITE_TITLE = "OpenCode Adaptive"
 export const INVITE_MESSAGE =
   "Adaptive starts in Observe mode: routing decisions are recorded as receipts, " +
   "but no model is switched. Open /adaptive to configure tiers or switch to Active."
@@ -193,9 +194,9 @@ export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
       ? null
       : ((await tryApi(env, () => env.api.sessionMode(sessionID))) ?? null)
   if (!settings.inviteDismissed) {
-    await env.view.confirm({ title: INVITE_TITLE, message: INVITE_MESSAGE })
+    await env.view.confirm({ title: env.copy.inviteTitle, message: INVITE_MESSAGE })
     const pick = await env.view.select({
-      title: INVITE_TITLE,
+      title: env.copy.inviteTitle,
       options: [
         { title: "Open the menu now", value: true },
         { title: "Later", value: false },
@@ -393,7 +394,7 @@ async function runTierEditor(env: AdaptiveEnv, feedback: SaveFeedback): Promise<
     for (;;) {
       const choice = await env.view.select({
         title: `Tier: ${tier}`,
-        options: tierEditorOptions(pageSettings, tier, pageStatus),
+        options: tierEditorOptions(pageSettings, tier, pageStatus, env.copy.modelSearchPlaceholder),
       })
       if (choice === undefined) break
       if (choice.kind === "add") {
@@ -567,7 +568,10 @@ async function runReceiptsView(env: AdaptiveEnv): Promise<void> {
     }
     const pick = result.picked
     if (pick === undefined) return
-    await env.view.alert({ title: `Receipt #${String(pick.id)}`, message: receiptDetail(pick) })
+    await env.view.alert({
+      title: `Receipt #${String(pick.id)}`,
+      message: receiptDetail(pick, env.copy),
+    })
   }
 }
 

@@ -9,6 +9,9 @@
  */
 import type { TierName } from "../../core/tier-policy/types.js"
 
+export type TierRequestSetResult =
+  { readonly ok: true } | { readonly ok: false; readonly errors: readonly string[] }
+
 export const TIER_REQUESTS_KEY = "coool.adaptive/tier-requests"
 export const TIER_REQUESTS_VERSION = 1
 /** Product bound — not a user knob. Keeps the most recently updated records. */

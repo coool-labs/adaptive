@@ -46,9 +46,7 @@ export type AdaptiveRpcEmit = (
     | ["tier-request-changed", { sessionID: string }]
 ) => unknown
 
-/** A successful tier-request write; mirrors the SessionModeSetResult convention. */
-export type TierRequestSetResult =
-  { readonly ok: true } | { readonly ok: false; readonly errors: readonly string[] }
+export type { TierRequestSetResult } from "../state/tier-requests/types.js"
 
 /** Per-field errors for a session-mode patch, mirroring the settings contract. */
 function sessionModeSetError(input: {

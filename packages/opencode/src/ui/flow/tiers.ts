@@ -1,6 +1,6 @@
 /**
  * Tier-editor view models (ADP-033): resource labels with clear health tags,
- * model search over the real OpenCode model list, variant picking, and pure
+ * model search over the host's available models, variant picking, and pure
  * reorder/remove helpers. All functions are total and deterministic.
  */
 import type { ModelRef } from "../../core/work-unit/types.js"
@@ -35,9 +35,10 @@ export function tierEditorOptions(
   settings: SettingsV1,
   tier: TierName,
   status: StatusSnapshot | undefined,
+  modelSearchPlaceholder: string,
 ): SelectOption<TierEditorChoice>[] {
   const options: SelectOption<TierEditorChoice>[] = [
-    { title: "Add model…", value: { kind: "add" }, description: "Search OpenCode models" },
+    { title: "Add model…", value: { kind: "add" }, description: modelSearchPlaceholder },
   ]
   const tierStatus = status?.tiers[tier]
   settings.tiers[tier].forEach((ref, index) => {

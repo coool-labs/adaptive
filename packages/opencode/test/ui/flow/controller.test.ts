@@ -1,7 +1,9 @@
 // covers: ["ADP-032", "ADP-033", "ADP-054", "ADP-055"]
 import { describe, expect, it } from "vitest"
 
-import { INVITE_MESSAGE, INVITE_TITLE, runAdaptive } from "../../../src/ui/flow/controller.js"
+import { INVITE_MESSAGE, runAdaptive } from "../../../src/ui/flow/controller.js"
+import { OPENCODE_COPY } from "../../../src/ui/copy.js"
+const INVITE_TITLE = OPENCODE_COPY.inviteTitle
 import { errorText } from "../../../src/ui/flow/options.js"
 import { applyPatch } from "../../../src/state/settings/index.js"
 import { STATUS_EMPTY_MESSAGE, statusTable } from "../../../src/ui/flow/status.js"
@@ -188,9 +190,11 @@ function env(
     view?: FakeView
     models?: ModelSummary[]
     sessionID?: string
+    copy?: typeof OPENCODE_COPY
   } = {},
 ) {
   return {
+    copy: overrides.copy ?? OPENCODE_COPY,
     api: overrides.api ?? fakeApi(),
     view: overrides.view ?? fakeView(),
     models: () => overrides.models ?? models(),
@@ -280,6 +284,17 @@ describe("controller: invite flow", () => {
   it("pins the invite text", () => {
     expect(INVITE_TITLE).toBe("OpenCode Adaptive")
     expect(INVITE_MESSAGE).toMatch(/observe/i)
+  })
+
+  it("uses the host's invitation title", async () => {
+    const e = env({
+      copy: { ...OPENCODE_COPY, inviteTitle: "Test Adaptive" },
+      api: fakeApi({ settings: () => Promise.resolve(settings({ inviteDismissed: false })) }),
+    })
+    e.view.confirmQueue.push(false)
+    e.view.selectQueue.push(undefined)
+    await runAdaptive(e)
+    expect(e.view.selects).toEqual(["Test Adaptive"])
   })
 })
 

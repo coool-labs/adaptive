@@ -33,6 +33,35 @@ export default tseslint.config(
     },
   },
   {
+    files: [
+      "packages/opencode/src/{core,health,state,execution}/**/*.ts",
+      "packages/opencode/src/ui/flow/**/*.ts",
+      "packages/opencode/src/adapters/codex-capacity/**/*.ts",
+      "packages/opencode/src/rpc/status.ts",
+      "packages/opencode/src/supervisor/log.ts",
+    ],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: [
+                "@opencode/**",
+                "@opentui/**",
+                "solid-js",
+                "solid-js/**",
+                "**/rpc/handlers.js",
+                "**/adapters/opencode/**",
+              ],
+              message: "Shared modules must not depend on a host SDK or adapter.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ["**/*.js"],
     ...tseslint.configs.disableTypeChecked,
   },

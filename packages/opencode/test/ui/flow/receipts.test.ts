@@ -2,17 +2,39 @@
 import { describe, expect, it } from "vitest"
 import {
   outcomeLine,
-  receiptDetail,
+  receiptDetail as formatReceiptDetail,
   relativeTime,
   receiptLine,
   receiptPage,
   RECEIPTS_PAGE_SIZE,
   summarizeDecision,
-  whatHappened,
+  whatHappened as explainReceipt,
 } from "../../../src/ui/flow/receipts.js"
 import type { Decision } from "../../../src/core/scheduler/types.js"
 import type { Receipt, ReceiptOutcome } from "../../../src/state/receipts/types.js"
 import { TIERS } from "../../../src/core/tier-policy/types.js"
+import { OPENCODE_COPY } from "../../../src/ui/copy.js"
+
+const receiptDetail = (value: Receipt, now?: number): string =>
+  formatReceiptDetail(value, OPENCODE_COPY, now)
+const whatHappened = (value: Receipt): string => explainReceipt(value, OPENCODE_COPY)
+
+it("uses host-specific defer semantics rather than substituting a product name", () => {
+  const copy = {
+    ...OPENCODE_COPY,
+    receiptExplanation: () => "The same-tier baseline was retained.",
+  }
+  for (const reason of [
+    "routing-defer",
+    "adaptive-off",
+    "pin-unverifiable",
+    "pin-incompatible",
+  ] as const) {
+    const value = receipt({ decision: { kind: "defer", reason } })
+    expect(explainReceipt(value, copy)).toBe("The same-tier baseline was retained.")
+    expect(formatReceiptDetail(value, copy, 0)).toContain("The same-tier baseline was retained.")
+  }
+})
 
 function applyDecision(): Decision {
   return {

@@ -5,6 +5,7 @@ import type { JSX } from "solid-js"
 
 import { adaptiveRpc } from "../../rpc.js"
 import { runAdaptive } from "../flow/controller.js"
+import { OPENCODE_COPY } from "../copy.js"
 import type { AdaptiveApi, AdaptiveView } from "../flow/controller.js"
 import { errorText } from "../flow/options.js"
 import type { ModelSummary } from "../flow/tiers.js"
@@ -166,6 +167,7 @@ export async function openAdaptive(host: FlowHost): Promise<void> {
     // The host loads models lazily; the picker needs them before it opens.
     await models?.sync(session?.location).catch(() => undefined)
     await runAdaptive({
+      copy: OPENCODE_COPY,
       api: guiFlowApi(host),
       view,
       models: (): readonly ModelSummary[] =>

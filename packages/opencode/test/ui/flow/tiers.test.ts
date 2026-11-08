@@ -128,7 +128,7 @@ describe("tier menus", () => {
       waiting: [],
       receipts: 0,
     }
-    const options = tierEditorOptions(settings, "standard", status)
+    const options = tierEditorOptions(settings, "standard", status, "Search OpenCode models")
     expect(options).toHaveLength(3)
     expect(options[0]?.title).toBe("Add model…")
     expect(options[1]?.title).toBe("prov/a [unavailable]")
@@ -141,7 +141,7 @@ describe("tier menus", () => {
       ...defaultSettings(),
       tiers: { ...defaultSettings().tiers, quick: [ref("p", "m")] },
     }
-    const options = tierEditorOptions(settings, "quick", undefined)
+    const options = tierEditorOptions(settings, "quick", undefined, "Search OpenCode models")
     expect(options[1]?.title).toBe("p/m")
   })
 })

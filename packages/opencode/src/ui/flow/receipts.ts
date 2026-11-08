@@ -11,6 +11,7 @@ import type {
 } from "../../core/scheduler/types.js"
 import { resourceLabel } from "./tiers.js"
 import type { Receipt, ReceiptOutcome } from "../../state/receipts/types.js"
+import type { HostCopy, HostDeferReason } from "./host-copy.js"
 
 export function summarizeDecision(decision: Decision): string {
   switch (decision.kind) {
@@ -46,7 +47,7 @@ export function receiptLine(receipt: Receipt): string {
   return `#${String(receipt.id)} ${summarizeDecision(receipt.decision)} — ${outcomeLine(receipt.outcome)}`
 }
 
-export function receiptDetail(receipt: Receipt, now: number = Date.now()): string {
+export function receiptDetail(receipt: Receipt, copy: HostCopy, now: number = Date.now()): string {
   return [
     `id: ${String(receipt.id)}`,
     `when: ${relativeTime(receipt.at, now)} (${new Date(receipt.at).toISOString()})`,
@@ -56,7 +57,7 @@ export function receiptDetail(receipt: Receipt, now: number = Date.now()): strin
     `decision: ${summarizeDecision(receipt.decision)}`,
     `outcome: ${outcomeLine(receipt.outcome)}`,
     "",
-    `What happened: ${whatHappened(receipt)}`,
+    `What happened: ${whatHappened(receipt, copy)}`,
   ].join("\n")
 }
 
@@ -75,12 +76,19 @@ export function relativeTime(at: number, now: number): string {
  * Plain-language explanation for a receipt, keyed on the finite reason
  * vocabulary (the maps are total over it).
  */
-export function whatHappened(receipt: Receipt): string {
+export function whatHappened(receipt: Receipt, copy: HostCopy): string {
   const decision = receipt.decision
   switch (decision.kind) {
     case "apply":
       return applyExplanation[decision.reason]
     case "defer":
+      if (
+        decision.reason === "routing-defer" ||
+        decision.reason === "adaptive-off" ||
+        decision.reason === "pin-unverifiable" ||
+        decision.reason === "pin-incompatible"
+      )
+        return copy.receiptExplanation(decision.reason)
       return deferExplanation[decision.reason]
     case "park":
       return parkExplanation[decision.reason]
@@ -102,13 +110,7 @@ const applyExplanation: Record<ApplyReason, string> = {
   draining: "Adaptive routed to this resource while its provider was draining capacity.",
 }
 
-const deferExplanation: Record<SchedulerDeferReason, string> = {
-  "routing-defer": "No routing rule applied to this turn, so Adaptive left the choice to OpenCode.",
-  "adaptive-off": "Adaptive is switched off, so every turn runs on OpenCode's own choice.",
-  "pin-unverifiable":
-    "The pinned resource could not be verified as available, so Adaptive left the choice to OpenCode.",
-  "pin-incompatible":
-    "The pinned resource does not fit this turn's requirements, so Adaptive left the choice to OpenCode.",
+const deferExplanation: Record<Exclude<SchedulerDeferReason, HostDeferReason>, string> = {
   "escalation-not-justified":
     "No structured capability evidence justified escalation, so Adaptive kept the current capability.",
   "escalation-budget-exhausted":

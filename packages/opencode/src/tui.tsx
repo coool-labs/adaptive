@@ -20,6 +20,7 @@ import { adaptiveRpc } from "./rpc/definition.js"
 import type { OperatingMode } from "./core/scheduler/types.js"
 import { parseMode } from "./state/settings/index.js"
 import { runAdaptive } from "./ui/flow/controller.js"
+import { OPENCODE_COPY } from "./ui/copy.js"
 import type { AdaptiveApi, AdaptiveView } from "./ui/flow/controller.js"
 import { errorText } from "./ui/flow/options.js"
 import type { ModelSummary } from "./ui/flow/tiers.js"
@@ -198,6 +199,7 @@ export default define({
             const current = context.ui.router.current()
             const sessionID = current.type === "session" ? current.sessionID : undefined
             void runAdaptive({
+              copy: OPENCODE_COPY,
               api,
               view,
               models,
