@@ -142,9 +142,9 @@ Initial release.
 - Capacity awareness from provider response headers (best-effort, never load-bearing).
 - Fail-open on internal plugin failure; privacy and configured-provider restrictions fail closed.
 
-[1.2.3]: https://github.com/coool-labs/opencode-adaptive/releases/tag/v1.2.3
-[1.2.2]: https://github.com/coool-labs/opencode-adaptive/releases/tag/v1.2.2
-[1.2.1]: https://github.com/coool-labs/opencode-adaptive/releases/tag/v1.2.1
-[1.2.0]: https://github.com/coool-labs/opencode-adaptive/releases/tag/v1.2.0
-[1.0.1]: https://github.com/coool-labs/opencode-adaptive/releases/tag/v1.0.1
-[1.0.0]: https://github.com/coool-labs/opencode-adaptive/releases/tag/v1.0.0
+[1.2.3]: https://github.com/coool-labs/adaptive/releases/tag/v1.2.3
+[1.2.2]: https://github.com/coool-labs/adaptive/releases/tag/v1.2.2
+[1.2.1]: https://github.com/coool-labs/adaptive/releases/tag/v1.2.1
+[1.2.0]: https://github.com/coool-labs/adaptive/releases/tag/v1.2.0
+[1.0.1]: https://github.com/coool-labs/adaptive/releases/tag/v1.0.1
+[1.0.0]: https://github.com/coool-labs/adaptive/releases/tag/v1.0.0

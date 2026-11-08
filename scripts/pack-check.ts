@@ -114,9 +114,24 @@ try {
     process.exit(1)
   }
 
-  // The publish dry-run packs again and applies npm's own publication checks
-  // without contacting the registry.
-  run("npm", ["publish", "--dry-run"], { ...process.env, npm_config_dry_run: "true" })
+  // The publish dry-run packs again and applies npm's own publication checks.
+  // npm 11 also asks the registry whether the version exists; between releases
+  // the working version is the published one, so that single refusal is a
+  // notice (the release flow bumps before verifying), every other one fails.
+  const dryRun = spawnSync("npm", ["publish", "--dry-run"], {
+    encoding: "utf8",
+    env: { ...process.env, npm_config_dry_run: "true" },
+  })
+  if (dryRun.status !== 0) {
+    if (!dryRun.stderr.includes("cannot publish over the previously published versions")) {
+      throw new Error(
+        `npm publish --dry-run failed (exit ${String(dryRun.status)}): ${dryRun.stderr}`,
+      )
+    }
+    console.log(
+      `pack:check: version ${String(manifest.version)} is already published (bump to release)`,
+    )
+  }
 
   const report = { tarball: tarballPath, entries: listing.length, required: REQUIRED_FILES.length }
   mkdirSync("test-artifacts", { recursive: true })
