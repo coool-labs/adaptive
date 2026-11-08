@@ -23,10 +23,8 @@
  *   plugin discovery at all (probed: 16 palette attempts never matched).
  * - The plugin's keymap layer registers asynchronously some seconds after
  *   the boot prompt appears, so the palette match is retried.
- * - The `/` slash menu lists `/adaptive` (the first entry); Enter on the
- *   open menu activates it — the slash path is covered by its own journey.
- *   (Typing the full "/adaptive" string races the slash filter; the reliable
- *   keyboard path is slash-then-Enter.)
+ * - The `/` slash menu opens the command search. Filter after it mounts,
+ *   rather than relying on whichever suggested command starts highlighted.
  * - Select dialogs highlight the first option on open; Arrow keys move the
  *   highlight and Enter activates it, Escape cancels. The host persists the
  *   "Settings saved" toast until manually dismissed, and the flow shows it
@@ -355,7 +353,7 @@ async function runAdaptiveCommand(app: TerminalApp): Promise<void> {
   })
 }
 
-/** Open /adaptive through the editor slash menu (slash, then Enter). */
+/** Open /adaptive through the editor slash menu and its command filter. */
 async function runAdaptiveSlash(app: TerminalApp): Promise<void> {
   await app.waitForQuiet({ quietMs: 2_000 })
   // The keymap layer registers seconds after boot; a palette open/close
@@ -363,9 +361,18 @@ async function runAdaptiveSlash(app: TerminalApp): Promise<void> {
   await app.press("ctrl+p")
   await app.waitForText("Commands", { timeout: 30_000 })
   await app.press("Escape")
-  await app.waitForQuiet({ quietMs: 1_000 })
-  await app.type("/")
+  // The editor placeholder is also visible behind the palette; it alone
+  // does not prove Escape has been processed before the slash keystroke.
+  await app.waitForText(/^(?![\s\S]*Commands)[\s\S]*Ask anything/, { timeout: 10_000 })
+  await app.press("/")
+  await app.waitForText(/\/adaptive\s+Adaptive/, { timeout: 10_000 })
+  for (const key of ["a", "d", "a", "p", "t", "i", "v", "e"]) {
+    await app.press(key)
+    await app.waitForQuiet({ quietMs: 100 })
+  }
   await app.waitForQuiet({ quietMs: 500 })
+  expect(app.screen().text()).toContain("Adaptive")
+  expect(app.screen().text()).not.toContain("No results found")
   await app.press("Enter")
   await app.waitForText(/OpenCode Adaptive|Adaptive \((?:observe|active|off)\)/, {
     timeout: 30_000,
@@ -621,8 +628,7 @@ test(
     const app = launched.app
     await bootTui(launched)
     await step("slash menu activation", async () => {
-      // The bare `/` slash menu lists /adaptive among its entries; Enter on
-      // the open menu activates the highlighted entry.
+      // Search only after the slash menu mounts, then activate Adaptive.
       await runAdaptiveSlash(app)
       await app.waitForText("Adaptive starts in Observe mode", { timeout: 15_000 })
     })
