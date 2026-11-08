@@ -129,11 +129,40 @@ export class ResourceHealthRegistry {
   readonly #records = new Map<string, ResourceRecord>()
   readonly #clock: Clock
   readonly #config: ResourceHealthConfig
-  #probeCounter = 0
+  readonly #newProbeId: () => string
 
-  constructor(clock: Clock, config: ResourceHealthConfig = DEFAULT_HEALTH_CONFIG) {
+  /**
+   * `newProbeId` must be unique across every instance that shares records
+   * (see `restore`); a per-instance counter suffices for a single owner.
+   */
+  constructor(
+    clock: Clock,
+    config: ResourceHealthConfig = DEFAULT_HEALTH_CONFIG,
+    newProbeId?: () => string,
+  ) {
     this.#clock = clock
     this.#config = config
+    let counter = 0
+    this.#newProbeId =
+      newProbeId ??
+      (() => {
+        counter += 1
+        return String(counter)
+      })
+  }
+
+  /**
+   * Replaces the registry's view with records another live instance shares
+   * (one process per host session, all reading one locked file). Unlike
+   * `hydrate`, an in-flight probe is kept: its owner is alive and will report
+   * the outcome, and a lost owner is still bounded by the probe timeout.
+   */
+  restore(records: readonly ResourceRecord[]): void {
+    const now = this.#clock()
+    this.#records.clear()
+    for (const record of records) {
+      this.#records.set(resourceKeyID(record.key), sweepRecord(record, now))
+    }
   }
 
   /**
@@ -225,7 +254,7 @@ export class ResourceHealthRegistry {
       if (admission.kind === "in-flight") {
         return blocked("probe-in-flight", record.key, undefined)
       }
-      const probeId = String(++this.#probeCounter)
+      const probeId = this.#newProbeId()
       this.#records.set(resourceKeyID(record.key), {
         ...record,
         breaker: { ...admission.record, probeId, probeAt: now },

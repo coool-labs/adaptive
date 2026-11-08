@@ -55,6 +55,7 @@ import { checkCompatibility } from "@coool/adaptive-core/routing/compatibility/g
 import {
   classifyFailure,
   CapacityRegistry,
+  failureEvent,
   ResourceHealthRegistry,
 } from "@coool/adaptive-core/health/index"
 import { sweepRecord } from "@coool/adaptive-core/health/resource-health/transitions"
@@ -2296,30 +2297,5 @@ function refKey(ref: ModelRef): ResourceKey {
     providerID: ref.providerID,
     modelID: ref.id,
     ...(variant !== undefined ? { variantID: variant } : {}),
-  }
-}
-
-/** Quota survives variantless host resolution; only shared-limit evidence blocks siblings. */
-function failureKey(key: ResourceKey, classification: FailureClassification): ResourceKey {
-  if (classification.quotaScope === "provider") {
-    // Host model refs expose the configured provider, not a credential/account id.
-    return { providerID: key.providerID }
-  }
-  if (classification.category === "quota_exhausted" && key.variantID !== undefined) {
-    return { providerID: key.providerID, modelID: key.modelID }
-  }
-  return key
-}
-
-/** Health failure event from a classification (bounded structured evidence). */
-function failureEvent(key: ResourceKey, classification: FailureClassification): HealthEvent {
-  return {
-    kind: "failure",
-    key: failureKey(key, classification),
-    category: classification.category,
-    definitive: classification.definitive,
-    ...(classification.retry.retryAfterMs !== undefined
-      ? { retryAfterMs: classification.retry.retryAfterMs }
-      : {}),
   }
 }

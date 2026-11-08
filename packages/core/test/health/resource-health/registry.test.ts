@@ -578,4 +578,67 @@ describe("ResourceHealthRegistry", () => {
       expect(registry.recordFor(MODEL_KEY)).toBeUndefined()
     })
   })
+
+  describe("records shared between live instances", () => {
+    function sharedProbeIds(): () => string {
+      let next = 0
+      return () => {
+        next += 1
+        return `shared-${String(next)}`
+      }
+    }
+
+    it("admits exactly one probe across instances restoring the same records", () => {
+      const { now, advance } = fakeClock()
+      const ids = sharedProbeIds()
+      const first = new ResourceHealthRegistry(now, DEFAULT_HEALTH_CONFIG, ids)
+      tripBreaker(first, MODEL_KEY)
+      advance(DEFAULT_HEALTH_CONFIG.breaker.baseOpenMs)
+      const probe = first.assess(MODEL_KEY)
+      expect(probe).toEqual({ kind: "probe", ticket: { id: "shared-1", key: MODEL_KEY } })
+
+      const second = new ResourceHealthRegistry(now, DEFAULT_HEALTH_CONFIG, ids)
+      second.restore(first.snapshot())
+      expect(second.assess(MODEL_KEY)).toEqual({
+        kind: "blocked",
+        reason: "probe-in-flight",
+        key: MODEL_KEY,
+        retryAtMs: undefined,
+      })
+
+      // The owner reports through a third view of the same file.
+      const owner = new ResourceHealthRegistry(now, DEFAULT_HEALTH_CONFIG, ids)
+      owner.restore(second.snapshot())
+      expect(owner.reportProbe({ id: "shared-1", key: MODEL_KEY }, { success: true })).toBe(true)
+      expect(owner.assess(MODEL_KEY)).toEqual({ kind: "available" })
+    })
+
+    it("bounds a probe whose owner died by the probe timeout", () => {
+      const { now, advance } = fakeClock()
+      const ids = sharedProbeIds()
+      const crashed = new ResourceHealthRegistry(now, DEFAULT_HEALTH_CONFIG, ids)
+      tripBreaker(crashed, MODEL_KEY)
+      advance(DEFAULT_HEALTH_CONFIG.breaker.baseOpenMs)
+      crashed.assess(MODEL_KEY)
+
+      const survivor = new ResourceHealthRegistry(now, DEFAULT_HEALTH_CONFIG, ids)
+      survivor.restore(crashed.snapshot())
+      advance(DEFAULT_HEALTH_CONFIG.breaker.probeTimeoutMs)
+      // The lost probe expires into the same backoff window, then probes again.
+      expect(survivor.assess(MODEL_KEY)).toMatchObject({ kind: "blocked", reason: "breaker-open" })
+      advance(DEFAULT_HEALTH_CONFIG.breaker.baseOpenMs)
+      expect(survivor.assess(MODEL_KEY)).toEqual({
+        kind: "probe",
+        ticket: { id: "shared-2", key: MODEL_KEY },
+      })
+    })
+
+    it("replaces its whole view on restore", () => {
+      const { now } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      registry.observe({ kind: "success", key: PROVIDER_KEY })
+      registry.restore([])
+      expect(registry.snapshot()).toEqual([])
+    })
+  })
 })

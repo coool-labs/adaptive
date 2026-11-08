@@ -1,10 +1,13 @@
 // covers: ["ADP-050"]
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { createRequire } from "node:module"
 import { dirname, join } from "node:path"
 import { affectedWorkspaces, type Workspace } from "./affected.js"
 import { parseCheckOptions, planChecks } from "./check-plan.js"
 import { executeChecks } from "./check-runner.js"
+
+const ADDON_FIX = 'PATH="$HOME/.nvm/versions/node/v24.15.0/bin:$PATH" npm install'
 
 function readScripts(workspace: Workspace): string[] {
   const value: unknown = JSON.parse(readFileSync(`packages/${workspace}/package.json`, "utf8"))
@@ -60,6 +63,19 @@ try {
           return {
             status: 1,
             output: "TUI tests need Node 24. Install nvm Node 24.15.0, then run npm run doctor.",
+            milliseconds: 0,
+          }
+        }
+        // npm on Node 26 silently drops the Node 24-only optional PTY addon on
+        // every install; without it each TUI test times out one by one.
+        try {
+          createRequire(import.meta.url).resolve(
+            `@termwright/pty-${process.platform}-${process.arch}/termwright_pty.node`,
+          )
+        } catch {
+          return {
+            status: 1,
+            output: `TUI native addon missing. Run: ${ADDON_FIX}`,
             milliseconds: 0,
           }
         }

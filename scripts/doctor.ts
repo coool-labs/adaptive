@@ -24,7 +24,11 @@ try {
   require.resolve(`@termwright/pty-${process.platform}-${process.arch}/termwright_pty.node`)
   report("TUI native addon", true, `${process.platform}-${process.arch}`)
 } catch {
-  report("TUI native addon", false, "install dependencies under Node 24 (see CONTRIBUTING.md)")
+  report(
+    "TUI native addon",
+    false,
+    'missing; run PATH="$HOME/.nvm/versions/node/v24.15.0/bin:$PATH" npm install',
+  )
 }
 const hosts: readonly (readonly [string, string])[] = [
   ["OpenCode", process.env["OPENCODE_BIN"] ?? "/opt/homebrew/bin/opencode"],
