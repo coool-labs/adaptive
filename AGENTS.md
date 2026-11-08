@@ -1,24 +1,26 @@
 # AGENTS.md — working rules for this repository
 
-`@coool/opencode-adaptive` is an OpenCode v2 plugin: an **execution supervisor**
-that assigns each execution episode to a capability tier (quick / standard /
+Adaptive is a multi-host **execution supervisor**. The existing OpenCode v2 plugin
+is `@coool/opencode-adaptive`; the Pi integration is under development. Adaptive
+assigns each execution episode to a capability tier (quick / standard /
 advanced), escalates capability only on structured evidence, recovers within a
 tier through provider failures and quota limits, and restores preferred
-resources at safe boundaries. OpenCode owns sessions, agents, tools, `/goal`,
+resources at safe boundaries. The host owns sessions, agents, tools, goals,
 planning, and model invocation; Adaptive owns routing, health, capacity
 awareness, failover, durable parking, and observability. It must never become
 an agent framework, planner, task manager, goal engine, or provider marketplace.
 
 Architecture and conventions are cloned from `@coool/opencode-decision-mode`
-and `@coool/opencode-custom-provider`. Product contract: `GOAL.md`.
+and `@coool/opencode-custom-provider`. Product contract: `docs/PRODUCT.md`;
+`GOAL.md` is a local, gitignored execution objective, not shipped documentation.
 Requirements with stable IDs: `docs/REQUIREMENTS.md` (`ADP-xxx`).
 
 ## Architecture rules (non-negotiable)
 
-- **Dependency rule**: `src/core/`, `src/health/`, `src/execution/`, and
-  `src/state/` never import `@opencode/plugin`, `@opencode/schema`, or any
-  platform SDK. Only `src/adapters/opencode/` (plus the `ui/gui` experimental
-  surface) touches the platform. `src/supervisor/` is wiring: it consumes
+- **Dependency rule**: `packages/core/` and `packages/testkit/` never import any
+  host SDK or plugin package. Plugins never import each other's implementation
+  or host SDK. Platform access stays in each plugin's adapters and entry/RPC/UI
+  bindings. OpenCode's `src/supervisor/` is wiring: it consumes
   structural mirrors of the host surfaces (`SupervisorOptions`), never the
   host package directly.
 - **Pure core**: the scheduler is a pure function of

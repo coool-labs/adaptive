@@ -63,6 +63,41 @@ export default tseslint.config(
     },
   },
   {
+    files: ["packages/opencode/**/*.ts", "packages/opencode/**/*.tsx"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            "@earendil-works/**",
+            "@coool/pi-adaptive",
+            "@coool/pi-adaptive/**",
+            "**/packages/pi/**",
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["packages/pi/**/*.ts", "packages/pi/**/*.tsx"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            "@opencode/**",
+            "@opentui/**",
+            "solid-js",
+            "solid-js/**",
+            "@coool/opencode-adaptive",
+            "@coool/opencode-adaptive/**",
+            "**/packages/opencode/**",
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ["**/*.js"],
     ...tseslint.configs.disableTypeChecked,
   },

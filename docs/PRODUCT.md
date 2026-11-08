@@ -2,17 +2,22 @@
 
 ## Definition
 
-OpenCode Adaptive (`@coool/opencode-adaptive`, plugin ID `coool.adaptive`) is an execution supervisor for OpenCode v2. Per execution episode it decides which configured capability tier and resource should run, escalates capability on structured evidence, keeps work moving through rate limits and outages, and lets preferred resources recover naturally — without replacing any part of OpenCode.
+Adaptive is a host-integrated execution supervisor. Per execution episode it decides which configured capability tier and resource should run, escalates capability on structured evidence, keeps work moving through rate limits and outages, and lets preferred resources recover naturally — without replacing the host's agent loop.
+
+OpenCode Adaptive (`@coool/opencode-adaptive`, plugin ID `coool.adaptive`) is the
+existing OpenCode v2 integration. Pi Adaptive (`@coool/pi-adaptive`) is being
+implemented; it is not yet available as a supported release. Both use the same
+private scheduling, health, state and recovery library, bundled into each plugin.
 
 **The right model for the work, for as long as the work takes.**
 
 ## Tenets
 
-1. OpenCode owns sessions, agents, tools, `/goal`, planning, reviewers, and model invocation. Adaptive owns tier routing, compatibility, preference, health, capacity awareness, failover/recovery, escalation, durable waiting, and observability.
+1. The host owns sessions, agents, tools, goals, planning, reviewers, and model invocation. Adaptive owns tier routing, compatibility, preference, health, capacity awareness, failover/recovery, escalation, durable waiting, and observability.
 2. Explicit user intent outranks every heuristic; ambiguity defaults to `standard`; the router may `defer`.
 3. Infrastructure failure never means "harder work": it recovers horizontally within the tier.
 4. User-configured resource order is policy. Adaptive never silently overrides it for cost, and never borrows across tiers.
-5. Work units are OpenCode execution episodes — Adaptive invents no semantic tasks, goal engine, planner, or memory.
+5. Work units are host execution episodes — Adaptive invents no semantic tasks, goal engine, planner, or memory.
 6. If Adaptive cannot see trustworthy evidence, it does not guess.
 7. Adaptive itself must never be a single point of failure: fail open, except privacy restrictions.
 
@@ -35,6 +40,17 @@ OpenCode Adaptive (`@coool/opencode-adaptive`, plugin ID `coool.adaptive`) is an
 - **TUI:** `/adaptive` — mode switch, tiered model editor (search real models, variants, reorder, remove, validation), status and decision inspection.
 - **GUI:** native SettingsPage on OpenCode's experimental GUI surface — the same settings, same server truth. Works on desktop and narrow widths.
 - **Copy** is short and human ("Unavailable until 18:42", "Using GLM while Codex is unavailable").
+
+### Pi integration target
+
+The native model picker is the control surface: choose `adaptive/auto` or a pinned
+tier; choose a real model to take over. `/adaptive` provides the same tier editor,
+status and decision explanations over Pi's dialogs. A quiet status line, local
+transcript notes and an actionable parked-work card explain recovery without
+flooding the conversation. The proposed first-run setup is previewed before saving.
+See [the implementation plan](plans/pi-plugin.md) for acceptance criteria and
+the [spike evidence](../research_notes/Pi%20port%20feasibility/pi_spike_results.md)
+for verified versus unresolved host behavior.
 
 ## Supported OpenCode versions
 

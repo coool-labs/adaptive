@@ -16,6 +16,7 @@ export default defineConfig({
         "pack-policy.ts",
         "release/plan.ts",
         "release/execute.ts",
+        "requirements.ts",
       ],
       thresholds: { statements: 100, branches: 100, functions: 100, lines: 100 },
     },

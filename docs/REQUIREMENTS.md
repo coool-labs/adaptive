@@ -2,11 +2,26 @@
 
 Every requirement is objectively testable. IDs are stable; tests declare `covers: ["ADP-xxx"]` and the traceability gate (`npm run traceability`, part of `verify:release`) fails if any E2E-applicable requirement has no E2E mapping (see TEST_STRATEGY.md §Traceability).
 
+## Host applicability
+
+These scope lists are machine-checked. Every live ID occurs exactly once; the
+OpenCode and Pi gates enforce their own applicable requirements plus shared ones.
+Pi requirements are implementation targets until its first release, not claims of
+existing support. ADP-049 remains retired and has no scope.
+
+- [both]: ADP-001 ADP-002 ADP-003 ADP-004 ADP-005 ADP-006 ADP-007 ADP-008 ADP-009 ADP-010 ADP-011 ADP-012 ADP-013 ADP-014 ADP-015 ADP-016 ADP-017 ADP-018 ADP-019 ADP-020 ADP-021 ADP-022 ADP-023 ADP-024 ADP-026 ADP-027 ADP-028 ADP-029 ADP-030 ADP-031 ADP-032 ADP-037 ADP-038 ADP-039 ADP-045 ADP-046 ADP-047 ADP-048 ADP-050 ADP-051 ADP-052 ADP-053 ADP-054 ADP-055 ADP-056
+- [opencode]: ADP-025 ADP-033 ADP-034 ADP-035 ADP-036 ADP-040 ADP-041 ADP-042 ADP-043 ADP-044
+- [pi]: ADP-057 ADP-058 ADP-059 ADP-060 ADP-061 ADP-062 ADP-063 ADP-064 ADP-065
+
+Host-specific API names below describe each binding, not required APIs in the
+shared core. OpenCode uses typed RPC; Pi uses its extension API and selected
+virtual model. A pinned `adaptive/<tier>` is a user pin above `adaptive_tier`.
+
 ## Work units and routing
 
-- **ADP-001** — A work unit is exactly one OpenCode execution episode: from `session.execution.started` to `succeeded`/`failed`/`interrupted`. Tool continuations stay in the same unit; a subagent execution is a separate unit; a later goal continuation is a new unit.
+- **ADP-001** — A work unit is exactly one host execution episode. OpenCode tracks `session.execution.started` through `succeeded`/`failed`/`interrupted`; Pi tracks a user or owned-recovery admission through `agent_settled`. Tool continuations stay in the same unit; a subagent execution is a separate unit; a later goal or owned-recovery continuation is a new unit.
 - **ADP-002** — Routing priority is: explicit user/model pin → explicit tier request → supported role hint → deterministic local evidence → default `standard`. Ambiguity resolves to `standard`.
-- **ADP-003** — The router can return `defer`, meaning Adaptive gives no reason to override ordinary OpenCode behavior; a deferred unit keeps OpenCode's model choice.
+- **ADP-003** — The router can return `defer`, meaning Adaptive gives no reason to override ordinary host behavior. OpenCode retains its model choice. A selected Pi virtual model has no independent host choice, so its fallback is a compatible configured resource in the required tier, never an unrelated manual model or a different tier.
 - **ADP-004** — No LLM call and no keyword-list classifier participate in routing decisions.
 - **ADP-005** — Tiers are `quick`, `standard`, `advanced`, each an ordered list of user-configured resources; list order is user policy and is never reordered by Adaptive heuristics.
 - **ADP-006** — A resource is identified by provider / account (when observable) / model / variant (reasoning effort). Similar model names across providers are never treated as equivalent unless the user configures both.
@@ -14,7 +29,7 @@ Every requirement is objectively testable. IDs are stable; tests declare `covers
 ## Health and error classification
 
 - **ADP-007** — Resource health is hierarchical (provider → account → model → variant) with discriminated states `healthy | draining | degraded | rate_limited | quota_exhausted | unavailable | half_open`; quarantine applies at the narrowest scope the evidence justifies.
-- **ADP-008** — Error classification precedence: structured OpenCode/provider metadata → HTTP status/code → `Retry-After`/reset headers → documented provider-specific metadata → bounded textual classification as last resort only.
+- **ADP-008** — Error classification precedence: structured host/provider metadata → HTTP status/code → `Retry-After`/reset headers → documented provider-specific metadata → bounded textual classification as last resort only. Missing structured data (including Pi's free-text error surface) never becomes invented certainty.
 - **ADP-009** — The classifier distinguishes at least: short rate limiting, fixed-window quota exhaustion, provider outage, temporary overload, timeout, authentication failure, invalid model, context overflow, content/policy rejection, user cancellation, unknown.
 - **ADP-010** — User cancellation never triggers failover or retry.
 - **ADP-011** — All retry/escalation loops are finite and provably bounded; permanent configuration/authentication errors never enter retry loops.
@@ -23,7 +38,7 @@ Every requirement is objectively testable. IDs are stable; tests declare `covers
 ## Recovery behavior
 
 - **ADP-013** — Infrastructure failure (429, quota, timeout, 503, outage) never escalates capability tier; it triggers horizontal recovery within the required tier.
-- **ADP-014** — Horizontal recovery prefers OpenCode-native retry/model-switch; Adaptive never aborts and replays the original user request once tool side effects exist; completed side effects are treated as durable.
+- **ADP-014** — Horizontal recovery prefers native host retry/model-switch or virtual-model redirect; Adaptive never aborts and replays the original user request once tool side effects exist; completed side effects are treated as durable.
 - **ADP-015** — Capability escalation happens only on structured evidence and uses a finite per-task budget (one user prompt and the continuations it spawns) with no escalation loops. v1 escalates to the next tier only: a same-model stronger-variant rung would need an ordered variant ladder the host does not expose, and strength is never guessed from variant names (ADP-004).
 - **ADP-016** — Routing happens fresh at each safe work-unit boundary; there is no de-escalation engine and Adaptive never pulls a healthy resource away mid-work to save cost.
 - **ADP-017** — A compatibility gate (context capacity, tool use, modalities, model/variant/provider availability) filters candidates before health/preference ranking; only user-configured resources are ever eligible.
@@ -43,7 +58,7 @@ Every requirement is objectively testable. IDs are stable; tests declare `covers
 - **ADP-028** — Users can disable Adaptive, switch modes, explicitly request a tier, pin the current resource, and inspect why a decision was made; manual intent always wins and Adaptive never fights manual model changes.
 - **ADP-029** — Modes `off | observe | active`; observe is the default after install and never changes execution; observe and active run the identical scheduler implementation. Persisted legacy `control` values migrate to `active` on read.
 - **ADP-030** — Decision receipts persist bounded local records (work/session identity, required tier, selected resource, decision type, reason, rejected candidates, health/capacity evidence, escalation evidence, outcome, timestamp); no secrets, never injected into prompts; bounded retention; nothing leaves the machine.
-- **ADP-031** — Adaptive fails open: internal failures (sensor, receipts, GUI, unknown metadata, optional adapter) log/notify and defer to ordinary OpenCode behavior, except privacy/user restrictions which may fail closed.
+- **ADP-031** — Adaptive fails open: internal failures (sensor, receipts, GUI, unknown metadata, optional adapter) log/notify and defer to ordinary host behavior, except privacy/user restrictions which fail closed. A Pi virtual-model fallback must still satisfy ADP-003 and ADP-017.
 - **ADP-032** — First install defaults to observe with one concise dismissible configuration invitation; no repeated startup toasts.
 
 ## UX
@@ -66,12 +81,30 @@ Every requirement is objectively testable. IDs are stable; tests declare `covers
 - **ADP-045** — Core scheduling/resilience works headless without TUI/GUI present.
 - **ADP-046** — Regression policy: every behavioral bug gets a failing-first regression test; documented in CONTRIBUTING.md and followed for the whole project.
 - **ADP-047** — Machine-checkable requirements traceability: tests declare covered requirement IDs; an automated gate fails if any E2E-applicable requirement lacks E2E coverage.
-- **ADP-048** — Package publishes correctly: exports `.`, `./tui`, `./rpc`, `./gui-experimental`; `npm pack` and `npm publish --dry-run` pass; tarball inspected; minimal runtime dependencies; MIT license.
+- **ADP-048** — Each published package declares and validates its entry points. OpenCode preserves `.`, `./tui`, `./rpc`, `./gui-experimental`; Pi declares its extension entry in its `pi` manifest field. `npm pack` and publish dry-run validation pass; tarballs contain bundled private code without unpublished workspace dependencies, minimal runtime dependencies, and the MIT license.
 - ADP-049 — Retired: the project has no CI; the local `npm run verify:release` (ADP-050) is the only release gate. The ID is not reused.
-- **ADP-050** — `npm run verify:release` runs the complete publish-readiness gate in one command.
+- **ADP-050** — `npm run verify -- --all` runs the complete publish-readiness gate in one command; `--pkg opencode` or `--pkg pi` scopes it. `npm run verify:release` remains an alias. Release tooling verifies bumped artifacts before committing, publishing or pushing.
 - **ADP-051** — Security/privacy: no telemetry, no user content to unconfigured providers, no credentials exposed to TUI/browser, capacity adapters run server-side, no secrets persisted, RPC inputs validated, persisted data bounded, threat model documented.
 - **ADP-052** — Prompt overhead: no LLM classification call, no repeated large routing prompts, operational metadata kept out of the conversation where current APIs allow.
 - **ADP-053** — The pure scheduling path is deterministic and inexpensive; representative-fixture measurements catch pathological overhead, not nanoseconds.
 - **ADP-054** — Per-session operating-mode override with the global mode as default: a session's effective mode is its override when one is set, else the global mode; every session-scoped supervision decision (prompt admission, execution-started fallback, retry gating, escalation wrapping, idle resume, observe wrapping) consults the effective mode. Overrides persist, are pruned when the session dies, and are managed through typed RPC and the `/adaptive` menu inside a session.
 - **ADP-055** — Tier requests: an agent (or user via typed RPC) can request a tier for the current task through the `adaptive_tier` tool; the request is sticky per-session (bounded, insertion-order evicted, pruned when the session dies), participates in admission between user pin and default hints, defers with a `tier-not-configured` reason when the requested tier has no configured resources, and is cleared by passing a null tier. The control surface mirrors the session-mode contract: `tier-request.get`/`tier-request.set` methods with the `tier-request-changed` event, per-field validation errors for an unknown tier or a bad sessionID, and fail-open degradation on internal write failures. Inside a session the `/adaptive` menu has a Tier entry that reads and sets the session's requested tier over those methods. Runtime E2E proves a live agent-driven tier request reroutes a session, that an unconfigured tier request defers without touching routing, and that an RPC-pinned tier steers only its own session while a second session keeps the ordinary ladder until the request is cleared.
 - **ADP-056** — Sensed capacity is visible in the control surfaces: every configured resource's status row shows the sensed usage window — a rounded used percent and the wall-clock reset time — whenever the passive capacity sensor holds a fresh reading, and nothing extra when it does not. Readings observed from response headers are persisted through a bounded capacity mirror (newest observation per resource wins, write failures fail open), so the instance serving `status.get` reports what any instance observed — the TUI host loads the plugin twice and the event pump and the RPC server can be different instances. Runtime E2E proves a completed turn whose response carries x-codex usage headers surfaces as `used N%` with a reset time in that resource's status row.
+
+## Pi integration
+
+For shared ADP-054–056, Pi binds per-session mode to model selection and observe
+state, exposes tier requests through its tool and dialogs instead of RPC, and
+shows capacity in `/adaptive status` and the status line. OpenCode retains the
+RPC/event contracts described above. Both hosts preserve the same priority,
+persistence, validation and fail-open guarantees.
+
+- **ADP-057** — Register `adaptive/auto`, `adaptive/quick`, `adaptive/standard`, and `adaptive/advanced`; selecting a non-virtual model hands control back immediately and notes it.
+- **ADP-058** — Routing changes and parking produce transcript notes outside model context; verbosity is `quiet`, `changes`, or `all`.
+- **ADP-059** — Health, capacity, receipts and parked work are shared across Pi processes with cross-process locking; half-open admits exactly one probe across processes.
+- **ADP-060** — Parking supports abortable in-place waits up to two minutes, no duplicate pre-dispatch message, one owned hidden continuation for mid-run resume, at most three automatic wakes per task, and a wake claimed at most once across processes.
+- **ADP-061** — Non-retried infrastructure failures restart the same task at most twice; user aborts never restart.
+- **ADP-062** — `/adaptive` uses the shared flow; `/adaptive doctor` reports supported versions, credentials, storage, conflicting routers, health and parked work with an actionable remedy for each problem.
+- **ADP-063** — First run proposes tiers deterministically from available configured models, saves nothing without confirmation, and defaults to observe.
+- **ADP-064** — Packed tests run the npm artifact against the minimum supported Pi version and latest, through the SDK, JSON CLI and PTY TUI.
+- **ADP-065** — The versioned Pi error corpus classifies every labelled entry as expected for every supported Pi version.

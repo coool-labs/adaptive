@@ -22,12 +22,14 @@ npm run check                    # affected workspaces; no paid models
 npm run check -- --all            # all workspaces
 npm run verify -- --pkg opencode  # complete release gate, including real-host E2E
 npm run doctor                   # local environment diagnostics
+npm run release:status           # changes per publishable package, including core
+npm run release -- --dry-run      # safe version/changelog preview; no publication
 ```
 
 Checks print a short verdict and retain full logs under `test-artifacts/run/`.
 `--skip e2e:tui` permits a partial verification, but its verdict explicitly records
 the skip; it is not a release-ready result.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), the
+See [CONTRIBUTING.md](CONTRIBUTING.md), the [architecture](docs/ARCHITECTURE.md), the
 [monorepo migration plan](docs/plans/monorepo.md), and the
 [requirements](docs/REQUIREMENTS.md).

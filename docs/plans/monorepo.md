@@ -433,7 +433,7 @@ type-level:
 ### Step 6 — docs and the requirement catalogue (S)
 
 - Root `docs/PRODUCT.md` (host-neutral) and `docs/ARCHITECTURE.md` (packages and rules).
-  Tag every ADP id `[both]`, `[opencode]` or `[pi]` (the Pi plan has the proposed
+  Assign every ADP id `[both]`, `[opencode]` or `[pi]` in machine-checked scope lists (the Pi plan has the proposed
   mapping). Traceability filters by tag.
 - Root README covers what Adaptive is, the two install lines and links to each package
   README. The package READMEs are what npm shows.

@@ -15,6 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { packageContext } from "./package-context.js"
+import { requirementCatalogue } from "./requirements.js"
 
 const context = packageContext(process.argv.slice(2), process.cwd(), existsSync)
 process.chdir(context.directory)
@@ -72,7 +73,6 @@ const E2E_PREFIXES = [
 
 const COVERS_LITERAL = /covers:\s*\[[^\]]*\]/g
 const ADP_ID = /ADP-\d{3}/g
-const REQUIREMENT_HEADING = /^- \*\*(ADP-\d{3})\*\*/
 
 function walkFiles(dir: string): string[] {
   const out: string[] = []
@@ -92,16 +92,6 @@ function isE2EFile(file: string): boolean {
   return E2E_PREFIXES.some((prefix) => normalized.startsWith(prefix))
 }
 
-function requirementIds(doc: string): string[] {
-  const ids: string[] = []
-  for (const line of doc.split("\n")) {
-    const match = REQUIREMENT_HEADING.exec(line)
-    const id = match?.[1]
-    if (id !== undefined) ids.push(id)
-  }
-  return ids
-}
-
 function declaredIds(text: string): Set<string> {
   const ids = new Set<string>()
   for (const literal of text.matchAll(COVERS_LITERAL)) {
@@ -112,7 +102,11 @@ function declaredIds(text: string): Set<string> {
   return ids
 }
 
-const requirementIdsAll = requirementIds(readFileSync("../../docs/REQUIREMENTS.md", "utf8"))
+const catalogue = requirementCatalogue(
+  readFileSync("../../docs/REQUIREMENTS.md", "utf8"),
+  context.workspace,
+)
+const requirementIdsAll = catalogue.applicable
 
 // Coverage sources: the test suite plus the repo-level files that carry
 // `covers:` declarations (config gate, policy docs, repo scripts).
@@ -124,7 +118,7 @@ const sources: string[] = [
       file.endsWith(".test.ts"),
     ),
   ),
-  "test/plugin-test/scenarios.ts",
+  ...(existsSync("test/plugin-test/scenarios.ts") ? ["test/plugin-test/scenarios.ts"] : []),
   "vitest.config.ts",
   "../../CONTRIBUTING.md",
   ...scriptFiles,
@@ -147,7 +141,7 @@ for (const [file, ids] of declarations) {
   }
 }
 
-const known = new Set(requirementIdsAll)
+const known = new Set(catalogue.all)
 const errors: string[] = []
 for (const [file, ids] of declarations) {
   for (const id of ids) {
