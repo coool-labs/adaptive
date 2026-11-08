@@ -113,6 +113,24 @@ it("rejects tool support that Pi's catalogue cannot verify, oversized context, a
   ).rejects.toThrow("no-compatible-resource")
 })
 
+it("uses only exact, explicit tool declarations including negative declarations", async () => {
+  for (const tools of [true, false]) {
+    const [definition] = virtualModels(
+      () => Promise.resolve(settings),
+      () => ["read"],
+      () =>
+        Promise.resolve([
+          { providerID: "other", id: "b", tools: true },
+          { providerID: "local", id: "unknown", tools: true },
+          { providerID: "local", id: "b", tools },
+        ]),
+    )
+    if (definition === undefined) throw new Error("missing fixture")
+    if (tools) expect((await definition.route(request, ctx)).model.id).toBe("b")
+    else await expect(definition.route(request, ctx)).rejects.toThrow("no-compatible-resource")
+  }
+})
+
 it("does not dispatch an unexpected resource returned across the scheduler boundary", async () => {
   const injected = vi.spyOn(scheduler, "admit").mockReturnValueOnce({
     kind: "apply",

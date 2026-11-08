@@ -5,18 +5,21 @@ import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate"
 import { admit } from "@coool/adaptive-core/routing/scheduler/admit"
 import type { SettingsV1 } from "@coool/adaptive-core/state/settings/types"
 import { routeAdmission, VIRTUAL_IDS } from "../router.js"
+import type { ToolCapability } from "../capabilities.js"
 
 export function registerAdaptive(
   pi: Pick<ExtensionAPI, "registerVirtualModel" | "getActiveTools">,
   settings: () => Promise<SettingsV1>,
+  capabilities: () => Promise<readonly ToolCapability[]>,
 ): void {
-  for (const definition of virtualModels(settings, () => pi.getActiveTools()))
+  for (const definition of virtualModels(settings, () => pi.getActiveTools(), capabilities))
     pi.registerVirtualModel(definition)
 }
 
 export function virtualModels(
   settings: () => Promise<SettingsV1>,
   activeTools: () => readonly string[],
+  capabilities: () => Promise<readonly ToolCapability[]> = () => Promise.resolve([]),
 ) {
   return VIRTUAL_IDS.map((id) => ({
     provider: "adaptive",
@@ -27,6 +30,7 @@ export function virtualModels(
       ctx: { modelRegistry: { getAvailable(): Model<Api>[] } },
     ) {
       const current = await settings()
+      const declarations = await capabilities()
       const models = ctx.modelRegistry
         .getAvailable()
         .filter((model) => model.provider !== "adaptive")
@@ -37,15 +41,24 @@ export function virtualModels(
         settings: current,
         previous:
           previous === undefined ? undefined : { providerID: previous.provider, id: previous.id },
-        inventory: models.map((model) => ({
-          providerID: model.provider,
-          modelID: model.id,
-          enabled: true,
-          providerEnabled: true,
-          variantAvailable: true,
-          capabilities: { input: model.input, output: ["text"] },
-          limit: { context: model.contextWindow },
-        })),
+        inventory: models.map((model) => {
+          const declared = declarations.find(
+            (entry) => entry.providerID === model.provider && entry.id === model.id,
+          )
+          return {
+            providerID: model.provider,
+            modelID: model.id,
+            enabled: true,
+            providerEnabled: true,
+            variantAvailable: true,
+            capabilities: {
+              input: model.input,
+              output: ["text"],
+              ...(declared === undefined ? {} : { tools: declared.tools }),
+            },
+            limit: { context: model.contextWindow },
+          }
+        }),
         demand: {
           tools: activeTools().length > 0,
           contextTokens: estimateContextTokens(request.messages).tokens,

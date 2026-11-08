@@ -10,7 +10,11 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent"
-import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux"
+import {
+  fauxProvider,
+  fauxAssistantMessage,
+  fauxToolCall,
+} from "@earendil-works/pi-ai/providers/faux"
 import { defaultSettings } from "@coool/adaptive-core/state/settings/parse"
 import { registerAdaptive } from "../../src/host/extension.js"
 
@@ -40,6 +44,7 @@ it("loads the real extension binding and dispatches every virtual entry through 
       },
     }
     let admissions = 0
+    const toolCalls: string[] = []
     const loader = new DefaultResourceLoader({
       cwd,
       agentDir: cwd,
@@ -49,9 +54,30 @@ it("loads the real extension binding and dispatches every virtual entry through 
       noThemes: true,
       extensionFactories: [
         (pi) => {
-          registerAdaptive(pi, () => {
-            admissions += 1
-            return Promise.resolve(settings)
+          registerAdaptive(
+            pi,
+            () => {
+              admissions += 1
+              return Promise.resolve(settings)
+            },
+            () =>
+              Promise.resolve(
+                faux.models.map((model) => ({
+                  providerID: model.provider,
+                  id: model.id,
+                  tools: true,
+                })),
+              ),
+          )
+          pi.registerTool({
+            name: "adaptive_test_probe",
+            label: "Probe",
+            description: "Deterministic local tool fixture",
+            parameters: { type: "object", properties: {}, additionalProperties: false },
+            execute: () => {
+              toolCalls.push("probe")
+              return Promise.resolve({ content: [{ type: "text", text: "PROBE_OK" }], details: {} })
+            },
           })
         },
       ],
@@ -66,7 +92,6 @@ it("loads the real extension binding and dispatches every virtual entry through 
       model: physical,
       resourceLoader: loader,
       sessionManager: SessionManager.inMemory(cwd),
-      tools: [],
       settingsManager: SettingsManager.inMemory({
         compaction: { enabled: false },
         retry: { enabled: false },
@@ -74,6 +99,7 @@ it("loads the real extension binding and dispatches every virtual entry through 
     })
     try {
       await session.bindExtensions({})
+      session.setActiveToolsByName([])
       for (const id of ["auto", "quick", "standard", "advanced"]) {
         const virtual = runtime.getModel("adaptive", id)
         expect(virtual, id).toBeDefined()
@@ -96,6 +122,23 @@ it("loads the real extension binding and dispatches every virtual entry through 
       ).toBe("standard")
       expect(faux.state.callCount).toBe(5)
       expect(admissions).toBe(4)
+      const virtual = runtime.getModel("adaptive", "auto")
+      if (virtual === undefined) throw new Error("missing virtual auto")
+      await session.setModel(virtual)
+      session.setActiveToolsByName(["adaptive_test_probe"])
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("adaptive_test_probe", {})]),
+        fauxAssistantMessage("Tool continuation complete"),
+      ])
+      await session.prompt("Call the local probe")
+      expect(toolCalls).toEqual(["probe"])
+      expect(faux.state.callCount).toBe(7)
+      expect(admissions).toBe(6)
+      const toolRun = session.agent.state.messages
+        .filter((message) => message.role === "assistant")
+        .slice(-2)
+      expect(toolRun.map((message) => message.model)).toEqual(["standard", "standard"])
+      expect(toolRun.at(-1)?.stopReason).toBe("stop")
     } finally {
       session.dispose()
     }
