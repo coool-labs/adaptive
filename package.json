@@ -10,7 +10,8 @@
   "workspaces": [
     "packages/core",
     "packages/testkit",
-    "packages/opencode"
+    "packages/opencode",
+    "packages/pi"
   ],
   "engines": {
     "node": ">=20.19.0"

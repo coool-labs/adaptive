@@ -1,0 +1,54 @@
+{
+  "name": "@coool/pi-adaptive",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Capability routing and bounded recovery for Pi",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coool-labs/adaptive.git",
+    "directory": "packages/pi"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.5.0 <2",
+    "@earendil-works/pi-ai": ">=1.5.0 <2"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-ai": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "tsdown": "0.23.7"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage",
+    "e2e:runtime": "vitest run --config vitest.e2e.config.ts",
+    "pack:check": "vite-node ../../scripts/pack-check.ts --pkg pi"
+  }
+}
