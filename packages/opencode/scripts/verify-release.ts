@@ -6,14 +6,17 @@
  */
 import { spawnSync } from "node:child_process"
 
+// Formatting and lint gates are repo-wide and live in the workspace root.
+const ROOT_STEPS = new Set(["format:check", "lint", "lint:biome"])
 const STEPS = [
   "format:check",
   "lint",
   "lint:biome",
   "typecheck",
+  // runtime E2E (part of `test`) loads the plugin from dist/, so build first.
+  "build",
   "test",
   "coverage",
-  "build",
   "pack:check",
   "plugin-test",
   "e2e:gui",
@@ -33,7 +36,8 @@ for (const step of STEPS) {
           PATH: `${process.env["HOME"] ?? ""}/.nvm/versions/node/v24.15.0/bin:${process.env["PATH"] ?? ""}`,
         }
       : process.env
-  const result = spawnSync("npm", ["run", step], { stdio: "inherit", env })
+  const args = ROOT_STEPS.has(step) ? ["--prefix", "../..", "run", step] : ["run", step]
+  const result = spawnSync("npm", args, { stdio: "inherit", env })
   if (result.error !== undefined || result.status !== 0) {
     const detail =
       result.error !== undefined ? result.error.message : `exit code ${String(result.status)}`

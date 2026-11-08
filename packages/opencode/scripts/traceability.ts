@@ -108,7 +108,7 @@ function declaredIds(text: string): Set<string> {
   return ids
 }
 
-const requirementIdsAll = requirementIds(readFileSync("docs/REQUIREMENTS.md", "utf8"))
+const requirementIdsAll = requirementIds(readFileSync("../../docs/REQUIREMENTS.md", "utf8"))
 
 // Coverage sources: the test suite plus the repo-level files that carry
 // `covers:` declarations (config gate, policy docs, repo scripts).
@@ -119,7 +119,7 @@ const sources: string[] = [
   ...walkFiles("test").filter((file) => /\.(test|spec)\.ts$/.test(file)),
   "test/plugin-test/scenarios.ts",
   "vitest.config.ts",
-  "CONTRIBUTING.md",
+  "../../CONTRIBUTING.md",
   ...scriptFiles,
 ].sort()
 

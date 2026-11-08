@@ -41,7 +41,7 @@ import type { TermwrightFixtures } from "@termwright/test"
 import { spawnSync } from "node:child_process"
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { REPO_ROOT } from "../runtime-e2e/helpers.js"
+import { REPO_ROOT, WORKSPACE_ROOT } from "../runtime-e2e/helpers.js"
 
 // The fake-provider sidecar needs a Termwright-certified Node (22/24). Locally
 // the default runtime may be newer (v26), so fall back to the nvm install; on
@@ -102,7 +102,7 @@ async function launchTui(
   // loader, and vite-node is not shipped by this dependency tree.
   const sidecarEntry = join(tw.tmpdir, "fake-provider-sidecar.mjs")
   const bundle = spawnSync(
-    join(REPO_ROOT, "node_modules", ".bin", "esbuild"),
+    join(WORKSPACE_ROOT, "node_modules", ".bin", "esbuild"),
     [
       join(REPO_ROOT, "test", "fixtures", "fake-provider", "main.ts"),
       "--bundle",

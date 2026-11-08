@@ -24,6 +24,16 @@ export const REPO_ROOT = ((): string => {
     dir = parent
   }
 })()
+/** The npm workspace root: owns the lockfile and the hoisted node_modules. */
+export const WORKSPACE_ROOT = ((): string => {
+  let dir = REPO_ROOT
+  while (!existsSync(join(dir, "package-lock.json"))) {
+    const parent = dirname(dir)
+    if (parent === dir) throw new Error("could not locate the workspace root (package-lock.json)")
+    dir = parent
+  }
+  return dir
+})()
 export const HOST_PASSWORD = "adaptive-e2e"
 const BOOT_TIMEOUT_MS = 90_000
 

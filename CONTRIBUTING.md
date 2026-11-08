@@ -2,13 +2,19 @@ covers: ["ADP-046"]
 
 # Contributing to @coool/opencode-adaptive
 
-An OpenCode v2 plugin that supervises execution episodes: capability-tier routing (quick / standard / advanced), structured-evidence escalation, horizontal failure recovery, and resource-health tracking. The requirements live in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) and the test layers in [docs/TEST_STRATEGY.md](docs/TEST_STRATEGY.md).
+An OpenCode v2 plugin that supervises execution episodes: capability-tier routing (quick / standard / advanced), structured-evidence escalation, horizontal failure recovery, and resource-health tracking. The requirements live in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) and the test layers in [packages/opencode/docs/TEST_STRATEGY.md](packages/opencode/docs/TEST_STRATEGY.md).
 
 ## Setup
 
 ```sh
 npm install
 ```
+
+Termwright's optional native PTY package must be installed under Node 22/24;
+npm on Node 26 silently omits it because of its engine constraint. If TUI tests
+report a missing PTY addon, run
+`PATH="$HOME/.nvm/versions/node/v24.15.0/bin:$PATH" npm install`.
+Use Node 26 for the normal OpenCode build and Node 24 for Termwright.
 
 ## Gates
 
@@ -64,9 +70,9 @@ return. The regression test is kept forever.
 ## Docs
 
 - [docs/PRODUCT.md](docs/PRODUCT.md) — what the plugin is and is not.
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module map and dependency rules.
+- [packages/opencode/docs/ARCHITECTURE.md](packages/opencode/docs/ARCHITECTURE.md) — module map and dependency rules.
 - [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) — the requirement list the traceability gate reads.
-- [docs/TEST_STRATEGY.md](docs/TEST_STRATEGY.md) — test layers and scenario maps.
+- [packages/opencode/docs/TEST_STRATEGY.md](packages/opencode/docs/TEST_STRATEGY.md) — test layers and scenario maps.
 
 ## Releases
 

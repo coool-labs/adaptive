@@ -2,34 +2,12 @@
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import ts from "typescript"
+import { REPO_ROOT, WORKSPACE_ROOT } from "./runtime-e2e/helpers.js"
 
-// import.meta.dirname/url are unreliable under vite-node (not file URLs), so
-// resolve the repo root by walking up to this package's manifest (the same
-// pattern test/runtime-e2e/helpers.ts uses).
-const packageJson: unknown = JSON.parse(
-  readFileSync(
-    ((): string => {
-      let dir = process.cwd()
-      for (;;) {
-        const manifest = join(dir, "package.json")
-        if (
-          existsSync(manifest) &&
-          readFileSync(manifest, "utf8").includes(`"name": "@coool/opencode-adaptive"`)
-        ) {
-          return manifest
-        }
-        const parent = dirname(dir)
-        if (parent === dir)
-          throw new Error("could not locate @coool/opencode-adaptive package root")
-        dir = parent
-      }
-    })(),
-    "utf8",
-  ),
-)
+const packageJson: unknown = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8"))
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -69,7 +47,9 @@ describe("package publish contract (ADP-048)", () => {
     expect(isRecord(devDependencies)).toBe(true)
     if (!isRecord(devDependencies)) return
     expect(devDependencies).not.toHaveProperty("@termwright/pty-darwin-arm64")
-    const lock: unknown = JSON.parse(readFileSync("package-lock.json", "utf8"))
+    const lock: unknown = JSON.parse(
+      readFileSync(join(WORKSPACE_ROOT, "package-lock.json"), "utf8"),
+    )
     expect(lock).toHaveProperty(
       ["packages", "node_modules/@termwright/pty-darwin-arm64", "optional"],
       true,
