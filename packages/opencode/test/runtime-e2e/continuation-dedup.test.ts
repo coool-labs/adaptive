@@ -13,9 +13,9 @@
 import { afterAll, describe, expect, it } from "vitest"
 
 import { rpc, REPO_ROOT, startHost, type StartedHost } from "./helpers.js"
-import type { FakeProviderScript } from "../fixtures/fake-provider/scenarios.js"
-import { CONTINUATION_PROMPT } from "../../src/execution/index.js"
-import type { Receipt } from "../../src/state/receipts/types.js"
+import type { FakeProviderScript } from "@coool/adaptive-testkit/fake-provider/scenarios"
+import { CONTINUATION_PROMPT } from "@coool/adaptive-core/execution/index"
+import type { Receipt } from "@coool/adaptive-core/state/receipts/types"
 
 const hosts: StartedHost[] = []
 

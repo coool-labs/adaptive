@@ -6,7 +6,7 @@ import type { JSX } from "solid-js"
 
 import { guiFlowApi, guiView, openAdaptive } from "../../../src/ui/gui/flow.js"
 import type { FlowHost } from "../../../src/ui/gui/flow.js"
-import { defaultSettings } from "../../../src/state/settings/index.js"
+import { defaultSettings } from "@coool/adaptive-core/state/settings/index"
 
 interface Selection {
   title: string

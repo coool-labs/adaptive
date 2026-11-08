@@ -11,9 +11,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, describe, expect, it } from "vitest"
 import { rpc, scenarioScript, startHost, type StartedHost } from "./helpers.js"
-import type { Receipt } from "../../src/state/receipts/types.js"
-import type { SettingsV1 } from "../../src/state/settings/types.js"
-import type { FakeProviderScript } from "../fixtures/fake-provider/scenarios.js"
+import type { Receipt } from "@coool/adaptive-core/state/receipts/types"
+import type { SettingsV1 } from "@coool/adaptive-core/state/settings/types"
+import type { FakeProviderScript } from "@coool/adaptive-testkit/fake-provider/scenarios"
 
 const hosts: StartedHost[] = []
 

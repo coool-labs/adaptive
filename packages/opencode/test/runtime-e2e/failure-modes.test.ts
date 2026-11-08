@@ -24,11 +24,11 @@
  */
 import { afterAll, describe, expect, it } from "vitest"
 import { rpc, scenarioScript, startHost, type StartedHost } from "./helpers.js"
-import type { Receipt } from "../../src/state/receipts/types.js"
+import type { Receipt } from "@coool/adaptive-core/state/receipts/types"
 import type {
   FakeProviderBehavior,
   FakeProviderScript,
-} from "../fixtures/fake-provider/scenarios.js"
+} from "@coool/adaptive-testkit/fake-provider/scenarios"
 
 const hosts: StartedHost[] = []
 

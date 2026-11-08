@@ -1,4 +1,4 @@
-import type { TierName } from "../../core/tier-policy/types.js"
+import type { TierName } from "@coool/adaptive-core/routing/tier-policy/types"
 
 /** Records the agent's tier declaration; false = not accepted. */
 export type TierRequestRecorder = (sessionID: string, tier: TierName) => boolean

@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { adaptiveGuiApi } from "../../../src/ui/gui/api.js"
-import { defaultSettings } from "../../../src/state/settings/index.js"
+import { defaultSettings } from "@coool/adaptive-core/state/settings/index"
 
 interface FakeClientOptions {
   failStatus?: boolean

@@ -1,11 +1,11 @@
 // covers: ["ADP-028", "ADP-036", "ADP-051", "ADP-054", "ADP-055"]
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { adaptiveRpcHandlers, type AdaptiveRpcSource } from "../../src/rpc/handlers.js"
-import type { PatchResult, SettingsPatch } from "../../src/state/settings/types.js"
-import type { SettingsV1 } from "../../src/state/settings/index.js"
-import { defaultSettings } from "../../src/state/settings/index.js"
-import type { Receipt } from "../../src/state/receipts/types.js"
-import type { StatusSnapshot } from "../../src/rpc/status.js"
+import type { PatchResult, SettingsPatch } from "@coool/adaptive-core/state/settings/types"
+import type { SettingsV1 } from "@coool/adaptive-core/state/settings/index"
+import { defaultSettings } from "@coool/adaptive-core/state/settings/index"
+import type { Receipt } from "@coool/adaptive-core/state/receipts/types"
+import type { StatusSnapshot } from "@coool/adaptive-core/status"
 
 function source(overrides: Partial<AdaptiveRpcSource> = {}): AdaptiveRpcSource {
   return {

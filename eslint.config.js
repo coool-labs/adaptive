@@ -33,13 +33,7 @@ export default tseslint.config(
     },
   },
   {
-    files: [
-      "packages/opencode/src/{core,health,state,execution}/**/*.ts",
-      "packages/opencode/src/ui/flow/**/*.ts",
-      "packages/opencode/src/adapters/codex-capacity/**/*.ts",
-      "packages/opencode/src/rpc/status.ts",
-      "packages/opencode/src/supervisor/log.ts",
-    ],
+    files: ["packages/core/**/*.ts", "packages/testkit/**/*.ts"],
     rules: {
       "no-restricted-imports": [
         "error",
@@ -48,6 +42,13 @@ export default tseslint.config(
             {
               group: [
                 "@opencode/**",
+                "@earendil-works/**",
+                "@coool/opencode-adaptive",
+                "@coool/opencode-adaptive/**",
+                "@coool/pi-adaptive",
+                "@coool/pi-adaptive/**",
+                "**/opencode/**",
+                "**/pi/**",
                 "@opentui/**",
                 "solid-js",
                 "solid-js/**",

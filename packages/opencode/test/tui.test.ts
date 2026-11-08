@@ -4,8 +4,8 @@ import { describe, expect, it, vi } from "vitest"
 import tuiPlugin, { chipFor, sessionChip, waitingChip } from "../src/tui.js"
 import { settingsJSON } from "./supervisor/helpers.js"
 import { fakeTuiContext, modelInfo } from "./tui/fake-context.js"
-import type { OperatingMode } from "../src/core/scheduler/types.js"
-import { WAITING_POLL_MS } from "../src/ui/flow/waiting.js"
+import type { OperatingMode } from "@coool/adaptive-core/routing/scheduler/types"
+import { WAITING_POLL_MS } from "@coool/adaptive-core/flow/waiting"
 
 function observedSettings(
   mode: Parameters<typeof settingsJSON>[0],

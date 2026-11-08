@@ -6,9 +6,9 @@
 // covers: ["ADP-002", "ADP-010", "ADP-015", "ADP-021", "ADP-028", "ADP-029", "ADP-030"]
 import { describe, expect, it } from "vitest"
 
-import { CONTINUATION_PROMPT } from "../../src/execution/index.js"
-import { SETTINGS_KEY } from "../../src/state/settings/types.js"
-import { parseReceiptsPayload } from "../../src/state/receipts/index.js"
+import { CONTINUATION_PROMPT } from "@coool/adaptive-core/execution/index"
+import { SETTINGS_KEY } from "@coool/adaptive-core/state/settings/types"
+import { parseReceiptsPayload } from "@coool/adaptive-core/state/receipts/index"
 import { storedReceipts } from "../supervisor/helpers.js"
 import {
   INTERRUPTED_USER,

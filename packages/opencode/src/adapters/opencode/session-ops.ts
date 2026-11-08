@@ -14,8 +14,8 @@ import type { SessionDomain } from "@opencode/plugin/promise/session"
 
 /** The session surface the ops actually use (structural — fixture-friendly). */
 export type SessionOpsSource = Pick<SessionDomain, "wait" | "switchModel" | "prompt">
-import type { ContinuationOps } from "../../execution/continuation/types.js"
-import type { ModelRef } from "../../core/work-unit/types.js"
+import type { ContinuationOps } from "@coool/adaptive-core/execution/continuation/types"
+import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 
 export interface SessionOpsHooks {
   /**

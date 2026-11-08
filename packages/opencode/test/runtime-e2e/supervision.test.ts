@@ -1,8 +1,8 @@
 // covers: ["ADP-001", "ADP-005", "ADP-008", "ADP-009", "ADP-010", "ADP-013", "ADP-019", "ADP-022", "ADP-029", "ADP-041", "ADP-045"]
 import { afterAll, describe, expect, it } from "vitest"
 import { startHost, rpc, type StartedHost } from "./helpers.js"
-import type { Receipt } from "../../src/state/receipts/types.js"
-import type { FakeProviderScript } from "../fixtures/fake-provider/scenarios.js"
+import type { Receipt } from "@coool/adaptive-core/state/receipts/types"
+import type { FakeProviderScript } from "@coool/adaptive-testkit/fake-provider/scenarios"
 
 const successScript: FakeProviderScript = {
   behaviors: [

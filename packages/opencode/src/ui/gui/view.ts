@@ -1,9 +1,9 @@
-import { OPERATING_MODES, type OperatingMode } from "../../core/scheduler/types.js"
-import { TIERS } from "../../core/tier-policy/index.js"
+import { OPERATING_MODES, type OperatingMode } from "@coool/adaptive-core/routing/scheduler/types"
+import { TIERS } from "@coool/adaptive-core/routing/tier-policy/index"
 import type { StatusSnapshot } from "../../rpc.js"
-import { healthTag, resourceLabel } from "../flow/tiers.js"
-import { receiptLine } from "../flow/receipts.js"
-import type { Receipt } from "../../state/receipts/index.js"
+import { healthTag, resourceLabel } from "@coool/adaptive-core/flow/tiers"
+import { receiptLine } from "@coool/adaptive-core/flow/receipts"
+import type { Receipt } from "@coool/adaptive-core/state/receipts/index"
 
 /** One display row of the GUI settings page. `tone` marks rows that need attention. */
 export interface GuiRow {

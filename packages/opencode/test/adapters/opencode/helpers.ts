@@ -14,7 +14,7 @@ import type { SessionEvent } from "../../../src/adapters/opencode/report.js"
 import type { SessionHookSource } from "../../../src/adapters/opencode/hooks.js"
 import type { SessionOpsSource } from "../../../src/adapters/opencode/session-ops.js"
 import type { StorageSource } from "../../../src/adapters/opencode/storage.js"
-import type { ModelRef } from "../../../src/core/work-unit/types.js"
+import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 
 /** A wire model reference with branded host types. */
 export function wireRef(providerID: string, id: string, variant?: string): Model.Ref {

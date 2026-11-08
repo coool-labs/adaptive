@@ -11,7 +11,7 @@ import { rpc, startHost } from "../runtime-e2e/helpers.js"
 import type { StartedHost } from "../runtime-e2e/helpers.js"
 import { StandIn, interceptRpc, loadBuiltBundle, mountPage } from "./standin.js"
 import type { GuiPlugin, Shown } from "./standin.js"
-import type { FakeProviderScript } from "../fixtures/fake-provider/scenarios.js"
+import type { FakeProviderScript } from "@coool/adaptive-testkit/fake-provider/scenarios"
 
 const MODELS = { "fake-model": { name: "Fake Model" }, "fake-model-2": { name: "Fake Two" } }
 const FAKE = { providerID: "fake", id: "fake-model" }

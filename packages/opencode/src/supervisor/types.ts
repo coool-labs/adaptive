@@ -5,7 +5,7 @@
  * package) while the real host domains remain directly assignable — method
  * parameters are bivariant, so `ctx.session` satisfies the mirror.
  */
-import type { ModelRef } from "../core/work-unit/types.js"
+import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 import type { SessionOpsSource } from "../adapters/opencode/session-ops.js"
 import type { ModelSource } from "../adapters/opencode/inventory.js"
 import type { StorageSource } from "../adapters/opencode/storage.js"

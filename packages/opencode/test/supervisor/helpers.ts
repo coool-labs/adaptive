@@ -3,20 +3,20 @@
  * `SupervisorSessionSource` shape (ops + optional hook capture), a fail-on-key
  * storage source, and settings payload seeds. Structural — no host branding.
  */
-import type { OperatingMode } from "../../src/core/scheduler/types.js"
+import type { OperatingMode } from "@coool/adaptive-core/routing/scheduler/types"
 import type { SessionHookSource } from "../../src/adapters/opencode/hooks.js"
 import type { StorageSource } from "../../src/adapters/opencode/storage.js"
-import type { ModelRef } from "../../src/core/work-unit/types.js"
+import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 import type { ModelSource } from "../../src/adapters/opencode/inventory.js"
 import type { SupervisorSessionSource } from "../../src/supervisor/types.js"
 import { processLedger, type ProcessLedger } from "../../src/adapters/opencode/process-ledger.js"
 import { Supervisor } from "../../src/supervisor/index.js"
 import { makeInfo, wireRef } from "../adapters/opencode/helpers.js"
-import { RECEIPTS_KEY } from "../../src/state/receipts/types.js"
-import { PARKED_KEY } from "../../src/state/parked-work/types.js"
-import { SETTINGS_KEY } from "../../src/state/settings/types.js"
-import type { SettingsV1 } from "../../src/state/settings/types.js"
-import { migrateSettings } from "../../src/state/settings/parse.js"
+import { RECEIPTS_KEY } from "@coool/adaptive-core/state/receipts/types"
+import { PARKED_KEY } from "@coool/adaptive-core/state/parked-work/types"
+import { SETTINGS_KEY } from "@coool/adaptive-core/state/settings/types"
+import type { SettingsV1 } from "@coool/adaptive-core/state/settings/types"
+import { migrateSettings } from "@coool/adaptive-core/state/settings/parse"
 
 type AnyCallback = (input: never) => unknown
 

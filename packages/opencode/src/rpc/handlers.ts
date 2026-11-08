@@ -7,17 +7,17 @@
  * defect whose generic `rpc.internal` message hides the cause (verified on the
  * sibling @coool plugins).
  */
-import { OPERATING_MODES } from "../core/scheduler/types.js"
-import type { OperatingMode } from "../core/scheduler/types.js"
-import { TIERS } from "../core/tier-policy/types.js"
-import type { TierName } from "../core/tier-policy/types.js"
-import { LOG_ERROR_LENGTH, logFailOpen } from "../supervisor/log.js"
-import { isValidSessionID } from "../state/session-modes/index.js"
-import type { PatchResult } from "../state/settings/types.js"
-import type { SettingsPatch, SettingsV1 } from "../state/settings/index.js"
+import { OPERATING_MODES } from "@coool/adaptive-core/routing/scheduler/types"
+import type { OperatingMode } from "@coool/adaptive-core/routing/scheduler/types"
+import { TIERS } from "@coool/adaptive-core/routing/tier-policy/types"
+import type { TierName } from "@coool/adaptive-core/routing/tier-policy/types"
+import { LOG_ERROR_LENGTH, logFailOpen } from "@coool/adaptive-core/log"
+import { isValidSessionID } from "@coool/adaptive-core/state/session-modes/index"
+import type { PatchResult } from "@coool/adaptive-core/state/settings/types"
+import type { SettingsPatch, SettingsV1 } from "@coool/adaptive-core/state/settings/index"
 import type { Rpc } from "@opencode/schema/rpc"
-import type { Receipt } from "../state/receipts/types.js"
-import type { StatusSnapshot } from "./status.js"
+import type { Receipt } from "@coool/adaptive-core/state/receipts/types"
+import type { StatusSnapshot } from "@coool/adaptive-core/status"
 import type { AdaptiveRpc } from "./definition.js"
 
 export interface AdaptiveRpcSource {
@@ -46,7 +46,7 @@ export type AdaptiveRpcEmit = (
     | ["tier-request-changed", { sessionID: string }]
 ) => unknown
 
-export type { TierRequestSetResult } from "../state/tier-requests/types.js"
+export type { TierRequestSetResult } from "@coool/adaptive-core/state/tier-requests/types"
 
 /** Per-field errors for a session-mode patch, mirroring the settings contract. */
 function sessionModeSetError(input: {

@@ -59,10 +59,14 @@ json: status=0, routes=[user,continuation], dispatches=2, settled=2, recovered=t
 PASS: isolated Pi 1.5.0 print text/json keeps owned post-settle recovery alive (no network)
 ```
 
+The CLI check also passes with a 1,500 ms awaited delay inside `agent_settled`
+before sending the owned continuation, in both text and JSON modes. This verifies
+an awaited delayed recovery, not an unowned timer scheduled after the handler returns.
+
 ## Remaining gates
 
 The rest of M0 is not yet verified: TUI model selection/footer behavior,
-delayed headless wake lifetime, capacity
+unowned-timer headless wake lifetime, capacity
 metadata, package installation without duplicate host dependencies, and
 cross-process storage/probe claims. These remain release blockers, not assumed
 platform guarantees.

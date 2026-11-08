@@ -20,7 +20,7 @@ export default defineConfig({
     server: { deps: { inline: [/solid-js/] } },
     coverage: {
       provider: "v8",
-      include: ["src/gui.tsx", "src/ui/gui/**", "src/ui/flow/**"],
+      include: ["src/gui.tsx", "src/ui/gui/**"],
       reporter: ["text"],
       thresholds: { statements: 100, branches: 100, functions: 100, lines: 100 },
     },

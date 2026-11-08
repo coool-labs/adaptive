@@ -8,12 +8,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import adaptivePlugin, { PLUGIN_ID } from "../src/index.js"
-import { SETTINGS_KEY } from "../src/state/settings/types.js"
-import { PARKED_KEY } from "../src/state/parked-work/types.js"
-import { parseReceiptsPayload } from "../src/state/receipts/index.js"
+import { SETTINGS_KEY } from "@coool/adaptive-core/state/settings/types"
+import { PARKED_KEY } from "@coool/adaptive-core/state/parked-work/types"
+import { parseReceiptsPayload } from "@coool/adaptive-core/state/receipts/index"
 import { makeInfo, fakeEvents, wireRef } from "./adapters/opencode/helpers.js"
 import type { ModelSource } from "../src/adapters/opencode/index.js"
-import { CONTINUATION_PROMPT } from "../src/execution/index.js"
+import { CONTINUATION_PROMPT } from "@coool/adaptive-core/execution/index"
 import {
   FakeSupervisorSession,
   KeyFailStorage,

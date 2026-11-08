@@ -2,13 +2,13 @@ import { Command, ComposerPill, Plugin, SettingsPage, type Context } from "@open
 import { For, Show, createSignal, onCleanup } from "solid-js"
 import type { JSX } from "solid-js"
 
-import type { OperatingMode } from "./core/scheduler/types.js"
-import type { Receipt } from "./state/receipts/index.js"
+import type { OperatingMode } from "@coool/adaptive-core/routing/scheduler/types"
+import type { Receipt } from "@coool/adaptive-core/state/receipts/index"
 import type { StatusSnapshot } from "./rpc.js"
 import { adaptiveGuiApi, type GuiApi } from "./ui/gui/api.js"
 import { openAdaptive, rpcLocation } from "./ui/gui/flow.js"
 import { modeChoices, parseModeValue, receiptLines, statusRows } from "./ui/gui/view.js"
-import { WAITING_POLL_MS, waitingLabel } from "./ui/flow/waiting.js"
+import { WAITING_POLL_MS, waitingLabel } from "@coool/adaptive-core/flow/waiting"
 
 const RECEIPTS_PREVIEW_LIMIT = 5
 

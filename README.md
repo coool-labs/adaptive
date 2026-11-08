@@ -7,6 +7,8 @@ cross-tier borrowing, and no telemetry.
 ## Packages
 
 - [OpenCode Adaptive](packages/opencode/README.md) — `@coool/opencode-adaptive`.
+- Shared routing, health, state, and dialog logic live in `packages/core`;
+  loopback provider fixtures live in `packages/testkit`. Both are private workspaces.
 - Pi Adaptive — planned; implementation follows the [Pi plan](docs/plans/pi-plugin.md).
 
 ## Development

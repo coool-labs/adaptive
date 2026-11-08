@@ -1,7 +1,7 @@
 // covers: ["ADP-018", "ADP-019", "ADP-024", "ADP-029"]
 import { describe, expect, it, vi } from "vitest"
-import { PARKED_KEY } from "../../src/state/parked-work/types.js"
-import { SETTINGS_KEY } from "../../src/state/settings/types.js"
+import { PARKED_KEY } from "@coool/adaptive-core/state/parked-work/types"
+import { SETTINGS_KEY } from "@coool/adaptive-core/state/settings/types"
 import { wireRef } from "../adapters/opencode/helpers.js"
 import {
   FakeSupervisorSession,

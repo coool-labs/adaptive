@@ -10,7 +10,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { packageContext } from "./package-context.js"
-import { readPackPolicy } from "./pack-policy.js"
+import {
+  exportTargetProblems,
+  privateArtifactProblems,
+  readPackPolicy,
+  runtimeDependencyProblems,
+} from "./pack-policy.js"
 
 const context = packageContext(process.argv.slice(2), process.cwd(), existsSync)
 process.chdir(context.directory)
@@ -63,6 +68,9 @@ try {
     if (!listing.includes(required)) problems.push(`missing tarball file: ${required}`)
   }
   for (const entry of listing) {
+    if (/\.(?:[cm]?js|d\.[cm]?ts)$/.test(entry)) {
+      problems.push(...privateArtifactProblems(entry, run("tar", ["-xzOf", tarballPath, entry])))
+    }
     if (FORBIDDEN.some((pattern) => pattern.test(entry))) {
       problems.push(`forbidden tarball file: ${entry}`)
     }
@@ -102,6 +110,10 @@ try {
     problems.push(`manifest version is not semver: ${String(manifest.version)}`)
   }
   if (manifest.license !== "MIT") problems.push(`manifest license is ${String(manifest.license)}`)
+  problems.push(...runtimeDependencyProblems(manifest))
+  problems.push(
+    ...exportTargetProblems("exports" in manifest ? manifest.exports : undefined, listing),
+  )
 
   if (problems.length > 0) {
     for (const problem of problems) console.error(`pack:check: ${problem}`)

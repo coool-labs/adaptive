@@ -1,8 +1,8 @@
 import type { OpenCodeClient } from "@opencode/client/promise"
 
-import type { SettingsPatch } from "../../state/settings/index.js"
-import type { Receipt } from "../../state/receipts/index.js"
-import { waitingSessions } from "../flow/waiting.js"
+import type { SettingsPatch } from "@coool/adaptive-core/state/settings/index"
+import type { Receipt } from "@coool/adaptive-core/state/receipts/index"
+import { waitingSessions } from "@coool/adaptive-core/flow/waiting"
 import { adaptiveRpc } from "../../rpc.js"
 import type { StatusSnapshot } from "../../rpc.js"
 

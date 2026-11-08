@@ -6,7 +6,7 @@
  */
 import type { Model } from "@opencode/plugin"
 import type { SessionHttpResponse } from "@opencode/plugin/promise/session"
-import type { ModelRef } from "../../core/work-unit/types.js"
+import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 import type {
   AdapterStructuredError,
   ExecutionReport,

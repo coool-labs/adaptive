@@ -11,5 +11,5 @@ export type {
   SettingsChangedEmit,
   TierRequestSetResult,
 } from "./rpc/handlers.js"
-export { buildStatus } from "./rpc/status.js"
-export type { StatusSnapshot, TierResourceStatus } from "./rpc/status.js"
+export { buildStatus } from "@coool/adaptive-core/status"
+export type { StatusSnapshot, TierResourceStatus } from "@coool/adaptive-core/status"

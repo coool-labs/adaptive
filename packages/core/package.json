@@ -1,0 +1,21 @@
+{
+  "name": "@coool/adaptive-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./routing/*": "./src/routing/*.ts",
+    "./health/*": "./src/health/*.ts",
+    "./state/*": "./src/state/*.ts",
+    "./execution/*": "./src/execution/*.ts",
+    "./flow/*": "./src/flow/*.ts",
+    "./sensors/*": "./src/sensors/*.ts",
+    "./status": "./src/status.ts",
+    "./log": "./src/log.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
+  }
+}

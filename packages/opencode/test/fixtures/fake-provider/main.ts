@@ -9,8 +9,11 @@
  * retries, and the 60s retry-after keeps the resulting health window alive
  * long enough for a status inspection.
  */
-import { createFakeProvider } from "./server.js"
-import { FAKE_SCENARIOS, type FakeProviderBehavior } from "./scenarios.js"
+import { createFakeProvider } from "@coool/adaptive-testkit/fake-provider/server"
+import {
+  FAKE_SCENARIOS,
+  type FakeProviderBehavior,
+} from "@coool/adaptive-testkit/fake-provider/scenarios"
 
 const portArg = process.argv.indexOf("--port")
 const raw = portArg >= 0 ? (process.argv[portArg + 1] ?? "") : ""

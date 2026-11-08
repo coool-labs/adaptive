@@ -11,7 +11,10 @@
  * defensively: model-produced JSON is untrusted. The tool is deliberately
  * not a planning or task-management API.
  */
-import { ESCALATION_TOOL_NAME, parseEscalationRequest } from "../../execution/escalation/index.js"
+import {
+  ESCALATION_TOOL_NAME,
+  parseEscalationRequest,
+} from "@coool/adaptive-core/execution/escalation/index"
 
 export { ESCALATION_TOOL_NAME }
 

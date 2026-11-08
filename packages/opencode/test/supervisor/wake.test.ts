@@ -8,20 +8,20 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { processLedger, type ProcessLedger } from "../../src/adapters/opencode/process-ledger.js"
-import { CONTINUATION_PROMPT } from "../../src/execution/index.js"
+import { CONTINUATION_PROMPT } from "@coool/adaptive-core/execution/index"
 import {
   FRUITLESS_BASE_MS,
   MAX_WAKE_MS,
   MIN_WAKE_MS,
   UNKNOWN_WAKE_MS,
   WAKE_GRACE_MS,
-} from "../../src/execution/parking/wake.js"
-import { parseParkedPayload } from "../../src/state/parked-work/index.js"
-import { PARKED_KEY } from "../../src/state/parked-work/types.js"
-import { parseReceiptsPayload } from "../../src/state/receipts/index.js"
-import { HEALTH_KEY } from "../../src/state/health/types.js"
+} from "@coool/adaptive-core/execution/parking/wake"
+import { parseParkedPayload } from "@coool/adaptive-core/state/parked-work/index"
+import { PARKED_KEY } from "@coool/adaptive-core/state/parked-work/types"
+import { parseReceiptsPayload } from "@coool/adaptive-core/state/receipts/index"
+import { HEALTH_KEY } from "@coool/adaptive-core/state/health/types"
 import type { RetryHookInput } from "../../src/supervisor/types.js"
-import { DEFAULT_HEALTH_CONFIG } from "../../src/health/resource-health/types.js"
+import { DEFAULT_HEALTH_CONFIG } from "@coool/adaptive-core/health/resource-health/types"
 import { makeInfo, wireRef } from "../adapters/opencode/helpers.js"
 import {
   activeStorage,

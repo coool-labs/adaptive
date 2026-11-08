@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin"
-import { isCodexHeaderName } from "./adapters/codex-capacity/index.js"
+import { isCodexHeaderName } from "@coool/adaptive-core/sensors/codex-capacity/index"
 import {
   adaptiveCommand,
   escalationTool,

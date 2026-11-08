@@ -4,8 +4,11 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { createServer, type Server } from "node:http"
 import { OpenCode } from "@opencode/client"
-import { createFakeProvider, type FakeProvider } from "../fixtures/fake-provider/server.js"
-import { FAKE_SCENARIOS, type FakeProviderScript } from "../fixtures/fake-provider/scenarios.js"
+import { createFakeProvider, type FakeProvider } from "@coool/adaptive-testkit/fake-provider/server"
+import {
+  FAKE_SCENARIOS,
+  type FakeProviderScript,
+} from "@coool/adaptive-testkit/fake-provider/scenarios"
 import { ADAPTIVE_RPC_ID } from "../../src/rpc/definition.js"
 
 // import.meta.dirname/url are unreliable under vite-node (not file URLs), so

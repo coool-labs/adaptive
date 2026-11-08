@@ -1,10 +1,10 @@
-import { OPERATING_MODES } from "../../core/scheduler/types.js"
-import type { OperatingMode } from "../../core/scheduler/types.js"
-import type { StatusSnapshot } from "../../rpc/status.js"
-import { logFailOpen } from "../../supervisor/log.js"
-import { modeDescription } from "../../ui/flow/menu.js"
-import { healthEntries, stateCell } from "../../ui/flow/status.js"
-import { resourceLabel } from "../../ui/flow/tiers.js"
+import { OPERATING_MODES } from "@coool/adaptive-core/routing/scheduler/types"
+import type { OperatingMode } from "@coool/adaptive-core/routing/scheduler/types"
+import type { StatusSnapshot } from "@coool/adaptive-core/status"
+import { logFailOpen } from "@coool/adaptive-core/log"
+import { modeDescription } from "@coool/adaptive-core/flow/menu"
+import { healthEntries, stateCell } from "@coool/adaptive-core/flow/status"
+import { resourceLabel } from "@coool/adaptive-core/flow/tiers"
 
 const COMMAND_NAME = "web-adaptive"
 

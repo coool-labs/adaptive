@@ -119,6 +119,11 @@ const requirementIdsAll = requirementIds(readFileSync("../../docs/REQUIREMENTS.m
 const scriptFiles = walkFiles(join(context.root, "scripts")).filter((file) => file.endsWith(".ts"))
 const sources: string[] = [
   ...walkFiles("test").filter((file) => /\.(test|spec)\.ts$/.test(file)),
+  ...["core", "testkit"].flatMap((workspace) =>
+    walkFiles(join(context.root, "packages", workspace, "test")).filter((file) =>
+      file.endsWith(".test.ts"),
+    ),
+  ),
   "test/plugin-test/scenarios.ts",
   "vitest.config.ts",
   "../../CONTRIBUTING.md",

@@ -1,4 +1,4 @@
-import type { HostCopy, HostDeferReason } from "./flow/host-copy.js"
+import type { HostCopy, HostDeferReason } from "@coool/adaptive-core/flow/host-copy"
 
 const deferExplanation: Record<HostDeferReason, string> = {
   "routing-defer": "No routing rule applied to this turn, so Adaptive left the choice to OpenCode.",

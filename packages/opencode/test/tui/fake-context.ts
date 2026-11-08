@@ -3,7 +3,7 @@
 import type { ModelInfo } from "@opencode/client"
 import type { Context } from "@opencode/plugin/tui/plugin"
 import type { Route } from "@opencode/plugin/tui/context"
-import type { OperatingMode } from "../../src/core/scheduler/types.js"
+import type { OperatingMode } from "@coool/adaptive-core/routing/scheduler/types"
 
 export interface DialogRecord {
   selects: {

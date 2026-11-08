@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest"
 import fc from "fast-check"
 
-import type { Receipt } from "../../../src/state/receipts/index.js"
+import type { Receipt } from "@coool/adaptive-core/state/receipts/index"
 import type { StatusSnapshot, TierResourceStatus } from "../../../src/rpc.js"
 import {
   DISCONNECTED_ROW_ID,
@@ -11,7 +11,7 @@ import {
   receiptLines,
   statusRows,
 } from "../../../src/ui/gui/view.js"
-import type { ModelRef } from "../../../src/core/work-unit/types.js"
+import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 
 function ref(providerID: string, id: string): ModelRef {
   return { providerID, id }

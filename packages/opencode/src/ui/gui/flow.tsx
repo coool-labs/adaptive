@@ -4,11 +4,11 @@ import { onCleanup } from "solid-js"
 import type { JSX } from "solid-js"
 
 import { adaptiveRpc } from "../../rpc.js"
-import { runAdaptive } from "../flow/controller.js"
+import { runAdaptive } from "@coool/adaptive-core/flow/controller"
 import { OPENCODE_COPY } from "../copy.js"
-import type { AdaptiveApi, AdaptiveView } from "../flow/controller.js"
-import { errorText } from "../flow/options.js"
-import type { ModelSummary } from "../flow/tiers.js"
+import type { AdaptiveApi, AdaptiveView } from "@coool/adaptive-core/flow/controller"
+import { errorText } from "@coool/adaptive-core/flow/options"
+import type { ModelSummary } from "@coool/adaptive-core/flow/tiers"
 
 /** The slice of the GUI host the shared `/adaptive` flow runs on. */
 export type FlowHost = Pick<Context, "client" | "dialogs" | "toast" | "sessions" | "servers" | "ui">

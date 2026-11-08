@@ -103,17 +103,18 @@ Since every import is rewritten in step 4 anyway, the rename costs nothing extra
 ### Core public surface
 
 `packages/core/package.json` `exports` lists only the entries the plugins actually import.
-This follows the repo rule against speculative exports:
+Category-scoped subpaths expose the existing modules without introducing unused
+umbrella barrels:
 
 ```json
 "exports": {
-  "./routing": "./src/routing/index.ts",
-  "./health": "./src/health/index.ts",
-  "./state": "./src/state/index.ts",
-  "./execution": "./src/execution/index.ts",
-  "./flow": "./src/flow/index.ts",
-  "./status": "./src/status/index.ts",
-  "./sensors/codex-capacity": "./src/sensors/codex-capacity/index.ts",
+  "./routing/*": "./src/routing/*.ts",
+  "./health/*": "./src/health/*.ts",
+  "./state/*": "./src/state/*.ts",
+  "./execution/*": "./src/execution/*.ts",
+  "./flow/*": "./src/flow/*.ts",
+  "./status": "./src/status.ts",
+  "./sensors/*": "./src/sensors/*.ts",
   "./log": "./src/log.ts"
 }
 ```
@@ -122,7 +123,7 @@ TypeScript-only targets are safe because the core is never loaded by plain Node:
 run under vitest, and the published plugins contain the core inlined by tsdown. The core
 package has no `build` script. Its `typecheck` script is `tsc --noEmit`.
 
-`allowImportingTsExtensions` is not needed: plugins import `@coool/adaptive-core/routing`
+`allowImportingTsExtensions` is not needed: plugins import `@coool/adaptive-core/routing/scheduler/index`
 (a package path), and core's own relative imports keep today's `.js` suffixes, which
 NodeNext maps to `.ts`.
 
@@ -266,9 +267,9 @@ The release script refuses to run when:
 - `npm whoami` fails;
 - a selected package's `pack:check` manifest has a required file missing;
 - or `@coool/adaptive-core` / `@coool/adaptive-testkit` appear in the tarball's `dist/`
-  files or in its `dependencies`, `peerDependencies`, `optionalDependencies` or
-  `bundleDependencies`, which would mean the core was not bundled. (They legitimately
-  stay in `devDependencies`, which npm ignores for installs.)
+  executable files/declarations or in any dependency field, including
+  `devDependencies`. Private workspace declarations belong in the private root:
+  the packed-plugin harness resolves published devDependencies during installation.
 
 The AGENTS.md rule "version bumps are commits named exactly after the version, tagged
 `vX.Y.Z`" is replaced by "releases are made only with `npm run release`".
@@ -394,8 +395,9 @@ type-level:
   after use). It rewrites relative imports in `packages/opencode` that point into moved
   modules to `@coool/adaptive-core/<entry>`, and adds the needed re-exports to each core
   entry `index.ts` (only the names actually imported).
-- `packages/opencode/package.json` gets `"@coool/adaptive-core": "0.0.0"` in
-  devDependencies (bundled, so not a runtime dependency) plus `tsdown`.
+- The private root declares core and testkit in devDependencies. Publishable package
+  manifests must not reference these unpublished packages, even as devDependencies.
+  `packages/opencode/package.json` gets `tsdown` in devDependencies.
 - Build change: replace `tsc -p tsconfig.build.json` with `tsdown`. Entries are
   `src/index.ts`, `src/tui.tsx` and `src/rpc.ts`, built as ESM with
   `sourcemap: true` and embedded sources (pack-check requires them). `dts: true` with
@@ -405,11 +407,10 @@ type-level:
   `react-jsx`/`jsxImportSource` output. `guiconfig.ts` (vite, GUI) stays as is, and its
   core imports resolve through the workspace.
 - `pack-check` adds three checks:
-  - no `@coool/adaptive-core` / `@coool/adaptive-testkit` string in any packed `dist/`
-    file (including `.d.ts`; `.map` `sourcesContent` is the inlined core source, which
-    does not name the package)
-  - no such entry in `dependencies`, `peerDependencies`, `optionalDependencies` or
-    `bundleDependencies` (`devDependencies` is allowed and expected)
+  - no `@coool/adaptive-core` / `@coool/adaptive-testkit` string in packed executable
+    `dist/` files or declarations. Source maps retain original source imports and are
+    exempt from this string check; their embedded sources are still required.
+  - no such entry in any dependency field, including `devDependencies`
   - the export targets exist
 - **Exit:**
   - core: `npm run coverage -w @coool/adaptive-core` is at 100% from core tests alone

@@ -5,11 +5,11 @@ import { createComponent } from "solid-js"
 import { render } from "solid-js/web"
 
 import guiPlugin, { AdaptiveStatusPage } from "../src/gui.js"
-import type { Receipt } from "../src/state/receipts/index.js"
+import type { Receipt } from "@coool/adaptive-core/state/receipts/index"
 import type { StatusSnapshot } from "../src/rpc.js"
-import { defaultSettings } from "../src/state/settings/index.js"
+import { defaultSettings } from "@coool/adaptive-core/state/settings/index"
 import type { GuiApi } from "../src/ui/gui/api.js"
-import { WAITING_POLL_MS } from "../src/ui/flow/waiting.js"
+import { WAITING_POLL_MS } from "@coool/adaptive-core/flow/waiting"
 
 function tierMap(overrides: Partial<StatusSnapshot["tiers"]> = {}): StatusSnapshot["tiers"] {
   return { quick: [], standard: [], advanced: [], ...overrides }

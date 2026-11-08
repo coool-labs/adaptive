@@ -6,8 +6,8 @@
 // covers: ["ADP-024", "ADP-030", "ADP-036"]
 import { describe, expect, it } from "vitest"
 
-import { CONTINUATION_PROMPT } from "../../src/execution/index.js"
-import { SETTINGS_KEY } from "../../src/state/settings/types.js"
+import { CONTINUATION_PROMPT } from "@coool/adaptive-core/execution/index"
+import { SETTINGS_KEY } from "@coool/adaptive-core/state/settings/types"
 import {
   INTERRUPTED_USER,
   activeStorage,
@@ -24,8 +24,8 @@ import {
   succeeded,
   wireRef,
 } from "./helpers.js"
-import { parseParkedPayload } from "../../src/state/parked-work/index.js"
-import { parseReceiptsPayload } from "../../src/state/receipts/index.js"
+import { parseParkedPayload } from "@coool/adaptive-core/state/parked-work/index"
+import { parseReceiptsPayload } from "@coool/adaptive-core/state/receipts/index"
 import { storedParked, storedReceipts } from "../supervisor/helpers.js"
 
 describe("restart round-trips", () => {

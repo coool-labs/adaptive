@@ -6,8 +6,8 @@
  * stays testable against typed fixtures without importing host internals
  * beyond types.
  */
-import type { ModelRef } from "../../core/work-unit/types.js"
-import type { RequestKind } from "../../core/tier-policy/types.js"
+import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
+import type { RequestKind } from "@coool/adaptive-core/routing/tier-policy/types"
 
 /**
  * Structural mirror of the wire `Session.StructuredError` (also the classifier

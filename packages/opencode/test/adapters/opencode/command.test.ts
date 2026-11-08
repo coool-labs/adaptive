@@ -8,8 +8,8 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { adaptiveCommand } from "../../../src/adapters/opencode/command.js"
 import type { CommandSource } from "../../../src/adapters/opencode/command.js"
-import type { OperatingMode } from "../../../src/core/scheduler/types.js"
-import type { StatusSnapshot, TierResourceStatus } from "../../../src/rpc/status.js"
+import type { OperatingMode } from "@coool/adaptive-core/routing/scheduler/types"
+import type { StatusSnapshot, TierResourceStatus } from "@coool/adaptive-core/status"
 
 const HELP = [
   "Switch the mode:",

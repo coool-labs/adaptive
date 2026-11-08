@@ -21,41 +21,49 @@
  *   failures (context overflow, content policy); infrastructure failures
  *   never escalate, and the per-task budget is finite.
  */
-import { WorkUnitTracker } from "../core/work-unit/tracker.js"
+import { WorkUnitTracker } from "./tracker.js"
 import {
   sameModelRef,
   type ActiveUnit,
   type ApplyResult,
   type ModelRef,
-} from "../core/work-unit/types.js"
-import { INTERRUPT_REASONS } from "../core/work-unit/interruption.js"
-import type { InterruptReason } from "../core/work-unit/interruption.js"
-import { resolveRouting } from "../core/tier-policy/resolve.js"
-import { isTierName, nextTier } from "../core/tier-policy/types.js"
-import type { RoutingDecision, TierName, TierRequest } from "../core/tier-policy/types.js"
+} from "@coool/adaptive-core/routing/work-unit/types"
+import { INTERRUPT_REASONS } from "@coool/adaptive-core/routing/work-unit/interruption"
+import type { InterruptReason } from "@coool/adaptive-core/routing/work-unit/interruption"
+import { resolveRouting } from "@coool/adaptive-core/routing/tier-policy/resolve"
+import { isTierName, nextTier } from "@coool/adaptive-core/routing/tier-policy/types"
+import type {
+  RoutingDecision,
+  TierName,
+  TierRequest,
+} from "@coool/adaptive-core/routing/tier-policy/types"
 import {
   admit,
   forMode as schedulerForMode,
   planEscalation,
   schedulerHealthKey,
-} from "../core/scheduler/index.js"
+} from "@coool/adaptive-core/routing/scheduler/index"
 import type {
   ApplyDecision,
   EscalationEvidence,
   OperatingMode,
   SchedulerInput,
-} from "../core/scheduler/types.js"
-import { MAX_ESCALATION_EVIDENCE } from "../core/scheduler/types.js"
-import type { CandidateModel, Demand } from "../core/compatibility/types.js"
-import { checkCompatibility } from "../core/compatibility/gate.js"
-import { classifyFailure, CapacityRegistry, ResourceHealthRegistry } from "../health/index.js"
-import { sweepRecord } from "../health/resource-health/transitions.js"
-import type { ResourceRecord } from "../health/resource-health/types.js"
-import { HealthRecordStore, HEALTH_KEY } from "../state/health/index.js"
-import { CapacityReadingStore, CAPACITY_KEY } from "../state/capacity/index.js"
-import type { PersistedCapacityReading } from "../state/capacity/index.js"
-import { mergeReadings } from "../health/capacity/merge.js"
-import { resourceChain, resourceKeyID } from "../health/resource-health/key.js"
+} from "@coool/adaptive-core/routing/scheduler/types"
+import { MAX_ESCALATION_EVIDENCE } from "@coool/adaptive-core/routing/scheduler/types"
+import type { CandidateModel, Demand } from "@coool/adaptive-core/routing/compatibility/types"
+import { checkCompatibility } from "@coool/adaptive-core/routing/compatibility/gate"
+import {
+  classifyFailure,
+  CapacityRegistry,
+  ResourceHealthRegistry,
+} from "@coool/adaptive-core/health/index"
+import { sweepRecord } from "@coool/adaptive-core/health/resource-health/transitions"
+import type { ResourceRecord } from "@coool/adaptive-core/health/resource-health/types"
+import { HealthRecordStore, HEALTH_KEY } from "@coool/adaptive-core/state/health/index"
+import { CapacityReadingStore, CAPACITY_KEY } from "@coool/adaptive-core/state/capacity/index"
+import type { PersistedCapacityReading } from "@coool/adaptive-core/state/capacity/index"
+import { mergeReadings } from "@coool/adaptive-core/health/capacity/merge"
+import { resourceChain, resourceKeyID } from "@coool/adaptive-core/health/resource-health/key"
 import type {
   Assessment,
   CapacityReading,
@@ -66,19 +74,23 @@ import type {
   ProbeOutcome,
   ProbeTicket,
   ResourceKey,
-} from "../health/index.js"
-import { SettingsStore, SETTINGS_KEY } from "../state/settings/index.js"
-import type { SettingsV1 } from "../state/settings/index.js"
-import type { PatchResult, SettingsPatch } from "../state/settings/types.js"
-import { SessionModeStore, SESSION_MODES_KEY } from "../state/session-modes/index.js"
-import { TierRequestStore, TIER_REQUESTS_KEY } from "../state/tier-requests/index.js"
-import { ReceiptStore, RECEIPTS_KEY } from "../state/receipts/index.js"
-import type { Receipt, ReceiptInput, ReceiptOutcome } from "../state/receipts/types.js"
-import { buildStatus } from "../rpc/status.js"
-import type { StatusSnapshot } from "../rpc/status.js"
+} from "@coool/adaptive-core/health/index"
+import { SettingsStore, SETTINGS_KEY } from "@coool/adaptive-core/state/settings/index"
+import type { SettingsV1 } from "@coool/adaptive-core/state/settings/index"
+import type { PatchResult, SettingsPatch } from "@coool/adaptive-core/state/settings/types"
+import { SessionModeStore, SESSION_MODES_KEY } from "@coool/adaptive-core/state/session-modes/index"
+import { TierRequestStore, TIER_REQUESTS_KEY } from "@coool/adaptive-core/state/tier-requests/index"
+import { ReceiptStore, RECEIPTS_KEY } from "@coool/adaptive-core/state/receipts/index"
+import type {
+  Receipt,
+  ReceiptInput,
+  ReceiptOutcome,
+} from "@coool/adaptive-core/state/receipts/types"
+import { buildStatus } from "@coool/adaptive-core/status"
+import type { StatusSnapshot } from "@coool/adaptive-core/status"
 import { RECEIPTS_VIEW_LIMIT } from "./view.js"
-import { ParkedWorkStore, PARKED_KEY } from "../state/parked-work/index.js"
-import type { ParkedRecord } from "../state/parked-work/types.js"
+import { ParkedWorkStore, PARKED_KEY } from "@coool/adaptive-core/state/parked-work/index"
+import type { ParkedRecord } from "@coool/adaptive-core/state/parked-work/types"
 import {
   decideRetry,
   earliestUsable,
@@ -89,17 +101,17 @@ import {
   planWake,
   resourceUsableAt,
   selectResumable,
-} from "../execution/index.js"
-import { escalationDetail } from "../execution/escalation/index.js"
-import type { RecoveryOption } from "../execution/index.js"
+} from "@coool/adaptive-core/execution/index"
+import { escalationDetail } from "@coool/adaptive-core/execution/escalation/index"
+import type { RecoveryOption } from "@coool/adaptive-core/execution/index"
 import { listCandidates, sessionOps, storageSeam } from "../adapters/opencode/index.js"
 import type { EventReport } from "../adapters/opencode/index.js"
-import { CodexCapacitySensor } from "../adapters/codex-capacity/index.js"
-import { logFailOpen } from "./log.js"
+import { CodexCapacitySensor } from "@coool/adaptive-core/sensors/codex-capacity/index"
+import { logFailOpen } from "@coool/adaptive-core/log"
 import type { RetryHookInput, SupervisorOptions } from "./types.js"
 import { CODEX_PROVIDER_ID } from "./types.js"
 
-import { TIERS } from "../core/tier-policy/types.js"
+import { TIERS } from "@coool/adaptive-core/routing/tier-policy/types"
 
 /** Which tiers currently have configured resources (ADP-005). */
 function configuredTiers(settings: SettingsV1): TierName[] {

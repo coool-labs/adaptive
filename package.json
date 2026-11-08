@@ -8,13 +8,15 @@
     "url": "git+https://github.com/coool-labs/adaptive.git"
   },
   "workspaces": [
+    "packages/core",
+    "packages/testkit",
     "packages/opencode"
   ],
   "engines": {
     "node": ">=20.19.0"
   },
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "npm run build --workspaces --if-present",
     "test": "vitest run",
     "coverage": "npm run coverage --workspaces",
     "typecheck": "npm run typecheck --workspaces",
@@ -39,6 +41,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",
+    "@coool/adaptive-core": "0.0.0",
+    "@coool/adaptive-testkit": "0.0.0",
     "@eslint/js": "^9.39.5",
     "@types/node": "^24",
     "@vitest/coverage-v8": "^4",

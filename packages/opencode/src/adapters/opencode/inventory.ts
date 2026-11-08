@@ -11,8 +11,8 @@
  */
 import type { Model } from "@opencode/plugin"
 import type { ModelDomain } from "@opencode/plugin/promise/model"
-import type { CandidateModel } from "../../core/compatibility/types.js"
-import type { ModelRef } from "../../core/work-unit/types.js"
+import type { CandidateModel } from "@coool/adaptive-core/routing/compatibility/types"
+import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 
 /** The model surface the inventory actually uses (structural — fixture-friendly). */
 export type ModelSource = Pick<ModelDomain, "transform">

@@ -7,8 +7,8 @@
  * resume, one resume per session is in flight, and the instance that hears
  * the host is preferred for wake sweeps.
  */
-import { sameModelRef, type ModelRef } from "../../core/work-unit/types.js"
-import type { TierName } from "../../core/tier-policy/types.js"
+import { sameModelRef, type ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
+import type { TierName } from "@coool/adaptive-core/routing/tier-policy/types"
 
 /** How long another instance's owned switch or prompt stays recognizable. */
 export const MARK_TTL_MS = 60_000

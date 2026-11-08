@@ -1,10 +1,10 @@
 // covers: ["ADP-007", "ADP-013", "ADP-019", "ADP-023", "ADP-024", "ADP-029", "ADP-031"]
 import { describe, expect, it, vi } from "vitest"
-import { SETTINGS_KEY } from "../../src/state/settings/types.js"
-import { RECEIPTS_KEY } from "../../src/state/receipts/types.js"
-import { parseParkedPayload } from "../../src/state/parked-work/index.js"
-import { parseReceiptsPayload } from "../../src/state/receipts/index.js"
-import { CONTINUATION_PROMPT } from "../../src/execution/index.js"
+import { SETTINGS_KEY } from "@coool/adaptive-core/state/settings/types"
+import { RECEIPTS_KEY } from "@coool/adaptive-core/state/receipts/types"
+import { parseParkedPayload } from "@coool/adaptive-core/state/parked-work/index"
+import { parseReceiptsPayload } from "@coool/adaptive-core/state/receipts/index"
+import { CONTINUATION_PROMPT } from "@coool/adaptive-core/execution/index"
 import { wireRef } from "../adapters/opencode/helpers.js"
 import {
   activeStorage,

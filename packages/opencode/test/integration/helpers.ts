@@ -4,11 +4,11 @@
  * the clock, storage, and host session IO are faked. Reuses the supervisor
  * unit-test fixtures instead of duplicating them.
  */
-import type { ModelRef } from "../../src/core/work-unit/types.js"
+import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 import type { EventReport } from "../../src/adapters/opencode/index.js"
-import { migrateSettings } from "../../src/state/settings/parse.js"
-import { parseReceiptsPayload } from "../../src/state/receipts/index.js"
-import { parseParkedPayload } from "../../src/state/parked-work/index.js"
+import { migrateSettings } from "@coool/adaptive-core/state/settings/parse"
+import { parseReceiptsPayload } from "@coool/adaptive-core/state/receipts/index"
+import { parseParkedPayload } from "@coool/adaptive-core/state/parked-work/index"
 import {
   activeStorage,
   FakeSupervisorSession,
