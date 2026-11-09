@@ -70,6 +70,19 @@ it("verifies bumped files before committing, tags both packages before publishin
   ])
 })
 
+it("leaves publication to the human when asked, keeping commit, tags and push", () => {
+  const { calls, effects } = fixture()
+  executeRelease(plan, effects, { publish: false })
+  expect(calls).toEqual([
+    "prepare",
+    "verify:opencode,pi",
+    "commit",
+    "tag:opencode",
+    "tag:pi",
+    "push",
+  ])
+})
+
 it("restores uncommitted files when preparation or verification fails", () => {
   for (const failure of ["prepare", "verify:opencode,pi"]) {
     const { calls, effects } = fixture(failure)

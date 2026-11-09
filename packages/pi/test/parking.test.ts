@@ -5,6 +5,7 @@ import {
   cancelPark,
   claimPark,
   findPark,
+  MAX_WAKES,
   parseParked,
   savePark,
   waitUntil,
@@ -39,11 +40,16 @@ it("claims once under the file transaction, rejects early, cancelled, replaced a
     await Promise.all([claimPark(file, record, 2_000), claimPark(file, record, 2_000)]),
   ).toEqual([true, false])
   expect(await findPark(file, "s")).toBeUndefined()
-  await savePark(file, { ...record, token: "new", wakes: 3 })
+  await savePark(file, { ...record, token: "new", wakes: MAX_WAKES })
   expect(await claimPark(file, record, 3_000)).toBe(false)
+  // A spent automatic budget still blocks automatic claims…
   expect(await claimPark(file, { ...record, token: "new" }, 3_000)).toBe(false)
   await cancelPark(file, "s")
   expect(await claimPark(file, record, 3_000)).toBe(false)
+  expect(await findPark(file, "s")).toBeUndefined()
+  // …but a manual resume bypasses it.
+  await savePark(file, { ...record, token: "new", wakes: MAX_WAKES })
+  expect(await claimPark(file, { ...record, token: "new" }, 3_000, true)).toBe(true)
   expect(await findPark(file, "s")).toBeUndefined()
 })
 
@@ -75,7 +81,7 @@ it("hard-errors on malformed metadata without changing it", async () => {
     token: ["", null],
     tier: ["other", 1],
     due: [-1, Infinity, "2"],
-    wakes: [-1, 4, 1.2, "0"],
+    wakes: [-1, 1.2, "0"],
     claimed: [undefined, "true"],
   })) {
     for (const value of values) expect(() => parseParked({ ...record, [key]: value })).toThrow(key)

@@ -637,7 +637,7 @@ it("parks before dispatch in an owned headless input handler and submits the inp
     expect(harness.waits.reduce((sum, delay) => sum + delay, 0)).toBe(181_000)
     expect(
       JSON.parse(await readFile(join(harness.cwd, "adaptive", "parked.json"), "utf8")),
-    ).toMatchObject({ records: [{ claimed: true, wakes: 1 }] })
+    ).toMatchObject({ records: [{ claimed: true, wakes: 0 }] })
     expect(continuations(session)).toHaveLength(0)
   })
 })
@@ -664,7 +664,7 @@ it("parks after durable tool work and resumes through one hidden continuation, n
     expect(harness.waits.reduce((sum, delay) => sum + delay, 0)).toBe(901_000)
     expect(
       JSON.parse(await readFile(join(harness.cwd, "adaptive", "parked.json"), "utf8")),
-    ).toMatchObject({ records: [{ claimed: true, wakes: 1 }] })
+    ).toMatchObject({ records: [{ claimed: true, wakes: 0 }] })
   })
 })
 

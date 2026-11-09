@@ -792,13 +792,17 @@ wakes do not.
 - Optional, after the release: list it on pi.dev/packages.
 
 Status: README, CHANGELOG and TEST_STRATEGY are written; the AGENTS.md Pi facts are
-recorded. Final acceptance fixes and unskipped verification precede removing
-`private` in its own commit. Publication and the clean-install smoke then require
-maintainer approval and npm authentication. Initial-prompt parks now let Pi save
-the normal user message before parking at `route()`, with no provider dispatch;
-real SDK and PTY regressions cover restart without prompt replay as well as
-durable mid-run tool effects. Cancelling an initial park leaves its saved user
-message in Pi history.
+recorded. Final acceptance fixes (durable initial parks, effective-mode recovery,
+pinned escalation opt-in, variant-aware full-context admission and observation,
+one-key status footer, resumed notes) are implemented and verified end to end at
+`a64acc9` (`test-artifacts/m8/verify-all-acceptance.log`, `verify: ok (core,
+testkit, opencode, pi; skipped: none)`); `private` was removed in its own commit.
+Initial-prompt parks let Pi save the normal user message before parking at
+`route()`, with no provider dispatch; real SDK and PTY regressions cover restart
+without prompt replay as well as durable mid-run tool effects. Cancelling an
+initial park leaves its saved user message in Pi history. Publication
+(`npm run release -- --pi minor`, 0.0.0 → 0.1.0) and the clean-install smoke now
+require maintainer approval and npm authentication.
 
 ## Effort
 

@@ -70,7 +70,7 @@ export function showParked(ctx: RouteContext, record: Parked): void {
   ctx.ui?.setWidget("adaptive", [
     `Parked: no available ${record.tier} model`,
     exhausted
-      ? "Automatic wakes used up · /adaptive resume tries now"
+      ? "Automatic retries used up · /adaptive resume tries now"
       : `Resumes ${when} · /adaptive resume tries now`,
     "Send a message or pick a model to cancel.",
   ])

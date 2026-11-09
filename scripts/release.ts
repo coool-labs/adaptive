@@ -95,12 +95,16 @@ function packages(): ReleasePackage[] {
   })
 }
 
-function requireReleaseEnvironment(): void {
+function requireReleaseEnvironment(publish: boolean): void {
   if (capture("git", ["status", "--porcelain"]).length !== 0)
     throw new Error("release: working tree must be clean")
   if (capture("git", ["branch", "--show-current"]) !== "main")
     throw new Error("release: switch to main first")
-  capture("npm", ["whoami"])
+  // Registry auth is only needed by the publish step itself; --no-publish hands
+  // publication to a human, so an agent shell without npm credentials still works.
+  if (publish) {
+    capture("npm", ["whoami"])
+  }
 }
 
 function verify(ids: readonly Plugin[]): void {
@@ -122,7 +126,7 @@ async function main(): Promise<void> {
   if (options.mode === "status") return
 
   if (options.mode === "resume") {
-    requireReleaseEnvironment()
+    requireReleaseEnvironment(true)
     const subject = capture("git", ["log", "-1", "--format=%s"])
     if (!subject.startsWith("release: ")) throw new Error("release: HEAD is not a release commit")
     const expected = subject.slice("release: ".length).split(" ")
@@ -159,7 +163,7 @@ async function main(): Promise<void> {
   }
 
   const dry = options.mode === "dry-run"
-  if (!dry) requireReleaseEnvironment()
+  if (!dry) requireReleaseEnvironment(options.publish)
   const bumps: Partial<Record<Plugin, Bump>> = { ...options.bumps }
   const pending = pendingBumps(inventory, { ...options, yes: dry || options.yes })
   for (const [id, bump] of pending) {
@@ -225,30 +229,39 @@ async function main(): Promise<void> {
   }
   generated.set("package-lock.json", lock)
   const originals = new Map([...generated.keys()].map((file) => [file, readFileSync(file, "utf8")]))
-  requireReleaseEnvironment()
-  executeRelease(plan, {
-    prepare() {
-      for (const [file, text] of generated) writeFileSync(file, text)
-      run("npm", ["exec", "--", "prettier", "--write", ...generated.keys()])
+  requireReleaseEnvironment(options.publish)
+  executeRelease(
+    plan,
+    {
+      prepare() {
+        for (const [file, text] of generated) writeFileSync(file, text)
+        run("npm", ["exec", "--", "prettier", "--write", ...generated.keys()])
+      },
+      verify,
+      restore() {
+        for (const [file, text] of originals) writeFileSync(file, text)
+      },
+      commit() {
+        run("git", ["add", "--", ...generated.keys()])
+        run("git", ["commit", "-m", releaseCommitMessage(plan)])
+      },
+      tag(release) {
+        run("git", ["tag", "-a", release.tag, "-m", release.tag])
+      },
+      publish(id) {
+        run("npm", ["publish", "--workspace", `packages/${id}`, "--access", "public"])
+      },
+      push() {
+        run("git", ["push", "--follow-tags"])
+      },
     },
-    verify,
-    restore() {
-      for (const [file, text] of originals) writeFileSync(file, text)
-    },
-    commit() {
-      run("git", ["add", "--", ...generated.keys()])
-      run("git", ["commit", "-m", releaseCommitMessage(plan)])
-    },
-    tag(release) {
-      run("git", ["tag", "-a", release.tag, "-m", release.tag])
-    },
-    publish(id) {
-      run("npm", ["publish", "--workspace", `packages/${id}`, "--access", "public"])
-    },
-    push() {
-      run("git", ["push", "--follow-tags"])
-    },
-  })
+    { publish: options.publish },
+  )
+  if (!options.publish) {
+    console.log("release: committed and pushed; publish manually with:")
+    for (const release of plan)
+      console.log(`  npm publish --workspace packages/${release.id} --access public`)
+  }
 }
 
 try {

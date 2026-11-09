@@ -101,16 +101,17 @@ export function parkingHandlers(
     record: Parked,
     saved: Payload,
     now = sources.parking.clock(),
+    manual = false,
   ) => {
     const owned = generation
-    if (!(await claimPark(sources.parking.file, record, now))) {
+    if (!(await claimPark(sources.parking.file, record, now, manual))) {
       clear(ctx)
       return
     }
     if (owned !== generation) return
     clear(ctx)
     if (saved.input !== undefined) {
-      resumedInput = { ...saved.state, wakes: record.wakes + 1 }
+      resumedInput = { ...saved.state, wakes: record.wakes, wakeToken: record.token }
       const content = [
         { type: "text" as const, text: saved.input.text },
         ...(saved.input.images ?? []),
@@ -128,7 +129,8 @@ export function parkingHandlers(
             tier: record.tier,
             escalations: saved.state.escalations,
             restarts: saved.state.restarts,
-            wakes: record.wakes + 1,
+            wakes: record.wakes,
+            wakeToken: record.token,
             tried: [],
           },
         },
@@ -171,6 +173,17 @@ export function parkingHandlers(
     pi.appendEntry(PARK_ENTRY, saved)
     await savePark(sources.parking.file, record)
     card(ctx, record)
+    // Give-up is a terminal event: no auto wake will fire again, so say so once.
+    if (record.wakes >= MAX_WAKES) {
+      try {
+        appendNote(pi, {
+          version: 1,
+          text: `Gave up after ${String(record.wakes)} failed resumes · /adaptive resume tries now`,
+        })
+      } catch (error) {
+        logFailOpen("parking", error)
+      }
+    }
     return { record, saved }
   }
   const wait = async (ctx: RouteContext, due: number, signal?: AbortSignal) => {
@@ -333,8 +346,9 @@ export function parkingHandlers(
       return
     }
     stop()
-    // Resuming early is a request to try again now; routing parks again if the tier is still blocked.
-    await wake(ctx, record, saved, record.due)
+    // Resuming early is a request to try again now; routing parks again if the tier is still
+    // blocked. Manual resume bypasses the automatic give-up budget — the person decided.
+    await wake(ctx, record, saved, record.due, true)
   }
   return {
     input,
@@ -358,6 +372,7 @@ export function parkingHandlers(
           escalations: recovery.escalations,
           restarts: recovery.restarts,
           wakes: recovery.wakes ?? 0,
+          ...(recovery.wakeToken === undefined ? {} : { wakeToken: recovery.wakeToken }),
           tried: recovery.tried,
         }
         const prepared = await prepareAdmission(
@@ -429,7 +444,14 @@ export function parkingHandlers(
         if (owned !== generation) return undefined
         return {
           ...plan,
-          state: { ...state, unit: sources.newId(), wakes: record.wakes + 1, hops: 0, tried: [] },
+          state: {
+            ...state,
+            unit: sources.newId(),
+            wakes: record.wakes,
+            wakeToken: record.token,
+            hops: 0,
+            tried: [],
+          },
         }
       } catch (error) {
         if (error instanceof WaitCancelled && owned === generation) await cancel(ctx)

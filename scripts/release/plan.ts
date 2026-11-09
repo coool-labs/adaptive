@@ -48,6 +48,8 @@ export interface ReleaseOptions {
   skip: readonly Plugin[]
   notes: Partial<Record<Plugin, string>>
   yes: boolean
+  /** False stops after commit+tag+push so a human runs `npm publish` (OTP flows). */
+  publish: boolean
 }
 
 function isPlugin(value: string): value is Plugin {
@@ -59,7 +61,14 @@ function isBump(value: string): value is Bump {
 }
 
 export function parseReleaseArgs(args: readonly string[]): ReleaseOptions {
-  const options: ReleaseOptions = { mode: "release", bumps: {}, skip: [], notes: {}, yes: false }
+  const options: ReleaseOptions = {
+    mode: "release",
+    bumps: {},
+    skip: [],
+    notes: {},
+    yes: false,
+    publish: true,
+  }
   const skip = new Set<Plugin>()
   const modes = new Set<ReleaseMode>()
   // Flags that take a value pull it from the same iterator the loop consumes.
@@ -69,6 +78,8 @@ export function parseReleaseArgs(args: readonly string[]): ReleaseOptions {
     const plugin = arg.startsWith("--") ? arg.slice(2) : ""
     if (arg === "--yes") {
       options.yes = true
+    } else if (arg === "--no-publish") {
+      options.publish = false
     } else if (mode !== undefined) {
       modes.add(mode)
     } else if (arg === "--notes") {
@@ -95,6 +106,8 @@ export function parseReleaseArgs(args: readonly string[]): ReleaseOptions {
   if (modes.size > 1) throw new Error("Use only one of --dry-run, --resume, --status")
   const [selected] = modes
   if (selected !== undefined) options.mode = selected
+  if (!options.publish && options.mode === "resume")
+    throw new Error("--no-publish: resume always publishes the missing versions")
   options.skip = [...skip]
   for (const plugin of skip) {
     if (options.bumps[plugin] !== undefined)

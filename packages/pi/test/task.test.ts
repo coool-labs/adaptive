@@ -104,6 +104,8 @@ it("parses persisted task state and names the malformed field", () => {
   expect(parseTaskState({ ...state, hops: 2, wakes: 1 })).toMatchObject({ hops: 2, wakes: 1 })
   expect(() => parseTaskState({ ...state, hops: -1 })).toThrow("hops")
   expect(() => parseTaskState({ ...state, wakes: "1" })).toThrow("wakes")
+  expect(() => parseTaskState({ ...state, wakeToken: "" })).toThrow("wakeToken")
+  expect(() => parseTaskState({ ...state, wakeToken: 1 })).toThrow("wakeToken")
 })
 
 it("reads the latest router state of the matching virtual model only", () => {
@@ -444,6 +446,50 @@ it("offers parking, not an immediate restart, after the restart budget is spent"
       branch: [routerState("auto", { ...state, restarts: 2, wakes: 3 }), user, failure(QUOTA)],
     }),
   ).toMatchObject({ wakes: 3 })
+})
+
+it("burns a wake only when the resumed state carries a wake token", () => {
+  const input = {
+    id: "auto" as const,
+    escalateFromPinned: false,
+    settings,
+    available: [standard, advanced],
+    tool: ESCALATE,
+    newId: ids(),
+  }
+  const resumed = { ...state, restarts: 2, wakes: 1, wakeToken: "p1" }
+  // A delivered wake whose run failed again consumes its round and passes the token on.
+  expect(
+    parkingAfterRun({ ...input, branch: [routerState("auto", resumed), user, failure(QUOTA)] }),
+  ).toMatchObject({ wakes: 2, wakeToken: "p1" })
+  // A fresh park without a wake token consumes nothing.
+  expect(
+    parkingAfterRun({
+      ...input,
+      branch: [routerState("auto", { ...state, restarts: 2 }), user, failure(QUOTA)],
+    }),
+  ).toMatchObject({ wakes: 0 })
+  // Escalation and restart units carry the budget through unchanged.
+  const mid = { ...state, restarts: 1, wakes: 1, wakeToken: "p1" }
+  const escalated = escalationAfterRun({
+    ...input,
+    branch: [routerState("auto", mid), user, failure(overflow)],
+  })
+  const restarted = restartAfterRun({
+    ...input,
+    branch: [routerState("auto", mid), user, failure(QUOTA)],
+  })
+  expect(escalated).toMatchObject({ wakes: 1, wakeToken: "p1" })
+  expect(restarted).toMatchObject({ wakes: 1, wakeToken: "p1" })
+  expect(
+    planRoute({
+      id: "auto",
+      reason: "continuation",
+      state: resumed,
+      branch: [continuation(restarted)],
+      newId: ids(),
+    }).state,
+  ).toMatchObject({ wakes: 1, wakeToken: "p1" })
 })
 
 it("redirects a native retry after an infra failure within the tier, avoiding tried models", () => {

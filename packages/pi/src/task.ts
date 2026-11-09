@@ -58,7 +58,10 @@ export interface TaskState {
   readonly escalations: number
   readonly restarts: number
   readonly hops?: number
+  /** Failed wake deliveries of this task (the give-up budget, ADP-024). */
   readonly wakes?: number
+  /** Token of the park this task was resumed from, when it was. */
+  readonly wakeToken?: string
   /** Models this unit failed over from; new admissions in the unit avoid them. */
   readonly tried: readonly ModelRef[]
   /** Token of the last owned continuation already turned into a unit. */
@@ -73,6 +76,8 @@ export interface Recovery {
   readonly escalations: number
   readonly restarts: number
   readonly wakes?: number
+  /** Set when this continuation resumes parked work (its park's token). */
+  readonly wakeToken?: string
   /** Models the new unit starts out avoiding (the one that just failed). */
   readonly tried: readonly ModelRef[]
 }
@@ -116,10 +121,14 @@ function count(value: unknown, key: string, label: string): number {
 function parkingCounts(
   value: unknown,
   label: string,
-): { readonly wakes?: number; readonly hops?: number } {
+): { readonly wakes?: number; readonly hops?: number; readonly wakeToken?: string } {
+  const token = field(value, "wakeToken")
+  if (token !== undefined && (typeof token !== "string" || token.length === 0))
+    throw new Error(`${label}: wakeToken must be a non-empty string`)
   return {
     ...(field(value, "wakes") === undefined ? {} : { wakes: count(value, "wakes", label) }),
     ...(field(value, "hops") === undefined ? {} : { hops: count(value, "hops", label) }),
+    ...(token === undefined ? {} : { wakeToken: token }),
   }
 }
 
@@ -315,6 +324,7 @@ export function planRoute(input: PlanRouteInput): RoutePlan {
       escalations: recovery.escalations,
       restarts: recovery.restarts,
       ...(recovery.wakes === undefined ? {} : { wakes: recovery.wakes }),
+      ...(recovery.wakeToken === undefined ? {} : { wakeToken: recovery.wakeToken }),
       tried: recovery.tried,
       consumed: recovery.token,
     },
@@ -405,6 +415,7 @@ export function escalationAfterRun(input: AfterRunInput): Recovery | undefined {
     escalations: state.escalations + 1,
     restarts: state.restarts,
     ...(state.wakes === undefined ? {} : { wakes: state.wakes }),
+    ...(state.wakeToken === undefined ? {} : { wakeToken: state.wakeToken }),
     tried: [],
   }
 }
@@ -427,24 +438,31 @@ export function restartAfterRun(input: AfterRunInput): Recovery | undefined {
     escalations: state.escalations,
     restarts: state.restarts + 1,
     ...(state.wakes === undefined ? {} : { wakes: state.wakes }),
+    ...(state.wakeToken === undefined ? {} : { wakeToken: state.wakeToken }),
     // A failure without provider metadata names no model to avoid; an empty
     // reference would make the continuation unparseable.
     tried: [run.model].filter((ref) => ref.providerID !== "" && ref.id !== ""),
   }
 }
 
-/** A spent immediate-restart budget may still wait for an actual tier reset. */
+/**
+ * A spent immediate-restart budget may still wait for an actual tier reset.
+ * A task that was resumed from a park (wakeToken) and failed again has
+ * consumed one wake of the give-up budget; a task that never woke has not.
+ */
 export function parkingAfterRun(input: AfterRunInput): Recovery | undefined {
   const run = failedRun(input)
   if (!run?.classification.failoverEligible || run.state.restarts < MAX_RESTARTS_PER_TASK)
     return undefined
+  const { wakes, wakeToken } = run.state
   return {
     task: run.state.task,
     token: input.newId(),
     tier: run.state.tier,
     escalations: run.state.escalations,
     restarts: run.state.restarts,
-    wakes: run.state.wakes ?? 0,
+    wakes: (wakes ?? 0) + (wakeToken === undefined ? 0 : 1),
+    ...(wakeToken === undefined ? {} : { wakeToken }),
     tried: [],
   }
 }

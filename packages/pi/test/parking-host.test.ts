@@ -9,7 +9,14 @@ import { timer } from "../src/host/timer.js"
 import { withHealth } from "../src/health.js"
 import { observeCodexHeaders } from "../src/capacity.js"
 import { readReceipts } from "../src/receipts.js"
-import { cancelPark, findPark, PARK_ENTRY, savePark, type Parked } from "../src/parking.js"
+import {
+  cancelPark,
+  findPark,
+  MAX_WAKES,
+  PARK_ENTRY,
+  savePark,
+  type Parked,
+} from "../src/parking.js"
 import type { AdaptiveSources } from "../src/host/extension.js"
 import type { BranchEntry, TaskState } from "../src/task.js"
 import { memoryFile } from "./memory-file.js"
@@ -34,6 +41,8 @@ const state: TaskState = {
 }
 const plan = { tier: "standard" as const, state, sticky: false, exclude: [] }
 const request = { model, reason: "user" as const, thinkingLevel: "off" as const, messages: [] }
+/** Park tokens come from the fixture's sequential id source. */
+const tokenPattern = /^\d+$/
 const admission = {
   decision: { kind: "park" as const, reason: "all-blocked" as const },
   due: 901_000,
@@ -200,7 +209,10 @@ it("parks later input before dispatch, keeps it only in the session, and wakes i
     [{ type: "text", text: event.text }],
     { expandPromptTemplates: false },
   )
-  expect(f.handlers.takeInput()?.wakes).toBe(1)
+  expect(f.handlers.takeInput()).toMatchObject({
+    wakes: 0,
+    wakeToken: expect.stringMatching(tokenPattern) as unknown,
+  })
   expect(f.handlers.takeInput()).toBeUndefined()
   expect(await findPark(f.file, "session")).toBeUndefined()
   await vi.runAllTimersAsync()
@@ -237,7 +249,12 @@ it("re-arms a future park on restart, then sends only a hidden continuation", as
   expect(f.host.sendMessage.mock.calls[0]?.[0]).toMatchObject({
     customType: "adaptive.continuation",
     display: false,
-    details: { task: "t", tier: "standard", wakes: 1 },
+    details: {
+      task: "t",
+      tier: "standard",
+      wakes: 0,
+      wakeToken: expect.stringMatching(tokenPattern) as unknown,
+    },
   })
   expect(f.host.sendMessage.mock.calls[0]?.[1]).toEqual({ triggerTurn: true })
 })
@@ -257,7 +274,12 @@ it("asks on an overdue restart, honours decline, and caps automatic wakes", asyn
   vi.setSystemTime(1_000)
   const f = fixture()
   expect(
-    await f.handlers.blocked({ ...plan, state: { ...state, wakes: 3 } }, admission, request, f.ctx),
+    await f.handlers.blocked(
+      { ...plan, state: { ...state, wakes: MAX_WAKES } },
+      admission,
+      request,
+      f.ctx,
+    ),
   ).toBeUndefined()
   await vi.runAllTimersAsync()
   await f.handlers.sessionStart(f.ctx)
@@ -302,7 +324,7 @@ it("awaits headless parks within the owning route and persists the wake budget",
     hasUI: false,
   })
   await vi.advanceTimersByTimeAsync(900_000)
-  expect(await pending).toMatchObject({ state: { wakes: 1, hops: 0, task: "t", tried: [] } })
+  expect(await pending).toMatchObject({ state: { wakes: 0, hops: 0, task: "t", tried: [] } })
   expect(f.host.sendMessage).not.toHaveBeenCalled()
   expect(f.host.sendUserMessage).not.toHaveBeenCalled()
 })
@@ -596,7 +618,7 @@ it("parks terminal quota failures before adding a continuation, then wakes with 
   expect(f.host.sendMessage).toHaveBeenCalledTimes(1)
   expect(f.host.sendMessage.mock.calls[0]?.[0]).toMatchObject({
     display: false,
-    details: { restarts: 1, wakes: 1 },
+    details: { restarts: 1, wakes: 0, wakeToken: expect.stringMatching(tokenPattern) as unknown },
   })
   expect(f.host.sendMessage.mock.calls[0]?.[1]).toEqual({ triggerTurn: true })
 })
@@ -619,9 +641,9 @@ it("keeps headless terminal recovery owned, bounded, and abortable", async () =>
   vi.setSystemTime(1_000)
   const f = fixture()
   await f.limited()
-  expect(await f.handlers.recover({ ...recovery, wakes: 3 }, { ...f.ctx, mode: "print" })).toBe(
-    true,
-  )
+  expect(
+    await f.handlers.recover({ ...recovery, wakes: MAX_WAKES }, { ...f.ctx, mode: "print" }),
+  ).toBe(true)
   expect(vi.getTimerCount()).toBe(0)
 })
 
@@ -726,7 +748,24 @@ it("leaves terminal recovery to the newer owner when it raced a shutdown", async
   }
 })
 
-it("holds after three automatic wakes rather than looping when a tier cannot recover", async () => {
+it("keeps re-arming still-blocked wake cycles without burning the resume budget", async () => {
+  const f = fixture()
+  // Still-blocked wake cycles re-park for free: twice the give-up budget, still fresh.
+  for (let round = 1; round <= 2 * MAX_WAKES; round += 1) {
+    vi.setSystemTime(1_000)
+    const pending = f.blocked()
+    await pending
+    await vi.advanceTimersByTimeAsync(901_000)
+    expect(await findPark(f.file, "session")).toBeUndefined()
+    expect(f.host.sendMessage.mock.calls[round - 1]?.[0]).toMatchObject({
+      customType: "adaptive.continuation",
+      details: { wakes: 0 },
+    })
+  }
+  expect(f.host.sendMessage).toHaveBeenCalledTimes(2 * MAX_WAKES)
+})
+
+it("bounds the headless re-wait loop without burning the resume budget", async () => {
   const f = fixture()
   const [auto] = virtualModels(f.sources, () => [], f.handlers)
   await Promise.all([
@@ -738,12 +777,59 @@ it("holds after three automatic wakes rather than looping when a tier cannot rec
         modelRegistry: { getAvailable: () => [] },
       }),
     ).rejects.toThrow("no-compatible-resource"),
-    vi.advanceTimersByTimeAsync(900_000),
+    vi.runAllTimersAsync(),
   ])
-  expect(await findPark(f.file, "session")).toMatchObject({ wakes: 3, claimed: false })
+  // The saved state survives the throw so the settling turn can re-park it.
+  const saved = f.branch.filter((entry) => entry.customType === "pi.virtual-model-state").at(-1)
+  expect(saved).toMatchObject({
+    data: { state: { wakes: 0, wakeToken: expect.stringMatching(tokenPattern) as unknown } },
+  })
+})
+
+it("consumes a wake only when a resumed run fails again, then gives up visibly", async () => {
+  const f = fixture()
+  await f.limited()
+  // Five woken rounds that fail again: the budget drains one per failed delivery
+  // (parkingAfterRun passes wakes+1 to recover when the resumed state carries a wake token).
+  for (let wakes = 0; wakes < MAX_WAKES; wakes += 1) {
+    expect(
+      await f.handlers.recover({ ...recovery, wakes: wakes + 1, wakeToken: "tk" }, f.ctx),
+    ).toBe(true)
+  }
+  expect(await findPark(f.file, "session")).toMatchObject({ wakes: MAX_WAKES, claimed: false })
+  expect(f.ctx.ui.setWidget).toHaveBeenLastCalledWith(
+    "adaptive",
+    expect.arrayContaining(["Automatic retries used up · /adaptive resume tries now"]),
+  )
+  const notes = f.branch
+    .filter((entry) => entry.customType === NOTE_ENTRY)
+    .map((entry) => entry.data)
+  expect(notes).toContainEqual({
+    version: 1,
+    text: expect.stringContaining(
+      "Gave up after 5 failed resumes · /adaptive resume tries now",
+    ) as unknown,
+  })
+  await vi.runAllTimersAsync()
   expect(f.host.sendMessage).not.toHaveBeenCalled()
+})
+
+it("manual resume still dispatches a given-up park", async () => {
+  const f = fixture()
+  await f.limited()
+  expect(await f.handlers.recover({ ...recovery, wakes: MAX_WAKES, wakeToken: "tk" }, f.ctx)).toBe(
+    true,
+  )
   expect(vi.getTimerCount()).toBe(0)
-  expect(resumedNotes(f.branch)).toEqual([resumedNote, resumedNote, resumedNote])
+  await f.handlers.resume(f.ctx)
+  expect(f.host.sendMessage).toHaveBeenCalledTimes(1)
+  expect(f.host.sendMessage.mock.calls[0]?.[0]).toMatchObject({
+    customType: "adaptive.continuation",
+    details: { wakes: MAX_WAKES, wakeToken: expect.stringMatching(tokenPattern) as unknown },
+  })
+  expect(await findPark(f.file, "session")).toBeUndefined()
+  await vi.runAllTimersAsync()
+  expect(f.host.sendMessage).toHaveBeenCalledTimes(1)
 })
 
 it("receipts a park without a transcript note when quiet, and still parks if the receipt fails", async () => {
@@ -776,7 +862,7 @@ it("resumes a parked task on request, and says so when nothing is parked", async
   expect(f.host.sendMessage).toHaveBeenCalledTimes(1)
   expect(f.host.sendMessage.mock.calls[0]?.[0]).toMatchObject({
     customType: "adaptive.continuation",
-    details: { task: "t", wakes: 1 },
+    details: { task: "t", wakes: 0, wakeToken: expect.stringMatching(tokenPattern) as unknown },
   })
   expect(await findPark(f.file, "session")).toBeUndefined()
   await vi.runAllTimersAsync()
@@ -891,4 +977,21 @@ it("does not note a continuation the host rejected", async () => {
   await vi.advanceTimersByTimeAsync(900_000)
   expect(resumedNotes(f.branch)).toEqual([])
   expect(logged).toHaveBeenCalledWith(expect.stringContaining("continuation rejected"))
+})
+
+it("fails open when the give-up note cannot be written", async () => {
+  const f = fixture()
+  await f.limited()
+  const logged = vi.spyOn(console, "error").mockImplementation(() => undefined)
+  let calls = 0
+  f.host.appendEntry.mockImplementation((customType: string, data: unknown) => {
+    calls += 1
+    if (calls > 1) throw new Error("note failed")
+    f.branch.push({ type: "custom", customType, data })
+  })
+  expect(await f.handlers.recover({ ...recovery, wakes: MAX_WAKES, wakeToken: "tk" }, f.ctx)).toBe(
+    true,
+  )
+  expect(await findPark(f.file, "session")).toMatchObject({ wakes: MAX_WAKES })
+  expect(logged).toHaveBeenCalledWith(expect.stringContaining("note failed"))
 })

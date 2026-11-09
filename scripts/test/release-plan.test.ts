@@ -53,6 +53,7 @@ it("parses release modes, bumps, skips, notes and confirmation", () => {
     skip: [],
     notes: {},
     yes: false,
+    publish: true,
   })
   expect(
     parseReleaseArgs([
@@ -71,9 +72,11 @@ it("parses release modes, bumps, skips, notes and confirmation", () => {
     skip: ["pi"],
     notes: { opencode: "notes.md" },
     yes: true,
+    publish: true,
   })
   expect(parseReleaseArgs(["--resume"]).mode).toBe("resume")
   expect(parseReleaseArgs(["--status"]).mode).toBe("status")
+  expect(parseReleaseArgs(["--no-publish"]).publish).toBe(false)
 })
 
 it("rejects malformed release arguments with the offending flag named", () => {
@@ -92,6 +95,9 @@ it("rejects malformed release arguments with the offending flag named", () => {
   expect(() => parseReleaseArgs(["publish"])).toThrow("Unknown argument: publish")
   expect(() => parseReleaseArgs(["--pi", "skip", "--pi", "patch"])).toThrow(
     "--pi: given both a bump and skip",
+  )
+  expect(() => parseReleaseArgs(["--resume", "--no-publish"])).toThrow(
+    "--no-publish: resume always publishes the missing versions",
   )
 })
 

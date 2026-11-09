@@ -107,7 +107,8 @@ never published. Explicit choices work without prompts:
 `npm run release -- --opencode patch --pi minor --notes opencode=notes/opencode.md --notes pi=notes/pi.md --yes`.
 Omit a nonexistent package or use `--pi skip` to leave an existing package unchanged.
 Notes files must be committed or outside the working tree; the real release
-requires a clean `main` branch and npm authentication. Without `--notes`, set
+requires a clean `main` branch, and npm authentication unless `--no-publish`
+hands publication to a human. Without `--notes`, set
 `EDITOR`; drafts survive failed verification in `test-artifacts/release/`.
 
 The CLI bumps manifests and the lockfile, updates changelogs, and runs full scoped
@@ -121,3 +122,10 @@ Registry errors other than a confirmed E404 stop recovery.
 
 Dry-run only previews: it does not write files, verify artifacts, authenticate,
 create tags, publish, or push. Use `npm run verify -- --all` for release evidence.
+
+Agents can drive the whole release without prompts: explicit bumps, `--notes`,
+and `--yes` cover every interactive step. Add `--no-publish` for the supervised
+split — the CLI then stops after commit, tags and push and prints the exact
+`npm publish` commands for a human to run (e.g. when 2FA requires an interactive
+OTP). A later `npm run release -- --resume` publishes only versions still
+missing from the registry, so it completes — or harmlessly confirms — that split.

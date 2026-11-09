@@ -33,7 +33,7 @@ it("claims one durable wake across independent Pi worker processes", async () =>
       "false",
       "true",
     ])
-    expect(await jsonFile(path).read()).toMatchObject({ records: [{ claimed: true, wakes: 1 }] })
+    expect(await jsonFile(path).read()).toMatchObject({ records: [{ claimed: true, wakes: 0 }] })
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

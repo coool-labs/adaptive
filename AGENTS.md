@@ -203,3 +203,7 @@ clean — not merely when it compiles.
 - Release only with `npm run release`. It verifies bumped artifacts before the
   release commit and uses per-package tags (`opencode-adaptive@X.Y.Z` and
   `pi-adaptive@X.Y.Z`). Historical `vX.Y.Z` tags belong to OpenCode only.
+  Agents release non-interactively: explicit bumps (`--opencode patch`),
+  `--notes <pkg>=<file>`, `--yes`; add `--no-publish` when the human runs
+  `npm publish`. Partial publication recovers with `npm run release -- --resume`.
+  See the Releases section of CONTRIBUTING.md.

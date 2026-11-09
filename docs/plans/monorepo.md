@@ -450,12 +450,18 @@ type-level:
 
 **Execution status (2026-11-09):** steps 0–6 have landed and the packed OpenCode
 and Pi gates pass together in the baseline full verification at `dc835fd`
-(`test-artifacts/m8/verify-all-2.log`, no skipped gates). Publication and the
-post-publication install smoke above remain pending explicit approval. The
-handoff authorized continuing Pi implementation before that approval, superseding
-the original sequencing constraint; this does not mark step 7 complete.
-Subsequent shared changes also mean the eventual OpenCode release notes must
-describe the actual diff, not repeat the original “no behaviour change” premise.
+(`test-artifacts/m8/verify-all-2.log`, no skipped gates). The final-acceptance
+audit gaps found afterwards were fixed and verified end to end at `a64acc9`
+(`test-artifacts/m8/verify-all-acceptance.log`, `verify: ok (core, testkit,
+opencode, pi; skipped: none)`). Pi's `private` flag was removed in its own
+commit. Publication of `@coool/pi-adaptive` (step 7 / Pi M8) and this
+OpenCode release both remain pending explicit maintainer approval, npm
+authentication, and the post-publication install smoke above. The
+handoff authorized continuing Pi implementation before that approval,
+superseding the original sequencing constraint; this does not mark step 7
+complete. Subsequent shared changes also mean the eventual OpenCode release
+notes must describe the actual diff, not repeat the original "no behaviour
+change" premise.
 
 ## Risks and how each is caught
 

@@ -1,4 +1,5 @@
 // covers: ["ADP-024", "ADP-060"]
+import { MAX_PARKED_ATTEMPTS } from "@coool/adaptive-core/execution/parking/plan"
 import { isTierName, type TierName } from "@coool/adaptive-core/routing/tier-policy/types"
 import type { JsonFile } from "./store.js"
 
@@ -18,7 +19,14 @@ export interface ParkingSources {
   readonly timer: (callback: () => void, delay: number) => () => void
 }
 
-export const MAX_WAKES = 3
+/**
+ * Failed wake deliveries before a parked task stops auto-waking (the same
+ * give-up budget OpenCode derives from MAX_PARKED_ATTEMPTS). A wake that
+ * re-parks because the tier is still blocked does not consume the budget:
+ * waiting for a stated reset is free, only resumed work that failed again
+ * counts.
+ */
+export const MAX_WAKES = MAX_PARKED_ATTEMPTS
 export const SHORT_WAIT_MS = 120_000
 export const PARK_ENTRY = "adaptive.parked"
 export class WaitCancelled extends Error {
@@ -48,8 +56,10 @@ export function parseParked(value: unknown): Parked {
     throw new Error("Adaptive parked: tier must be quick, standard, or advanced")
   if (typeof due !== "number" || !Number.isFinite(due) || due < 0)
     throw new Error("Adaptive parked: due must be a finite timestamp")
-  if (typeof wakes !== "number" || !Number.isSafeInteger(wakes) || wakes < 0 || wakes > MAX_WAKES)
-    throw new Error("Adaptive parked: wakes must be an integer from 0 to 3")
+  // Manual retries after the give-up may keep failing, so `wakes` has no
+  // upper bound: MAX_WAKES is policy (stop auto-waking), not a format limit.
+  if (typeof wakes !== "number" || !Number.isSafeInteger(wakes) || wakes < 0)
+    throw new Error("Adaptive parked: wakes must be a non-negative integer")
   if (typeof claimed !== "boolean") throw new Error("Adaptive parked: claimed must be boolean")
   return { session, token, tier, due, wakes, claimed }
 }
@@ -81,20 +91,31 @@ export function findPark(file: JsonFile, session: string): Promise<Parked | unde
   }))
 }
 
-/** Claim and increment under the same cross-process file lock, before dispatch. */
-export function claimPark(file: JsonFile, record: Parked, now: number): Promise<boolean> {
+/**
+ * Claim before dispatch under the same cross-process file lock. The claim
+ * does not touch `wakes`: only a re-park after the delivered task failed
+ * again does (parkingAfterRun). `manual` retries a given-up task on the
+ * user's explicit request instead of silently refusing it.
+ */
+export function claimPark(
+  file: JsonFile,
+  record: Parked,
+  now: number,
+  manual = false,
+): Promise<boolean> {
   return file.update((value) => {
     const rows = records(value)
     const found = rows.find((row) => row.session === record.session && row.token === record.token)
     const claimed =
-      found !== undefined && !found.claimed && found.due <= now && found.wakes < MAX_WAKES
+      found !== undefined &&
+      !found.claimed &&
+      found.due <= now &&
+      (manual || found.wakes < MAX_WAKES)
     return {
       next: claimed
         ? {
             version: 1,
-            records: rows.map((row) =>
-              row === found ? { ...row, claimed: true, wakes: row.wakes + 1 } : row,
-            ),
+            records: rows.map((row) => (row === found ? { ...row, claimed: true } : row)),
           }
         : undefined,
       result: claimed,

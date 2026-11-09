@@ -11,7 +11,11 @@ export interface ReleaseEffects {
 }
 
 /** Only uncommitted preparation is reversible. Publication is resumed from tags. */
-export function executeRelease(plan: readonly PlannedRelease[], effects: ReleaseEffects): void {
+export function executeRelease(
+  plan: readonly PlannedRelease[],
+  effects: ReleaseEffects,
+  { publish = true }: { publish?: boolean } = {},
+): void {
   try {
     effects.prepare()
     effects.verify(plan.map((release) => release.id))
@@ -21,6 +25,6 @@ export function executeRelease(plan: readonly PlannedRelease[], effects: Release
   }
   effects.commit()
   for (const release of plan) effects.tag(release)
-  for (const release of plan) effects.publish(release.id)
+  if (publish) for (const release of plan) effects.publish(release.id)
   effects.push()
 }
