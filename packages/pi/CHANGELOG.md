@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-11-09
+
+# pi-adaptive 1.0.0
+
+First stable release of Adaptive for Pi. Goals keep running until they are
+finished, regardless of how model availability changes behind the scenes:
+
+- Tier routing through the `auto` / `quick` / `standard` / `advanced` virtual
+  models, with in-unit stickiness so a productive model is never pulled away
+  mid-unit.
+- Subscription-first scheduling: configured models fail over within the
+  required tier, and exhaustion is recovered horizontally — capability never
+  escalates because a subscription ran out.
+- Shared health across processes: one session's 429 steers the next session's
+  admission instantly, and the half-open breaker admits exactly one probe.
+- Non-stop parking semantics: a wake that finds every model still limited
+  re-arms for free and never consumes the resume budget; only a resumed run
+  that fails again counts. After five failed deliveries the park gives up
+  visibly in the transcript and the chip, and `/adaptive resume` still
+  dispatches it manually at any time.
+
+### Shared core
+
+- docs: record final acceptance verification and release boundary (5bd58cb)
+- pi: park, observe, receipts, commands, host matrix and release-gate wiring (350fba1)
+- pi: share resource health and recover within the tier (9545c6e)
+- core: share failure events and cross-process probe ids; preflight TUI addon (fc9712a)
+- pi: add tier and escalation tools with branch-aware task state (3bf8fdc)
+
 Initial Pi integration; not yet published.
 
 - Add four native virtual models: Auto, quick, standard, and advanced.
@@ -15,3 +44,5 @@ Initial Pi integration; not yet published.
 - Persist initial parked prompts through Pi's normal conversation history, and honor the explicit pinned-tier escalation preference without overriding concrete model pins.
 - Add `/adaptive` (status, why, tiers, health, resume, cancel, observe on|off, doctor), a first-run tier proposal that saves only after confirmation, and Ctrl+Alt+A.
 - Add deterministic tests, real-Pi SDK faux-provider scenarios, a versioned provider-error corpus, a packed minimum/latest host matrix over SDK, JSON, and real-terminal surfaces, and requirement traceability. See the [test strategy](docs/TEST_STRATEGY.md).
+
+[1.0.0]: https://github.com/coool-labs/adaptive/releases/tag/pi-v1.0.0
