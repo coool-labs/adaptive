@@ -26,7 +26,7 @@ it("proposes stable metadata-only thirds, with supported high thinking for advan
   const large = Array.from({ length: 120 }, (_, index) =>
     model(String(index), index, index % 2 === 0),
   )
-  expect(Object.values(proposeTiers(large)).every((tier) => tier.length === 32)).toBe(true)
+  expect(Object.values(proposeTiers(large)).every((tier) => tier.length === 2)).toBe(true)
   expect(proposeTiers([model("a", -1), model("b", NaN), model("c", 1)]).quick[0]?.id).toBe("c")
   expect(proposeTiers([model("b", 1), model("a", 1), model("b", 1)]).quick[0]?.id).toBe("a")
   expect(
@@ -64,7 +64,7 @@ it("only uses supplied authenticated inventory, stays bounded, and is permutatio
       const result = proposeTiers(models)
       expect(proposeTiers([...models].reverse())).toEqual(result)
       for (const tier of Object.values(result)) {
-        expect(tier.length).toBeLessThanOrEqual(32)
+        expect(tier.length).toBeLessThanOrEqual(2)
         expect(new Set(tier.map((ref) => ref.id)).size).toBe(tier.length)
         expect(tier.every((ref) => models.some((m) => m.ref.id === ref.id))).toBe(true)
         if (models.length >= 3) expect(tier.length).toBeGreaterThan(0)
@@ -72,4 +72,14 @@ it("only uses supplied authenticated inventory, stays bounded, and is permutatio
     }),
     { numRuns: 200 },
   )
+})
+
+it("caps large catalogs to a decisive shortlist drawn from each cost band", () => {
+  const models = Array.from({ length: 12 }, (_, index) => model(String(index), index))
+  const proposal = proposeTiers(models)
+  // The cheapest band feeds quick, the middle band standard, the expensive band advanced;
+  // each tier keeps only its band's first two, so six models face the user, not twelve.
+  expect(proposal.quick.map((ref) => ref.id)).toEqual(["0", "1"])
+  expect(proposal.standard.map((ref) => ref.id)).toEqual(["4", "5"])
+  expect(proposal.advanced.map((ref) => ref.id)).toEqual(["8", "9"])
 })

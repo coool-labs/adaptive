@@ -1,6 +1,6 @@
 // covers: ["ADP-004", "ADP-005", "ADP-063"]
 import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
-import { MAX_TIER_RESOURCES, type SettingsV1 } from "@coool/adaptive-core/state/settings/types"
+import type { SettingsV1 } from "@coool/adaptive-core/state/settings/types"
 
 export interface ProposalModel {
   readonly ref: ModelRef
@@ -34,6 +34,10 @@ function order(left: ProposalModel, right: ProposalModel): number {
   )
 }
 
+/** A proposal is a starting point, not the catalog: a primary and a fallback per tier keep
+ * the first-run decision small; the tier editor offers every configured model. */
+const PROPOSAL_TIER_CAP = 2
+
 /** Settings bootstrap only: never consulted during routing, and never persists. */
 export function proposeTiers(models: readonly ProposalModel[]): SettingsV1["tiers"] {
   const unique = new Map<string, ProposalModel>()
@@ -42,7 +46,7 @@ export function proposeTiers(models: readonly ProposalModel[]): SettingsV1["tier
   const first = Math.ceil(ordered.length / 3)
   const second = Math.ceil((ordered.length * 2) / 3)
   const refs = (group: readonly ProposalModel[], advanced: boolean): ModelRef[] =>
-    group.slice(0, MAX_TIER_RESOURCES).map((model) => ({
+    group.slice(0, PROPOSAL_TIER_CAP).map((model) => ({
       providerID: model.ref.providerID,
       id: model.ref.id,
       ...(advanced && model.reasoning && model.thinkingLevels.includes("high")
