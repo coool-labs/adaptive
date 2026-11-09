@@ -269,7 +269,7 @@ packages/pi/
                       peerDependencies: the same two, range >=1.5.0 <2, marked optional in peerDependenciesMeta
                         (npm auto-installs non-optional peers, which would pull a second Pi; Pi maps
                         host imports to its own copy at load time)
-                      dependencies: proper-lockfile (cross-process locks); core bundled by tsdown
+                      no runtime dependencies: an exclusive `wx` lock file replaces proper-lockfile; core bundled by tsdown
                       No typebox: tool schemas are plain JSON Schema, which pi-schema validates since 1.5.0
   src/
     index.ts          extension factory: register virtual models, tools, commands, shortcut, renderers, events.
@@ -283,7 +283,7 @@ packages/pi/
       view.ts         core flow's AdaptiveView over ctx.ui
       timer.ts        unref'd timers
     store/
-      files.ts        atomic write (tmp + rename), proper-lockfile, read-through cache keyed on (ino, size, mtimeNs)
+      files.ts        atomic write (tmp + rename) under an exclusive lock file; no read cache (see Shared state)
       bindings.ts     core stores (settings, health, capacity, receipts, parked index) bound to files under getAgentDir()/adaptive/
     unit/
       tracker.ts      work-unit lifecycle from route() reasons + agent_start/agent_settled + stopReason
@@ -310,6 +310,12 @@ packages/pi/
       commands.ts     /adaptive and subcommands
     tools.ts          adaptive_escalate, adaptive_tier (plain JSON Schema; execute re-narrows with core parsers, isError names the field)
 ```
+
+The tree is the target layout. Through M3 the code is flatter: `src/router.ts`
+(admission), `src/task.ts` (branch-aware task state, retry/restart/escalation plans),
+`src/health.ts` (shared health transactions), `src/store.ts` (locked JSON file),
+`src/evidence.ts`, `src/capabilities.ts`, and `src/host/{extension,tools}.ts`. Split
+along the tree only where a milestone adds the second concern to a file.
 
 Size targets: no file over about 300 lines. The OpenCode `supervisor.ts` (2,322 lines) is
 **not** ported or mirrored. The Pi wiring is smaller, because `route()` replaces the whole
@@ -380,16 +386,48 @@ invalidates the token. Persist token consumption with the wake claim before disp
    every successful response, so a long run can see many retry chains, and users can raise
    it. Once the hop budget is spent, `route()` parks instead of redirecting.
 
+**As implemented in M3** (steps 2–3 above arrive with M4):
+
+- `message_end` handlers are awaited before Pi decides to retry, so every routed
+  response is first recorded in the shared health file (`recordOutcome`). The retry's
+  admission already sees the 429 or 503 it is retrying.
+- An infra-classified `retry` adds the failed model to the unit's `tried` list (kept in
+  the router state, deduplicated) and re-admits within the same tier, excluding `tried`.
+  A non-infra retry (for example a context overflow Pi still retries) stays sticky.
+- When the exclusion leaves nothing admissible, admission runs again without it, so the
+  failed model takes Pi's own backoff retry unless health blocks it. When health blocks
+  every tier model, `route()` throws `Adaptive unavailable: all-blocked…`. Pi ends the
+  run with that error under the virtual model (provider `adaptive`), never retries it,
+  and Adaptive never restarts from it.
+- There is no separate hop counter yet. A retry chain is bounded by Pi's `maxRetries`
+  and the tier size, and every hop is recorded in health, so a model that keeps failing
+  is soon blocked for the whole machine.
+
 **Restart after a non-retried failure.** Pi never retries quota or billing errors.
 
-On `agent_settled{aborted:false}`, when the last assistant message is `stopReason:"error"`,
-the error is classified as infra, and the task's restart budget (2) is not spent (per
-task, because each restart starts a new unit):
+On `agent_settled{aborted:false}`, Adaptive reads the current unit's last assistant
+message. It restarts (`restartAfterRun`) only when all of these hold:
 
-1. pick a same-tier resource or park;
-2. send the hidden continuation message;
-3. the next owned `route(reason:"continuation")` consumes `state.pendingRecovery` (`kind: "restart"`) and
-   continues the **same task**, keeping its budgets.
+- the message is `stopReason:"error"` from a physical provider (not Adaptive's own route
+  failure);
+- the error is classified failover-eligible (infra);
+- the mode is active and there is no user model pin;
+- the task's restart budget (`MAX_RESTARTS_PER_TASK = 2`, per task, because each restart
+  starts a new unit) is not spent.
+
+Escalation is evaluated first and wins; the two never both fire, because capability and
+infra classes are disjoint. Pinned virtual tiers (`adaptive/standard`, …) do restart: the
+pin fixes the tier, and recovery stays inside it.
+
+1. Send the hidden continuation message. Its details carry `{task, token, tier (same),
+escalations, restarts + 1, tried: [the failed model]}`.
+2. The next owned `route(reason:"continuation")` consumes the token once, starts a new
+   unit of the **same task**, and admits on the same tier, avoiding `tried` while the tier
+   has another admissible model.
+3. If health blocks every model of the tier, the route throws `Adaptive unavailable`
+   (parking replaces this in M4).
+
+The UI notice reads "Adaptive: <model ids> failed; continuing on another <tier> model."
 
 User aborts (`stopReason:"aborted"`, `agent_settled.aborted`) never recover (ADP-010).
 
@@ -428,18 +466,22 @@ Files under `~/.pi/agent/adaptive/`:
 
 Every write is lock + read + merge + atomic rename.
 
-- **Half-open single probe across processes (ADP-019):** the probe lease is a record in
-  `health.json` with `{owner: pid+session, expires}`, acquired under the lock. Other
-  processes see the lease and treat the resource as unavailable until the probe finishes
-  or the lease expires.
+- **Half-open single probe across processes (ADP-019):** the probe is the core
+  breaker's own half-open record (`probeId`, `probeAt`) in `health.json`, claimed under
+  the lock in the same transaction that assessed it. Probe ids are random UUIDs, so they
+  are unique across processes. Other processes see the probe in flight and treat the
+  resource as blocked until its outcome is recorded or the core probe timeout (10 min)
+  expires. Tickets an admission does not dispatch are handed back in the same
+  transaction.
 - **Wake at most once across processes (ADP-024):** two Pi processes can have the same
   session open, and both arm a wake timer. A wake first claims the parked record in
   `parked.json` under the lock (`{claimedBy, claimedAt}`). Only the claimer resumes;
   the other sees the claim and just clears its card.
-- **Reads** go through a cache keyed on `(ino, size, mtimeNs)` from one `stat` per
-  `route()`. The inode is part of the key because every atomic rename creates a new
-  inode, which also catches two writes within the same mtime tick. This meets ADP-053's
-  cost bound (measured in a perf test).
+- **No read cache.** A cache keyed on file metadata was planned and dropped: the health
+  file is small (≤ 512 records), and every read that matters happens under the lock as
+  part of a read–modify–write anyway (a half-open probe must be claimed in the same
+  transaction that read the breaker). The cost is one locked transaction per non-sticky
+  admission and one per routed response. In-unit continuations touch no state.
 - **Corrupt or unknown-version file:** the store's existing parsers hard-error. The
   plugin fails open, routes like defer, and doctor reports the file. It never silently
   rewrites a file it cannot parse.
@@ -458,11 +500,13 @@ fills these core `ErrorEvidence` layers:
 
 **A golden corpus keeps this honest.** `test/fixtures/pi-errors/<pi-version>.json` holds
 real error strings for each provider and class (429, quota, billing, 5xx, overloaded,
-timeout, context overflow, auth). The strings are collected in M0 from pi-ai's provider
-code and opt-in live captures. `scripts/pi-error-corpus.ts` reads a new Pi version's
-pi-ai `dist` and lists error constructions not covered by the corpus, which makes it the
-upgrade checklist. The corpus test requires every entry to classify as labelled, and
-property tests require that no infra entry ever produces capability evidence.
+timeout, context overflow, auth, content filter). The strings were collected by hand
+from pi-ai's provider code; each entry names its source file. There is **no
+regeneration script**: pi-ai builds its messages in too many shapes for a scanner to be
+trusted, so a new Pi version is reviewed by hand against pi-ai's `api/` and `utils/`
+error constructions, and the new strings are added as a new corpus file. The corpus test
+requires every entry to classify as labelled, and no infra entry may ever produce
+capability evidence.
 
 ## Requirement mapping
 
@@ -553,6 +597,33 @@ adaptive/quick`?
 **Exit:** every [I] is resolved, and the plan's affected sections are updated (for
 example, if item 5 fails, pre-dispatch parks use the throw fallback).
 
+**Results so far** (Pi 1.5.0, faux provider, no network; details in
+`research_notes/Pi port feasibility/pi_spike_results.md`):
+
+- Item 1: a throwing `route()` makes no provider request and no Pi retry. The run
+  settles once with `stopReason:"error"` and the thrown text verbatim.
+- Item 2: an `await` of 181 s inside `route()` completes and dispatches once, so Pi has
+  no preparation timeout and the 2-minute in-place wait stands. `session.abort()` (Esc in
+  the TUI) aborts `request.signal`; the wait rejects and nothing is dispatched.
+- Item 3: routes arrive as `user` then `retry`, and `failed.message` carries the
+  provider error. Returning another same-tier model completes the run.
+- Item 4: verified in the SDK and in `--print` text/JSON modes (above). A **detached**
+  timer that sends the continuation after the handler returned fails in print/JSON with
+  "This extension ctx is stale" and exits 1. Headless recovery must therefore be awaited
+  inside an owned handler or `route()`. Only the TUI may re-arm a wake on `session_start`.
+- Item 5: returning `{action:"handled"}` from `input` consumes the message with no route,
+  dispatch or settle. Pre-dispatch parking is possible.
+- Item 6 (partly): Ctrl+L opens the model picker. It has no "Select model" title, and
+  rows read `auto (Adaptive Auto) [adaptive]`; typing filters them. `ctx.ui.setStatus`
+  shows in the footer, and picking a physical model fires `model_select` and stops
+  routing. Termwright reads the screen with `terminal.screen().text()`. Ctrl+P cycling,
+  `defaultModel` and the footer arrow text are not checked yet.
+- Item 11: `pi install npm:<pkg>` from a loopback registry, with the `@earendil-works/*`
+  peers marked optional, fetches only the package tarball. Nothing from
+  `@earendil-works` is requested or installed into the package's `node_modules`, so
+  there is no duplicate host.
+- Not yet checked: items 7–10 and 12–14.
+
 ### M1 — package skeleton, fail-open from day one (S)
 
 - `packages/pi` at version `0.0.0` with `"private": true`, so `npm run release` skips it
@@ -598,6 +669,12 @@ example, if item 5 fails, pre-dispatch parks use the throw fallback).
 - Packed scenarios against the fake provider: 429 → redirect; 503 → redirect;
   quota → restart on a same-tier resource; all resources down → park; permanent auth
   error → no retry loop.
+  - Done as real-SDK scenarios with the faux provider (`test/runtime/extension.test.ts`):
+    503 and 429 native-retry redirects, with the 429 visible in `health.json` and avoided
+    by the next task; quota restart through the hidden continuation; at most 2
+    restarts per task; all models down → `Adaptive unavailable` with no loop; auth → no
+    redirect or restart; user abort → no restart. "All down → park" waits for M4, and the
+    packed-install variants for M7.
 - **Exit:** ADP-008–013, 019, 022, 059 and 061 are covered.
 
 ### M4 — parking and wake (M)

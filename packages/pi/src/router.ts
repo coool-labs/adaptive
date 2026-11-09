@@ -1,4 +1,4 @@
-// covers: ["ADP-002", "ADP-005", "ADP-013", "ADP-017", "ADP-022", "ADP-057"]
+// covers: ["ADP-002", "ADP-005", "ADP-009", "ADP-013", "ADP-017", "ADP-022", "ADP-057"]
 import { admit } from "@coool/adaptive-core/routing/scheduler/admit"
 import type {
   SchedulerInput,
@@ -19,21 +19,41 @@ export interface RouteInput {
   readonly previous: ModelRef | undefined
   readonly inventory: SchedulerInput["inventory"]
   readonly demand: SchedulerInput["demand"]
+  readonly health: SchedulerInput["health"]
+  /** Models this unit already failed over from (same-tier recovery). */
+  readonly exclude: readonly ModelRef[]
 }
 
+/** The models a non-sticky admission may dispatch, before exclusions. */
+export function admissionCandidates(settings: SettingsV1, tier: TierName): readonly ModelRef[] {
+  return settings.pin === null ? settings.tiers[tier] : [settings.pin]
+}
+
+function excluded(exclude: readonly ModelRef[], ref: ModelRef): boolean {
+  return exclude.some((tried) => tried.providerID === ref.providerID && tried.id === ref.id)
+}
+
+/**
+ * Admit within the tier, never across it. Recovery first avoids the models
+ * this unit already failed on; when nothing else in the tier can take the
+ * work, the failed model stays eligible so Pi's own backoff retry proceeds
+ * unless health blocks it. A user pin always wins and is never excluded.
+ */
 export function routeAdmission(input: RouteInput): AdmissionDecision {
-  // Native retries stay sticky until the health/recovery milestone owns them.
   // Ordinary tool continuations must never be repriced or re-tiered mid-unit.
   const pin = input.sticky ? input.previous : input.settings.pin
-  return admit({
-    routing:
-      pin === undefined || pin === null
-        ? { kind: "tier", tier: input.tier, source: "default" }
-        : { kind: "pin", model: pin },
-    inventory: input.inventory,
-    demand: input.demand,
-    tierCandidates: input.settings.tiers[input.tier],
-    health: {},
-    capacity: {},
-  })
+  const decide = (exclude: readonly ModelRef[]) =>
+    admit({
+      routing:
+        pin === undefined || pin === null
+          ? { kind: "tier", tier: input.tier, source: "default" }
+          : { kind: "pin", model: pin },
+      inventory: input.inventory,
+      demand: input.demand,
+      tierCandidates: input.settings.tiers[input.tier].filter((ref) => !excluded(exclude, ref)),
+      health: input.health,
+      capacity: {},
+    })
+  const decision = decide(input.exclude)
+  return decision.kind === "apply" || input.exclude.length === 0 ? decision : decide([])
 }

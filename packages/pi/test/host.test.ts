@@ -1,10 +1,16 @@
 import { expect, it, vi } from "vitest"
 import * as scheduler from "@coool/adaptive-core/routing/scheduler/admit"
-import { fauxProvider } from "@earendil-works/pi-ai/providers/faux"
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux"
 import { defaultSettings } from "@coool/adaptive-core/state/settings/parse"
 import type { SettingsV1 } from "@coool/adaptive-core/state/settings/types"
 import type { ToolCapability } from "../src/capabilities.js"
-import { afterRun, virtualModels, type AdaptiveSources } from "../src/host/extension.js"
+import {
+  afterRun,
+  recordOutcome,
+  virtualModels,
+  type AdaptiveSources,
+} from "../src/host/extension.js"
+import type { JsonFile } from "../src/store.js"
 import type { BranchEntry } from "../src/task.js"
 
 const faux = fauxProvider({ provider: "local", models: [{ id: "a" }, { id: "b" }] })
@@ -21,16 +27,39 @@ const settings = {
 }
 const branch = { getBranch: () => [] }
 const ctx = { modelRegistry: { getAvailable: () => faux.models }, sessionManager: branch }
+/** The shared health file of one machine, in memory. */
+function memoryFile(): JsonFile & { value: () => unknown } {
+  let stored: unknown
+  return {
+    value: () => stored,
+    read: () => Promise.resolve(stored),
+    update(change) {
+      const { next, result } = change(stored)
+      if (next !== undefined) stored = next
+      return Promise.resolve(result)
+    },
+  }
+}
+const lockedFile: JsonFile = {
+  read: () => Promise.reject(new Error("health locked")),
+  update: () => Promise.reject(new Error("health locked")),
+}
 function sources(
   read: () => Promise<SettingsV1>,
   capabilities: () => Promise<readonly ToolCapability[]> = () => Promise.resolve([]),
+  file: JsonFile = memoryFile(),
 ): AdaptiveSources {
   let next = 0
   const newId = (): string => {
     next += 1
     return `id-${String(next)}`
   }
-  return { settings: read, capabilities, newId }
+  return {
+    settings: read,
+    capabilities,
+    newId,
+    health: { file, clock: () => 1_000, newId },
+  }
 }
 const request = { model: a, reason: "user" as const, thinkingLevel: "off" as const, messages: [] }
 
@@ -184,6 +213,8 @@ it("stores task state only when the plan changes it", async () => {
     unit: "id-2",
     tier: "standard",
     escalations: 0,
+    restarts: 0,
+    tried: [],
   })
   // Pi compares by identity: handing back its own object appends nothing.
   const stored: unknown = JSON.parse(JSON.stringify(started.state))
@@ -204,7 +235,15 @@ const failedRun: readonly BranchEntry[] = [
     data: {
       provider: "adaptive",
       modelId: "auto",
-      state: { version: 1, task: "t", unit: "u", tier: "standard", escalations: 0 },
+      state: {
+        version: 1,
+        task: "t",
+        unit: "u",
+        tier: "standard",
+        escalations: 0,
+        restarts: 0,
+        tried: [],
+      },
     },
   },
   { type: "message", message: { role: "user" } },
@@ -219,13 +258,17 @@ const failedRun: readonly BranchEntry[] = [
     },
   },
 ]
-function settle(model: { provider: string; id: string } | undefined, hasUI = true) {
+function settle(
+  model: { provider: string; id: string } | undefined,
+  hasUI = true,
+  run: readonly BranchEntry[] = failedRun,
+) {
   const notices: string[] = []
   return {
     notices,
     ctx: {
       ...ctx,
-      sessionManager: { getBranch: () => failedRun },
+      sessionManager: { getBranch: () => run },
       model,
       hasUI,
       ui: {
@@ -252,7 +295,14 @@ it("continues a capability failure on the next tier with a hidden owned message"
         customType: "adaptive.continuation",
         content: expect.stringContaining("Continue the interrupted work") as unknown,
         display: false,
-        details: { task: "t", token: "id-1", tier: "advanced", escalations: 1 },
+        details: {
+          task: "t",
+          token: "id-1",
+          tier: "advanced",
+          escalations: 1,
+          restarts: 0,
+          tried: [],
+        },
       },
     ])
     expect(notices).toEqual(
@@ -287,4 +337,201 @@ it("never continues aborted, manual or unjustified runs, and fails open", async 
     logged.mockRestore()
   }
   expect(sent).toEqual([])
+})
+
+const QUOTA = "429 You exceeded your current quota, please check your plan and billing details."
+const RATE_LIMITED = "429 Rate limit reached for requests per min"
+const twoStandard = {
+  ...settings,
+  tiers: {
+    ...settings.tiers,
+    standard: [
+      { providerID: b.provider, id: b.id },
+      { providerID: a.provider, id: a.id },
+    ],
+  },
+}
+const auto = { provider: "adaptive", id: "auto" }
+
+it("steers the next admission away from a model another request just saw limited", async () => {
+  const file = memoryFile()
+  const shared = sources(() => Promise.resolve(twoStandard), undefined, file)
+  const [definition] = virtualModels(shared, () => [])
+  if (definition === undefined) throw new Error("missing fixture")
+  expect((await definition.route(request, ctx)).model.id).toBe("b")
+  await recordOutcome(
+    {
+      role: "assistant",
+      provider: "local",
+      model: "b",
+      stopReason: "error",
+      errorMessage: RATE_LIMITED,
+    },
+    { model: auto },
+    shared,
+  )
+  expect(file.value()).toMatchObject({
+    records: [{ key: { providerID: "local", modelID: "b" }, health: "rate_limited" }],
+  })
+  expect((await definition.route(request, ctx)).model.id).toBe("a")
+  await recordOutcome(
+    { role: "assistant", provider: "local", model: "b", stopReason: "stop" },
+    { model: auto },
+    shared,
+  )
+  expect((await definition.route(request, ctx)).model.id).toBe("b")
+})
+
+it("records only routed assistant outcomes outside OFF", async () => {
+  const file = memoryFile()
+  const outage = { role: "assistant", provider: "local", model: "b", stopReason: "error" }
+  const record = (
+    message: Parameters<typeof recordOutcome>[0],
+    model: { provider: string; id: string } | undefined,
+    mode: SettingsV1["mode"] = "active",
+  ) =>
+    recordOutcome(
+      message,
+      { model },
+      sources(() => Promise.resolve({ ...settings, mode }), undefined, file),
+    )
+  await record({ ...outage, role: "user" }, auto)
+  await record(outage, { provider: "local", id: "b" })
+  await record(outage, undefined)
+  await record({ role: "assistant", model: "b", stopReason: "error" }, auto)
+  await record({ ...outage, provider: "adaptive" }, auto)
+  await record({ role: "assistant", provider: "local", stopReason: "error" }, auto)
+  await record({ role: "assistant", provider: "local", model: "b" }, auto)
+  await record(outage, auto, "off")
+  expect(file.value()).toBeUndefined()
+  await record(outage, auto, "observe")
+  expect(file.value()).toMatchObject({ records: [{ key: { modelID: "b" } }] })
+})
+
+it("fails open when the shared health file cannot be used", async () => {
+  const logged = vi.spyOn(console, "error").mockImplementation(() => undefined)
+  try {
+    const locked = sources(() => Promise.resolve(settings), undefined, lockedFile)
+    const [definition] = virtualModels(locked, () => [])
+    expect((await definition?.route(request, ctx))?.model.id).toBe("b")
+    await recordOutcome(
+      { role: "assistant", provider: "local", model: "b", stopReason: "stop" },
+      { model: auto },
+      locked,
+    )
+    expect(logged).toHaveBeenCalledTimes(2)
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining("health locked"))
+  } finally {
+    logged.mockRestore()
+  }
+})
+
+it("redirects a natively retried infra failure to another model of the same tier", async () => {
+  const [definition] = virtualModels(
+    sources(() => Promise.resolve(twoStandard)),
+    () => [],
+  )
+  if (definition === undefined) throw new Error("missing fixture")
+  const state = {
+    version: 1,
+    task: "t",
+    unit: "u",
+    tier: "standard",
+    escalations: 0,
+    restarts: 0,
+    tried: [],
+  }
+  const retried = await definition.route(
+    {
+      ...request,
+      reason: "retry",
+      previous: { model: b },
+      state,
+      failed: {
+        model: b,
+        message: fauxAssistantMessage("", {
+          stopReason: "error",
+          errorMessage: "503 status code (no body)",
+        }),
+      },
+    },
+    ctx,
+  )
+  expect(retried.model.id).toBe("a")
+  expect(retried.state).toMatchObject({ tried: [{ providerID: "local", id: "b" }] })
+})
+
+function quotaRun(
+  restarts: number,
+  failed: object = { provider: "local", model: "b" },
+): readonly BranchEntry[] {
+  return [
+    {
+      type: "custom",
+      customType: "pi.virtual-model-state",
+      data: {
+        provider: "adaptive",
+        modelId: "standard",
+        state: {
+          version: 1,
+          task: "t",
+          unit: "u",
+          tier: "standard",
+          escalations: 0,
+          restarts,
+          tried: [],
+        },
+      },
+    },
+    { type: "message", message: { role: "user" } },
+    {
+      type: "message",
+      message: { role: "assistant", ...failed, stopReason: "error", errorMessage: QUOTA },
+    },
+  ]
+}
+
+it("restarts a run that ended on a non-retried infra failure on the same tier, within budget", async () => {
+  const sent: unknown[] = []
+  const { ctx: settled, notices } = settle(
+    { provider: "adaptive", id: "standard" },
+    true,
+    quotaRun(0),
+  )
+  await afterRun(
+    { aborted: false },
+    settled,
+    sources(() => Promise.resolve(twoStandard)),
+    (message) => sent.push(message),
+  )
+  expect(sent).toMatchObject([
+    {
+      customType: "adaptive.continuation",
+      display: false,
+      details: {
+        task: "t",
+        tier: "standard",
+        restarts: 1,
+        tried: [{ providerID: "local", id: "b" }],
+      },
+    },
+  ])
+  expect(notices).toEqual(["Adaptive: b failed; continuing on another standard model."])
+  const spent: unknown[] = []
+  await afterRun(
+    { aborted: false },
+    settle({ provider: "adaptive", id: "standard" }, true, quotaRun(2)).ctx,
+    sources(() => Promise.resolve(twoStandard)),
+    (message) => spent.push(message),
+  )
+  expect(spent).toEqual([])
+  const unnamed = settle({ provider: "adaptive", id: "standard" }, true, quotaRun(0, {}))
+  await afterRun(
+    { aborted: false },
+    unnamed.ctx,
+    sources(() => Promise.resolve(twoStandard)),
+    (message) => spent.push(message),
+  )
+  expect(spent).toMatchObject([{ details: { restarts: 1, tried: [] } }])
+  expect(unnamed.notices).toEqual(["Adaptive: the request failed; continuing on standard."])
 })

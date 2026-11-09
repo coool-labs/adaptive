@@ -63,10 +63,29 @@ The CLI check also passes with a 1,500 ms awaited delay inside `agent_settled`
 before sending the owned continuation, in both text and JSON modes. This verifies
 an awaited delayed recovery, not an unowned timer scheduled after the handler returns.
 
+## Later checks
+
+| Check                                  | Observed result                                                                                                                                                                                                                          | Implementation decision                                                                                                                                              |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unowned timer in print/JSON            | `.scratch/pi-cli-spike.mjs --unowned`: a `setTimeout` that calls `sendMessage` 1.5 s after `agent_settled` returned fails with "This extension ctx is stale". The process exits 1 after one dispatch and one settle, without recovering. | Headless recovery and short waits must be awaited inside an owned handler or `route()`. A detached wake timer is only valid in the TUI, re-armed on `session_start`. |
+| Package install with optional peers    | `.scratch/pi-install-spike.mjs`: `pi install npm:<pkg>` against a loopback registry requested only the package metadata and tarball. No `@earendil-works/*` request was made and no such package was installed under the agent dir.      | Keep the Pi packages as optional peers plus pinned devDependencies; Pi maps host imports to its own copy.                                                            |
+| TUI model picker and footer (real PTY) | `.scratch/pi-tui-spike.mjs` (Termwright, 100×32): Ctrl+L opens the picker (no "Select model" title, footer "Enter to select"). Rows read `auto (Adaptive Auto) [adaptive]`, and typing filters them.                                     | PTY E2E drives the picker with Ctrl+L and text filters, and reads the screen with `terminal.screen().text()`.                                                        |
+| TUI Esc during an awaited route        | Esc aborted `request.signal` exactly once. The route rejected and nothing was dispatched (one route, one abort in the trace).                                                                                                            | In-place waits cancel through the route signal.                                                                                                                      |
+| TUI manual takeover                    | Picking a physical model fired `model_select` with `source: "set"`. The `ctx.ui.setStatus` footer item was cleared, and no further route calls happened.                                                                                 | `model_select` to a non-virtual model is the manual-intent signal.                                                                                                   |
+
+```text
+$ node .scratch/pi-cli-spike.mjs --unowned
+PASS: detached timer observes disposed session in Pi print/json; awaited recovery is required
+```
+
+Cross-process health and the single half-open probe are now covered by
+`packages/pi/test/health.test.ts`: two peers with separate registries share one locked
+file, and exactly one of them gets the probe.
+
 ## Remaining gates
 
-The rest of M0 is not yet verified: TUI model selection/footer behavior,
-unowned-timer headless wake lifetime, capacity
-metadata, package installation without duplicate host dependencies, and
-cross-process storage/probe claims. These remain release blockers, not assumed
-platform guarantees.
+Still unverified: Ctrl+P cycling and `defaultModel: "adaptive/auto"`, the entry
+renderer and `setWidget`, the subagent `--model` inheritance, compaction `direct`
+routes, `after_provider_response` capacity metadata, live provider error capture, and
+the `ctrl+alt+a` shortcut. These remain release blockers, not assumed platform
+guarantees.

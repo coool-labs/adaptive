@@ -410,6 +410,7 @@ describe("classifyFailure: textual last resort", () => {
     ["Invalid API key provided", "auth_failure"],
     ["The model `gpt-9x` does not exist", "invalid_model"],
     ["Your request was flagged by the safety system", "content_policy"],
+    ["Provider finish_reason: content_filter", "content_policy"],
     ["The provider is overloaded, try again later", "overload"],
     ["Request cancelled by user", "user_cancelled"],
   ] as const)("classifies %j as %s", (text, category) => {

@@ -17,7 +17,7 @@ function taskState(tier: string, escalations: number): BranchEntry {
     data: {
       provider: "adaptive",
       modelId: "auto",
-      state: { version: 1, task: "t", unit: "u", tier, escalations },
+      state: { version: 1, task: "t", unit: "u", tier, escalations, restarts: 0, tried: [] },
     },
   }
 }

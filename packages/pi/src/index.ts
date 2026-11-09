@@ -5,11 +5,17 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { applyPatch, defaultSettings } from "@coool/adaptive-core/state/settings/parse"
 import { registerAdaptive } from "./host/extension.js"
 import { loadToolCapabilities } from "./capabilities.js"
+import { jsonFile } from "./store.js"
 
 export default function adaptive(pi: Parameters<typeof registerAdaptive>[0]): void {
   const path = join(getAgentDir(), "adaptive", "settings.json")
   registerAdaptive(pi, {
     newId: randomUUID,
+    health: {
+      file: jsonFile(join(getAgentDir(), "adaptive", "health.json")),
+      clock: Date.now,
+      newId: randomUUID,
+    },
     settings: async () => {
       let text: string
       try {

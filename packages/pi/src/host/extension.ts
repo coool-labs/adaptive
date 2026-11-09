@@ -6,15 +6,29 @@ import { CONTINUATION_PROMPT } from "@coool/adaptive-core/execution/continuation
 import { ESCALATION_TOOL_NAME } from "@coool/adaptive-core/execution/escalation/index"
 import { logFailOpen } from "@coool/adaptive-core/log"
 import { admit } from "@coool/adaptive-core/routing/scheduler/admit"
+import type {
+  AdmissionDecision,
+  SchedulerInput,
+} from "@coool/adaptive-core/routing/scheduler/types"
+import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 import type { SettingsV1 } from "@coool/adaptive-core/state/settings/types"
-import { routeAdmission, VIRTUAL_IDS } from "../router.js"
+import {
+  assessCandidates,
+  observeOutcome,
+  releaseUnselected,
+  withHealth,
+  type SharedHealth,
+} from "../health.js"
+import { admissionCandidates, routeAdmission, VIRTUAL_IDS } from "../router.js"
 import type { ToolCapability } from "../capabilities.js"
 import {
   CONTINUATION_TYPE,
   escalationAfterRun,
   parseTaskState,
   planRoute,
+  restartAfterRun,
   type BranchEntry,
+  type Recovery,
 } from "../task.js"
 import { escalationTool, selectedVirtual, tierTool } from "./tools.js"
 
@@ -23,6 +37,8 @@ export interface AdaptiveSources {
   readonly settings: () => Promise<SettingsV1>
   readonly capabilities: () => Promise<readonly ToolCapability[]>
   readonly newId: () => string
+  /** Resource health shared with every other Pi process on the machine. */
+  readonly health: SharedHealth
 }
 
 type Host = Pick<
@@ -48,6 +64,7 @@ export function registerAdaptive(pi: Host, sources: AdaptiveSources): void {
     pi.registerVirtualModel(definition)
   pi.registerTool(tierTool(sources.settings))
   pi.registerTool(escalationTool(sources.settings))
+  pi.on("message_end", (event, ctx) => recordOutcome(event.message, ctx, sources))
   pi.on("agent_settled", (event, ctx) =>
     afterRun(event, ctx, sources, (message) => {
       pi.sendMessage(message, { triggerTurn: true })
@@ -74,6 +91,13 @@ export function virtualModels(sources: AdaptiveSources, activeTools: () => reado
         reason: request.reason,
         state,
         branch: ctx.sessionManager.getBranch(),
+        failed:
+          request.failed === undefined
+            ? undefined
+            : {
+                model: { providerID: request.failed.model.provider, id: request.failed.model.id },
+                message: request.failed.message,
+              },
         newId: sources.newId,
       })
       const previous = request.previous?.model
@@ -114,14 +138,13 @@ export function virtualModels(sources: AdaptiveSources, activeTools: () => reado
             : ["text"],
         },
       }
-      const planned = routeAdmission(input)
       // OBSERVE computes the same plan but retains the virtual entry's baseline.
       // OFF skips routing effects too; a virtual entry still needs a real model.
       const baseline =
         current.pin ?? input.previous ?? current.tiers[id === "auto" ? "standard" : id][0]
-      const decision =
+      const decide = (health: SchedulerInput["health"]): AdmissionDecision =>
         current.mode === "active"
-          ? planned
+          ? routeAdmission({ ...input, health, exclude: plan.exclude })
           : admit({
               routing:
                 baseline === undefined
@@ -133,6 +156,10 @@ export function virtualModels(sources: AdaptiveSources, activeTools: () => reado
               health: {},
               capacity: {},
             })
+      const decision =
+        current.mode === "off" || plan.sticky
+          ? decide({})
+          : await admitWithHealth(sources.health, admissionCandidates(current, plan.tier), decide)
       if (decision.kind !== "apply")
         throw new Error(`Adaptive unavailable: ${decision.reason}. Check your tier settings.`)
       const selected = models.find(
@@ -150,6 +177,75 @@ export function virtualModels(sources: AdaptiveSources, activeTools: () => reado
   }))
 }
 
+/**
+ * Admit under the shared health lock, handing back every probe ticket the
+ * decision does not dispatch. Unreadable or locked health fails open: the
+ * admission proceeds without health, as Pi would without Adaptive (ADP-031).
+ */
+async function admitWithHealth(
+  shared: SharedHealth,
+  candidates: readonly ModelRef[],
+  decide: (health: SchedulerInput["health"]) => AdmissionDecision,
+): Promise<AdmissionDecision> {
+  try {
+    return await withHealth(shared, (registry) => {
+      const { health, tickets } = assessCandidates(registry, candidates)
+      const decision = decide(health)
+      releaseUnselected(registry, tickets, decision.kind === "apply" ? decision.model : undefined)
+      return decision
+    })
+  } catch (error) {
+    logFailOpen("health", error)
+    return decide({})
+  }
+}
+
+/** The structural subset of Pi's `ExtensionContext` the outcome recorder reads. */
+export interface OutcomeContext {
+  readonly model: { readonly provider: string; readonly id: string } | undefined
+}
+
+interface DispatchedMessage {
+  readonly role: string
+  readonly provider?: string
+  readonly model?: string
+  readonly stopReason?: string
+  readonly errorMessage?: string
+}
+
+/**
+ * Record how each request Adaptive routed ended, before Pi decides whether to
+ * retry — so the retry's admission already sees it. OFF records nothing.
+ */
+export async function recordOutcome(
+  message: DispatchedMessage,
+  ctx: OutcomeContext,
+  sources: AdaptiveSources,
+): Promise<void> {
+  const { provider, model, stopReason } = message
+  if (
+    message.role !== "assistant" ||
+    selectedVirtual(ctx.model) === undefined ||
+    provider === undefined ||
+    provider === "adaptive" ||
+    model === undefined ||
+    stopReason === undefined
+  )
+    return
+  try {
+    if ((await sources.settings()).mode === "off") return
+    await withHealth(sources.health, (registry) => {
+      observeOutcome(
+        registry,
+        { providerID: provider, id: model },
+        { stopReason, errorMessage: message.errorMessage },
+      )
+    })
+  } catch (error) {
+    logFailOpen("health", error)
+  }
+}
+
 interface ContinuationMessage {
   readonly customType: string
   readonly content: string
@@ -157,10 +253,20 @@ interface ContinuationMessage {
   readonly details: unknown
 }
 
+function recoveryNotice(recovery: Recovery, escalated: boolean): string {
+  if (escalated) return `Adaptive: the task needs more capability; continuing on ${recovery.tier}.`
+  const failed = recovery.tried.map((ref) => ref.id).join(", ")
+  return failed === ""
+    ? `Adaptive: the request failed; continuing on ${recovery.tier}.`
+    : `Adaptive: ${failed} failed; continuing on another ${recovery.tier} model.`
+}
+
 /**
  * After a run settles, continue the task one tier up when the run failed on
- * a capability gap (ADP-015/016). Aborted runs never continue. Failures are
- * fail-open: the run simply stays failed, as it would without Adaptive.
+ * a capability gap (ADP-015/016), or on the same tier when it ended on a
+ * provider failure Pi did not retry (ADP-061). Aborted runs never continue.
+ * Failures are fail-open: the run simply stays failed, as it would without
+ * Adaptive.
  */
 export async function afterRun(
   event: { readonly aborted: boolean },
@@ -171,7 +277,7 @@ export async function afterRun(
   const id = selectedVirtual(ctx.model)
   if (event.aborted || id === undefined) return
   try {
-    const recovery = escalationAfterRun({
+    const input = {
       id,
       settings: await sources.settings(),
       branch: ctx.sessionManager.getBranch(),
@@ -181,10 +287,11 @@ export async function afterRun(
       })),
       tool: ESCALATION_TOOL_NAME,
       newId: sources.newId,
-    })
+    }
+    const escalation = escalationAfterRun(input)
+    const recovery = escalation ?? restartAfterRun(input)
     if (recovery === undefined) return
-    if (ctx.hasUI)
-      ctx.ui.notify(`Adaptive: the task needs more capability; continuing on ${recovery.tier}.`)
+    if (ctx.hasUI) ctx.ui.notify(recoveryNotice(recovery, escalation !== undefined))
     send({
       customType: CONTINUATION_TYPE,
       content: CONTINUATION_PROMPT,

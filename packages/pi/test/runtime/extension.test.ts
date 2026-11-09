@@ -1,5 +1,5 @@
-// covers: ["ADP-057", "ADP-064"]
-import { mkdtemp, rm } from "node:fs/promises"
+// covers: ["ADP-010", "ADP-011", "ADP-013", "ADP-014", "ADP-022", "ADP-057", "ADP-059", "ADP-061", "ADP-064"]
+import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expect, it } from "vitest"
@@ -18,8 +18,10 @@ import {
 } from "@earendil-works/pi-ai/providers/faux"
 import { defaultSettings } from "@coool/adaptive-core/state/settings/parse"
 import { registerAdaptive } from "../../src/host/extension.js"
+import { jsonFile } from "../../src/store.js"
 
 interface Harness {
+  readonly cwd: string
   readonly runtime: ModelRuntime
   readonly faux: ReturnType<typeof fauxProvider>
   readonly session: AgentSession
@@ -37,8 +39,18 @@ const settings = {
   },
 }
 
+interface SessionOptions {
+  readonly settings?: typeof settings
+  /** Pi's native retry; off unless a scenario exercises it. */
+  readonly retry?: boolean
+}
+
 /** A real Pi 1.5 session with Adaptive and a scripted local faux provider. */
-async function withSession(run: (harness: Harness) => Promise<void>): Promise<void> {
+async function withSession(
+  run: (harness: Harness) => Promise<void>,
+  options: SessionOptions = {},
+): Promise<void> {
+  const routed = options.settings ?? settings
   const cwd = await mkdtemp(join(tmpdir(), "adaptive-pi-sdk-"))
   try {
     const runtime = await ModelRuntime.create({
@@ -49,7 +61,7 @@ async function withSession(run: (harness: Harness) => Promise<void>): Promise<vo
     })
     const faux = fauxProvider({
       provider: "adaptive-faux",
-      models: [{ id: "quick" }, { id: "standard" }, { id: "advanced" }],
+      models: [{ id: "quick" }, { id: "standard" }, { id: "standard-b" }, { id: "advanced" }],
     })
     runtime.registerNativeProvider(faux.provider)
     await runtime.setRuntimeApiKey("adaptive-faux", "local-faux-test-data")
@@ -69,7 +81,7 @@ async function withSession(run: (harness: Harness) => Promise<void>): Promise<vo
           registerAdaptive(pi, {
             settings: () => {
               settingsReads += 1
-              return Promise.resolve(settings)
+              return Promise.resolve(routed)
             },
             capabilities: () =>
               Promise.resolve(
@@ -82,6 +94,14 @@ async function withSession(run: (harness: Harness) => Promise<void>): Promise<vo
             newId: () => {
               ids += 1
               return `id-${String(ids)}`
+            },
+            health: {
+              file: jsonFile(join(cwd, "adaptive", "health.json")),
+              clock: Date.now,
+              newId: () => {
+                ids += 1
+                return `probe-${String(ids)}`
+              },
             },
           })
           pi.registerTool({
@@ -109,13 +129,13 @@ async function withSession(run: (harness: Harness) => Promise<void>): Promise<vo
       sessionManager: SessionManager.inMemory(cwd),
       settingsManager: SettingsManager.inMemory({
         compaction: { enabled: false },
-        retry: { enabled: false },
+        retry: { enabled: options.retry ?? false, maxRetries: 3, baseDelayMs: 1 },
       }),
     })
     try {
       await session.bindExtensions({})
       session.setActiveToolsByName([])
-      await run({ runtime, faux, session, settingsReads: () => settingsReads, probeCalls })
+      await run({ cwd, runtime, faux, session, settingsReads: () => settingsReads, probeCalls })
     } finally {
       session.dispose()
     }
@@ -154,8 +174,9 @@ it("loads the real extension binding and dispatches every virtual entry through 
     await session.prompt("Manual model")
     expect(assistants(session).at(-1)?.model).toBe("standard")
     expect(faux.state.callCount).toBe(5)
-    // One read per route and one per settled Adaptive run; the manual run reads neither.
-    expect(harness.settingsReads()).toBe(8)
+    // One read per route, per routed response and per settled Adaptive run; the
+    // manual run reads none.
+    expect(harness.settingsReads()).toBe(12)
     await selectVirtual(harness, "auto")
     session.setActiveToolsByName(["adaptive_test_probe"])
     faux.setResponses([
@@ -165,7 +186,7 @@ it("loads the real extension binding and dispatches every virtual entry through 
     await session.prompt("Call the local probe")
     expect(harness.probeCalls).toEqual(["probe"])
     expect(faux.state.callCount).toBe(7)
-    expect(harness.settingsReads()).toBe(11)
+    expect(harness.settingsReads()).toBe(17)
     const toolRun = assistants(session).slice(-2)
     expect(toolRun.map((message) => message.model)).toEqual(["standard", "standard"])
     expect(toolRun.at(-1)?.stopReason).toBe("stop")
@@ -257,4 +278,213 @@ it("never escalates a pinned virtual tier", async () => {
     ])
     expect(faux.state.callCount).toBe(1)
   })
+})
+
+const twoStandard = {
+  ...settings,
+  tiers: {
+    ...settings.tiers,
+    standard: [
+      { providerID: "adaptive-faux", id: "standard" },
+      { providerID: "adaptive-faux", id: "standard-b" },
+    ],
+  },
+}
+const OUTAGE = "503 status code (no body)"
+const RATE_LIMITED = "429 Rate limit reached for requests per min"
+const QUOTA = "429 You exceeded your current quota, please check your plan and billing details."
+const AUTH = "401 Incorrect API key provided: sk-***."
+
+function failing(errorMessage: string) {
+  return fauxAssistantMessage("", { stopReason: "error", errorMessage })
+}
+
+/** Every routed response on the branch, including attempts Pi retried. */
+function outcomes(session: AgentSession) {
+  return session.sessionManager
+    .getBranch()
+    .flatMap((entry) =>
+      entry.type === "message" && entry.message.role === "assistant"
+        ? [[entry.message.model, entry.message.stopReason]]
+        : [],
+    )
+}
+
+function continuations(session: AgentSession) {
+  return session.sessionManager
+    .getBranch()
+    .filter(
+      (entry) => entry.type === "custom_message" && entry.customType === "adaptive.continuation",
+    )
+}
+
+async function healthFile(harness: Harness): Promise<unknown> {
+  return JSON.parse(await readFile(join(harness.cwd, "adaptive", "health.json"), "utf8"))
+}
+
+it("redirects Pi's native retry after a 503 to another model of the same tier", async () => {
+  await withSession(
+    async (harness) => {
+      const { faux, session } = harness
+      await selectVirtual(harness, "auto")
+      faux.setResponses([failing(OUTAGE), fauxAssistantMessage("Recovered")])
+      await session.prompt("Outage")
+      expect(outcomes(session)).toEqual([
+        ["standard", "error"],
+        ["standard-b", "stop"],
+      ])
+      expect(faux.state.callCount).toBe(2)
+      expect(continuations(session)).toEqual([])
+    },
+    { settings: twoStandard, retry: true },
+  )
+})
+
+it("redirects after a 429 and shares the rate limit through the health file", async () => {
+  await withSession(
+    async (harness) => {
+      const { faux, session } = harness
+      await selectVirtual(harness, "auto")
+      faux.setResponses([failing(RATE_LIMITED), fauxAssistantMessage("Recovered")])
+      await session.prompt("Rate limited")
+      expect(outcomes(session)).toEqual([
+        ["standard", "error"],
+        ["standard-b", "stop"],
+      ])
+      expect(await healthFile(harness)).toMatchObject({
+        records: expect.arrayContaining([
+          expect.objectContaining({
+            key: { providerID: "adaptive-faux", modelID: "standard" },
+            health: "rate_limited",
+          }),
+        ]) as unknown,
+      })
+      // The next task avoids the limited model from its first request.
+      faux.setResponses([fauxAssistantMessage("Fresh task")])
+      await session.prompt("Next task")
+      expect(assistants(session).at(-1)?.model).toBe("standard-b")
+    },
+    { settings: twoStandard, retry: true },
+  )
+})
+
+it("restarts a quota failure Pi does not retry on the same tier through a hidden continuation", async () => {
+  await withSession(
+    async (harness) => {
+      const { faux, session } = harness
+      await selectVirtual(harness, "auto")
+      faux.setResponses([failing(QUOTA), fauxAssistantMessage("Continued")])
+      await session.prompt("Quota")
+      expect(outcomes(session)).toEqual([
+        ["standard", "error"],
+        ["standard-b", "stop"],
+      ])
+      expect(continuations(session)).toMatchObject([
+        {
+          display: false,
+          details: {
+            tier: "standard",
+            restarts: 1,
+            tried: [{ providerID: "adaptive-faux", id: "standard" }],
+          },
+        },
+      ])
+    },
+    { settings: twoStandard, retry: true },
+  )
+})
+
+it("restarts a task at most twice", async () => {
+  await withSession(
+    async (harness) => {
+      const { faux, session } = harness
+      await selectVirtual(harness, "auto")
+      faux.setResponses([
+        failing(OUTAGE),
+        failing(OUTAGE),
+        failing(OUTAGE),
+        fauxAssistantMessage("never reached"),
+      ])
+      await session.prompt("Flaky")
+      expect(outcomes(session)).toEqual([
+        ["standard", "error"],
+        ["standard-b", "error"],
+        ["standard", "error"],
+      ])
+      expect(continuations(session)).toHaveLength(2)
+      expect(faux.state.callCount).toBe(3)
+    },
+    { settings: twoStandard },
+  )
+})
+
+it("ends with a clear error and no loop when every model of the tier is down", async () => {
+  await withSession(
+    async (harness) => {
+      const { faux, session } = harness
+      await selectVirtual(harness, "auto")
+      faux.setResponses([
+        failing(RATE_LIMITED),
+        failing(RATE_LIMITED),
+        fauxAssistantMessage("never reached"),
+      ])
+      await session.prompt("Everything limited")
+      expect(faux.state.callCount).toBe(2)
+      expect(outcomes(session)).toEqual([
+        ["standard", "error"],
+        ["standard-b", "error"],
+        ["auto", "error"],
+      ])
+      expect(assistants(session).at(-1)).toMatchObject({
+        provider: "adaptive",
+        errorMessage: "Adaptive unavailable: all-blocked. Check your tier settings.",
+      })
+      expect(continuations(session)).toEqual([])
+    },
+    { settings: twoStandard, retry: true },
+  )
+})
+
+it("never redirects or restarts a permanent auth failure", async () => {
+  await withSession(
+    async (harness) => {
+      const { faux, session } = harness
+      await selectVirtual(harness, "auto")
+      faux.setResponses([failing(AUTH), fauxAssistantMessage("never reached")])
+      await session.prompt("Bad key")
+      expect(outcomes(session)).toEqual([["standard", "error"]])
+      expect(faux.state.callCount).toBe(1)
+      expect(continuations(session)).toEqual([])
+    },
+    { settings: twoStandard, retry: true },
+  )
+})
+
+it("never restarts a run the user aborted", async () => {
+  await withSession(
+    async (harness) => {
+      const { faux, session } = harness
+      await selectVirtual(harness, "auto")
+      faux.setResponses([
+        async (_context, options) => {
+          void session.abort()
+          await new Promise<void>((resolve) => {
+            if (options?.signal?.aborted === true) resolve()
+            else
+              options?.signal?.addEventListener("abort", () => {
+                resolve()
+              })
+          })
+          return fauxAssistantMessage("cut off")
+        },
+        fauxAssistantMessage("never reached"),
+      ])
+      await session.prompt("Cancel me")
+      await session.waitForIdle()
+      expect(outcomes(session)).toEqual([["standard", "aborted"]])
+      expect(faux.state.callCount).toBe(1)
+      expect(continuations(session)).toEqual([])
+    },
+    { settings: twoStandard, retry: true },
+  )
 })

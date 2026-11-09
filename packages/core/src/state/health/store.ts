@@ -12,6 +12,19 @@ import { MAX_HEALTH_RECORDS, HEALTH_VERSION } from "./types.js"
 import type { HealthPayload, HealthStorage } from "./types.js"
 import type { ResourceRecord } from "../../health/resource-health/types.js"
 
+/**
+ * The bounded record set worth persisting: the most recently updated
+ * records — stale scopes matter less than the resources that are actually
+ * failing right now.
+ */
+export function retainedHealthRecords(records: readonly ResourceRecord[]): ResourceRecord[] {
+  return records.length > MAX_HEALTH_RECORDS
+    ? [...records]
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .slice(0, MAX_HEALTH_RECORDS)
+    : [...records]
+}
+
 export class HealthRecordStore {
   #records: ResourceRecord[] = []
   #queue: Promise<unknown> = Promise.resolve()
@@ -39,22 +52,13 @@ export class HealthRecordStore {
     return this.#records
   }
 
-  /**
-   * Replace the whole record set with a fresh registry snapshot. The bound
-   * keeps the most recently updated records — stale scopes matter less than
-   * the resources that are actually failing right now.
-   */
+  /** Replace the whole record set with a fresh registry snapshot (bounded). */
   replace(records: readonly ResourceRecord[]): Promise<void> {
     return this.#serialize(() => this.#replace(records))
   }
 
   async #replace(records: readonly ResourceRecord[]): Promise<void> {
-    const next =
-      records.length > MAX_HEALTH_RECORDS
-        ? [...records]
-            .sort((left, right) => right.updatedAt - left.updatedAt)
-            .slice(0, MAX_HEALTH_RECORDS)
-        : [...records]
+    const next = retainedHealthRecords(records)
     // Persist BEFORE committing memory: a write failure must leave memory
     // and disk consistent (the caller decides how to fail open).
     const payload: HealthPayload = {

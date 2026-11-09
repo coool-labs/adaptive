@@ -1,4 +1,4 @@
-// covers: ["ADP-015", "ADP-016", "ADP-017", "ADP-055"]
+// covers: ["ADP-009", "ADP-013", "ADP-015", "ADP-016", "ADP-017", "ADP-055", "ADP-061"]
 /**
  * Branch-aware task state for the Pi virtual models. Everything is derived
  * from the session branch Pi hands us — router state, tool results, and the
@@ -6,6 +6,7 @@
  * rewinds tier requests and escalation budgets. Pure: no Pi imports.
  */
 import { classifyFailure } from "@coool/adaptive-core/health/classifier/classify"
+import type { FailureClassification } from "@coool/adaptive-core/health/classifier/types"
 import {
   CAPABILITY_FAILURE_CATEGORIES,
   escalationDetail,
@@ -18,6 +19,7 @@ import { isTierName, nextTier } from "@coool/adaptive-core/routing/tier-policy/t
 import type { TierName } from "@coool/adaptive-core/routing/tier-policy/types"
 import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 import type { SettingsV1 } from "@coool/adaptive-core/state/settings/types"
+import { failureEvidence, type FailedMessage } from "./evidence.js"
 import type { VirtualID } from "./router.js"
 
 export const TIER_TOOL = "adaptive_tier"
@@ -25,6 +27,8 @@ export const CONTINUATION_TYPE = "adaptive.continuation"
 // Pi's own custom entry for router state (`VIRTUAL_MODEL_STATE_ENTRY`); the
 // constant is not exported from the package root.
 const ROUTER_STATE_ENTRY = "pi.virtual-model-state"
+/** Infra restarts after a run ended on a provider failure, per task (ADP-061). */
+export const MAX_RESTARTS_PER_TASK = 2
 
 /** The structural subset of Pi's `SessionEntry` this module reads. */
 export interface BranchEntry {
@@ -52,6 +56,9 @@ export interface TaskState {
   readonly unit: string
   readonly tier: TierName
   readonly escalations: number
+  readonly restarts: number
+  /** Models this unit failed over from; new admissions in the unit avoid them. */
+  readonly tried: readonly ModelRef[]
   /** Token of the last owned continuation already turned into a unit. */
   readonly consumed?: string
 }
@@ -62,12 +69,17 @@ export interface Recovery {
   readonly token: string
   readonly tier: TierName
   readonly escalations: number
+  readonly restarts: number
+  /** Models the new unit starts out avoiding (the one that just failed). */
+  readonly tried: readonly ModelRef[]
 }
 
 export interface RoutePlan {
   readonly tier: TierName
   /** Keep the previous physical model (in-unit continuation or retry). */
   readonly sticky: boolean
+  /** Models a non-sticky admission avoids while the tier has alternatives. */
+  readonly exclude: readonly ModelRef[]
   readonly state: TaskState | undefined
 }
 
@@ -91,11 +103,24 @@ function tier(value: unknown, label: string): TierName {
   return found
 }
 
-function count(value: unknown, label: string): number {
-  const found = field(value, "escalations")
+function count(value: unknown, key: string, label: string): number {
+  const found = field(value, key)
   if (typeof found !== "number" || !Number.isSafeInteger(found) || found < 0)
-    throw new Error(`${label}: escalations must be a non-negative integer`)
+    throw new Error(`${label}: ${key} must be a non-negative integer`)
   return found
+}
+
+function refs(value: unknown, label: string): ModelRef[] {
+  const found = field(value, "tried")
+  if (!Array.isArray(found)) throw new Error(`${label}: tried must be an array`)
+  return found.map((entry: unknown, index) => ({
+    providerID: text(entry, "providerID", `${label}: tried[${String(index)}]`),
+    id: text(entry, "id", `${label}: tried[${String(index)}]`),
+  }))
+}
+
+function sameRef(left: ModelRef, right: ModelRef): boolean {
+  return left.providerID === right.providerID && left.id === right.id
 }
 
 /** Total parser for persisted router state; `undefined` means none yet. */
@@ -111,7 +136,9 @@ export function parseTaskState(value: unknown): TaskState | undefined {
     task: text(value, "task", label),
     unit: text(value, "unit", label),
     tier: tier(value, label),
-    escalations: count(value, label),
+    escalations: count(value, "escalations", label),
+    restarts: count(value, "restarts", label),
+    tried: refs(value, label),
     ...(consumed === undefined ? {} : { consumed }),
   }
 }
@@ -122,7 +149,9 @@ function parseRecovery(value: unknown): Recovery {
     task: text(value, "task", label),
     token: text(value, "token", label),
     tier: tier(value, label),
-    escalations: count(value, label),
+    escalations: count(value, "escalations", label),
+    restarts: count(value, "restarts", label),
+    tried: refs(value, label),
   }
 }
 
@@ -189,43 +218,82 @@ export function pendingRecovery(
   return recovery.task === state.task && recovery.token !== state.consumed ? recovery : undefined
 }
 
+/** The request Pi is retrying: what failed and on which physical model. */
+export interface FailedRequest {
+  readonly model: ModelRef
+  readonly message: FailedMessage
+}
+
 export interface PlanRouteInput {
   readonly id: VirtualID
   readonly reason: "user" | "continuation" | "retry" | "direct"
   readonly state: TaskState | undefined
   readonly branch: readonly BranchEntry[]
+  readonly failed?: FailedRequest | undefined
   readonly newId: () => string
+}
+
+/** Infra failures that another resource of the same tier may absorb. */
+export function infraFailure(message: FailedMessage): FailureClassification | undefined {
+  const classification = classifyFailure(failureEvidence(message))
+  return classification.failoverEligible ? classification : undefined
 }
 
 /**
  * Which tier admits this request and how the task state moves. A user prompt
- * starts a new task (escalations never carry over); an owned continuation
- * starts a new unit of the same task; everything else stays in-unit.
+ * starts a new task (escalations and restarts never carry over); an owned
+ * continuation starts a new unit of the same task; a native retry after an
+ * infra failure re-admits within the tier, avoiding the models that failed
+ * (ADP-009/013 — never a capability escalation); everything else stays
+ * in-unit on the previous model.
  */
 export function planRoute(input: PlanRouteInput): RoutePlan {
   const selected: TierName = input.id === "auto" ? "standard" : input.id
-  if (input.reason === "direct") return { tier: "quick", sticky: false, state: input.state }
+  const { state } = input
+  if (input.reason === "direct")
+    return { tier: "quick", sticky: false, exclude: [], state: input.state }
   if (input.reason === "user") {
     const base = input.id === "auto" ? (tierRequest(input.branch) ?? selected) : selected
     return {
       tier: base,
       sticky: false,
-      state: { version: 1, task: input.newId(), unit: input.newId(), tier: base, escalations: 0 },
+      exclude: [],
+      state: {
+        version: 1,
+        task: input.newId(),
+        unit: input.newId(),
+        tier: base,
+        escalations: 0,
+        restarts: 0,
+        tried: [],
+      },
+    }
+  }
+  if (input.reason === "retry" && state !== undefined && input.failed !== undefined) {
+    const failed = input.failed
+    if (infraFailure(failed.message) !== undefined) {
+      const tried = state.tried.some((ref) => sameRef(ref, failed.model))
+        ? state.tried
+        : [...state.tried, failed.model]
+      return { tier: state.tier, sticky: false, exclude: tried, state: { ...state, tried } }
     }
   }
   const recovery =
-    input.reason === "continuation" ? pendingRecovery(input.branch, input.state) : undefined
+    input.reason === "continuation" ? pendingRecovery(input.branch, state) : undefined
   if (recovery === undefined)
-    return { tier: input.state?.tier ?? selected, sticky: true, state: input.state }
+    return { tier: state?.tier ?? selected, sticky: true, exclude: [], state }
   return {
     tier: recovery.tier,
     sticky: false,
+    exclude: recovery.tried,
     state: {
       version: 1,
       task: recovery.task,
       unit: input.newId(),
       tier: recovery.tier,
       escalations: recovery.escalations,
+      restarts: recovery.restarts,
+      tried: recovery.tried,
       consumed: recovery.token,
     },
   }
@@ -241,7 +309,7 @@ export function unitEvidence(branch: readonly BranchEntry[], tool: string): Esca
   })
 }
 
-export interface EscalationInput {
+export interface AfterRunInput {
   readonly id: VirtualID
   readonly settings: SettingsV1
   readonly branch: readonly BranchEntry[]
@@ -251,32 +319,57 @@ export interface EscalationInput {
   readonly newId: () => string
 }
 
+interface FailedRun {
+  readonly state: TaskState
+  readonly model: ModelRef
+  readonly classification: FailureClassification
+}
+
 /**
- * Decide, after a run settles, whether the task continues one tier up
- * (ADP-015..017). Only Adaptive Auto in active mode without a user pin
- * escalates, only on a capability-class failure of the run's last request,
- * only to a configured, dispatchable next-tier model, within the per-task
- * budget. A successful run never escalates, whatever the agent requested.
+ * The failure the settled run ended on, for an unpinned task in active mode.
+ * Without a user pin the routing is Adaptive's; with one it never recovers on
+ * the user's behalf.
  */
-export function escalationAfterRun(input: EscalationInput): Recovery | undefined {
-  if (input.id !== "auto" || input.settings.mode !== "active" || input.settings.pin !== null)
-    return undefined
+function failedRun(input: AfterRunInput): FailedRun | undefined {
+  if (input.settings.mode !== "active" || input.settings.pin !== null) return undefined
   const state = branchState(input.branch, input.id)
   const last = currentUnit(input.branch).findLast((entry) => entry.message?.role === "assistant")
   const message = last?.message
-  if (state === undefined || message?.stopReason !== "error") return undefined
-  const classification = classifyFailure({ text: message.errorMessage ?? "" })
-  if (!CAPABILITY_FAILURE_CATEGORIES.includes(classification.category)) return undefined
+  // A run Adaptive's own route ended (Pi records it under the virtual model)
+  // carries no provider evidence to recover from.
+  if (state === undefined || message?.stopReason !== "error" || message.provider === "adaptive")
+    return undefined
+  return {
+    state,
+    model: { providerID: message.provider ?? "", id: message.model ?? "" },
+    classification: classifyFailure(
+      failureEvidence({ stopReason: message.stopReason, errorMessage: message.errorMessage }),
+    ),
+  }
+}
+
+/**
+ * Decide, after a run settles, whether the task continues one tier up
+ * (ADP-015..017). Only Adaptive Auto escalates, only on a capability-class
+ * failure of the run's last request, only to a configured, dispatchable
+ * next-tier model, within the per-task budget. A successful run never
+ * escalates, whatever the agent requested.
+ */
+export function escalationAfterRun(input: AfterRunInput): Recovery | undefined {
+  const run = input.id === "auto" ? failedRun(input) : undefined
+  if (run === undefined || !CAPABILITY_FAILURE_CATEGORIES.includes(run.classification.category))
+    return undefined
+  const { state } = run
   const next = nextTier(state.tier)
   const plan = planEscalation({
-    currentModel: { providerID: message.provider ?? "", id: message.model ?? "" },
+    currentModel: run.model,
     currentTier: state.tier,
     nextTierResources: (next === undefined ? [] : input.settings.tiers[next]).filter((ref) =>
-      input.available.some((model) => model.providerID === ref.providerID && model.id === ref.id),
+      input.available.some((model) => sameRef(model, ref)),
     ),
     evidence: [
       ...unitEvidence(input.branch, input.tool),
-      { kind: "repeated-failure", detail: classification.category },
+      { kind: "repeated-failure", detail: run.classification.category },
     ],
     budget: { used: state.escalations, max: MAX_ESCALATIONS_PER_TASK },
   })
@@ -286,5 +379,30 @@ export function escalationAfterRun(input: EscalationInput): Recovery | undefined
     token: input.newId(),
     tier: plan.tier,
     escalations: state.escalations + 1,
+    restarts: state.restarts,
+    tried: [],
+  }
+}
+
+/**
+ * Decide, after a run settles on an infra failure Pi did not (or could no
+ * longer) retry — quota and billing errors are never retried natively —
+ * whether the task continues on another model of the SAME tier (ADP-061).
+ * Bounded per task; the failed model is avoided while the tier has another.
+ */
+export function restartAfterRun(input: AfterRunInput): Recovery | undefined {
+  const run = failedRun(input)
+  if (!run?.classification.failoverEligible) return undefined
+  const { state } = run
+  if (state.restarts >= MAX_RESTARTS_PER_TASK) return undefined
+  return {
+    task: state.task,
+    token: input.newId(),
+    tier: state.tier,
+    escalations: state.escalations,
+    restarts: state.restarts + 1,
+    // A failure without provider metadata names no model to avoid; an empty
+    // reference would make the continuation unparseable.
+    tried: [run.model].filter((ref) => ref.providerID !== "" && ref.id !== ""),
   }
 }

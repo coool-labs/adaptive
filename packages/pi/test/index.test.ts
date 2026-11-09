@@ -25,6 +25,14 @@ it("loads defaults only for a missing file and rejects malformed settings with f
   if (sources === undefined) throw new Error("binding missing")
   expect(sources.newId()).toMatch(/^[0-9a-f-]{36}$/)
   expect(sources.newId()).not.toBe(sources.newId())
+  expect(sources.health.clock).toBe(Date.now)
+  expect(sources.health.newId()).toMatch(/^[0-9a-f-]{36}$/)
+  bindings.read.mockResolvedValueOnce('{"version":1,"records":[]}')
+  expect(await sources.health.file.read()).toEqual({ version: 1, records: [] })
+  expect(bindings.read).toHaveBeenLastCalledWith(
+    expect.stringMatching(/[/\\]adaptive[/\\]health\.json$/),
+    "utf8",
+  )
   bindings.read.mockResolvedValueOnce('{"models":[]}')
   expect(await sources.capabilities()).toEqual([])
   const load = sources.settings

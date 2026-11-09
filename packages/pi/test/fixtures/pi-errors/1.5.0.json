@@ -104,6 +104,13 @@
     "definitive": false
   },
   {
+    "source": "openai-completions content_filter finish reason (api/openai-completions.js)",
+    "stopReason": "error",
+    "errorMessage": "Provider finish_reason: content_filter",
+    "category": "content_policy",
+    "definitive": false
+  },
+  {
     "source": "anthropic refusal (api/anthropic-messages.js)",
     "stopReason": "error",
     "errorMessage": "The model refused to complete the request",

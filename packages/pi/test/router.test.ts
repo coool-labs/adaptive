@@ -1,6 +1,7 @@
 import { expect, it } from "vitest"
+import { schedulerHealthKey } from "@coool/adaptive-core/routing/scheduler/types"
 import { defaultSettings } from "@coool/adaptive-core/state/settings/parse"
-import { routeAdmission, VIRTUAL_IDS, type RouteInput } from "../src/router.js"
+import { admissionCandidates, routeAdmission, VIRTUAL_IDS, type RouteInput } from "../src/router.js"
 
 const a = { providerID: "faux", id: "a" }
 const b = { providerID: "faux", id: "b" }
@@ -22,6 +23,8 @@ const input: RouteInput = {
     variantAvailable: true,
   })),
   demand: {},
+  health: {},
+  exclude: [],
 }
 
 it("registers exactly the four intended virtual IDs and admits within the planned tier", () => {
@@ -58,4 +61,30 @@ it("never borrows from another tier and gates compatibility", () => {
     kind: "park",
     reason: "no-compatible-resource",
   })
+})
+
+it("avoids models the unit already failed on, falling back to them when nothing else fits", () => {
+  const tiers = { ...settings.tiers, standard: [b, a] }
+  const recovering = { ...input, settings: { ...settings, tiers } }
+  expect(routeAdmission({ ...recovering, exclude: [b] })).toMatchObject({ kind: "apply", model: a })
+  expect(routeAdmission({ ...input, exclude: [b] })).toMatchObject({ kind: "apply", model: b })
+  // Health still blocks the fallback: an excluded, limited model is not retried.
+  expect(
+    routeAdmission({
+      ...input,
+      exclude: [b],
+      health: {
+        [schedulerHealthKey(b)]: {
+          kind: "blocked",
+          reason: "rate-limited",
+          key: { providerID: "faux", modelID: "b" },
+        },
+      },
+    }),
+  ).toMatchObject({ kind: "park" })
+})
+
+it("lists the tier's models for admission, or only the user pin", () => {
+  expect(admissionCandidates(settings, "standard")).toEqual([b])
+  expect(admissionCandidates({ ...settings, pin: a }, "standard")).toEqual([a])
 })

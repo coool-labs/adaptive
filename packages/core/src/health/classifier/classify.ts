@@ -105,9 +105,11 @@ const TEXTUAL_PATTERNS: readonly {
     pattern: /model.{0,30}(does not exist|not found)|invalid model|unknown model|no such model/i,
   },
   {
+    // OpenAI-compatible finish reasons arrive snake-cased ("Provider
+    // finish_reason: content_filter" in pi-ai).
     category: "content_policy",
     pattern:
-      /content (management )?(policy|filter)|safety system|violates?.{0,32}policy|flagged as/i,
+      /content[ _](management[ _])?(policy|filter)|safety system|violates?.{0,32}policy|flagged as/i,
   },
   { category: "overload", pattern: /overloaded|over capacity|high demand/i },
   { category: "user_cancelled", pattern: /cancel+(l)?ed|aborted by (the )?user|user abort/i },
