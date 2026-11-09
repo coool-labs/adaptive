@@ -877,8 +877,8 @@ it("reports setup problems with a remedy in /adaptive doctor", async () => {
       expect(report).toContain("Adaptive doctor")
       expect(report).toContain(`OK Pi ${VERSION} (supported: ≥1.5.0 <2)`)
       expect(report).toContain("OK All four Adaptive models registered")
-      expect(report).toContain("OK adaptive-faux/standard (standard): credentials configured")
-      expect(report).toContain("ERROR adaptive-faux/ghost (advanced): model missing")
+      expect(report).toContain("OK Credentials configured for")
+      expect(report).toContain("FIX adaptive-faux/ghost (advanced): model missing")
       expect(report).toContain("Refresh Pi's model catalog or remove this tier entry.")
       expect(report).toContain("OK Shared storage writable")
     },

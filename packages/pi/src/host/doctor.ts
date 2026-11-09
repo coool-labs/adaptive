@@ -37,6 +37,8 @@ export async function doctorChecks(options: DoctorOptions): Promise<DoctorCheck[
   try {
     const settings = await options.settings()
     const capabilities = await options.capabilities()
+    const credentialed: string[] = []
+    const undeclared = new Set<string>()
     for (const tier of TIERS) {
       if (settings.tiers[tier].length === 0)
         checks.push({
@@ -58,24 +60,26 @@ export async function doctorChecks(options: DoctorOptions): Promise<DoctorCheck[
             message: `${resourceLabel(ref)} (${tier}): no credentials configured`,
             action: `Run /login ${ref.providerID}, or remove it from the tier.`,
           })
-        else
-          checks.push({
-            state: "ok",
-            message: `${resourceLabel(ref)} (${tier}): credentials configured`,
-          })
+        else credentialed.push(resourceLabel(ref))
         if (
           !capabilities.some(
             (entry) => entry.providerID === ref.providerID && entry.id === ref.id && entry.tools,
           )
         )
-          checks.push({
-            state: "warning",
-            message: `${resourceLabel(ref)}: tool support is not declared`,
-            action:
-              "Confirm tool support in adaptive/capabilities.json; never guess it from the model name.",
-          })
+          undeclared.add(resourceLabel(ref))
       }
     }
+    if (credentialed.length > 0)
+      checks.push({
+        state: "ok",
+        message: `Credentials configured for ${String(credentialed.length)} tier ${credentialed.length === 1 ? "model" : "models"}`,
+      })
+    if (undeclared.size > 0)
+      checks.push({
+        state: "warning",
+        message: `Tool support not declared: ${[...undeclared].join(", ")}`,
+        action: "List them in adaptive/capabilities.json; Adaptive never guesses from a name.",
+      })
   } catch {
     checks.push({
       state: "error",
@@ -118,11 +122,13 @@ export async function doctorChecks(options: DoctorOptions): Promise<DoctorCheck[
     const limited = await options.health()
     checks.push({
       state: "ok",
-      message: `Health: ${String(limited)} resources limited`,
-      action:
-        limited > 0
-          ? "Inspect /adaptive health; reset only after checking the provider."
-          : "No health action needed.",
+      message:
+        limited === 0
+          ? "Health: no resources limited"
+          : `Health: ${String(limited)} ${limited === 1 ? "resource" : "resources"} limited`,
+      ...(limited === 0
+        ? {}
+        : { action: "Inspect /adaptive health; reset only after checking the provider." }),
     })
   } catch {
     checks.push({
@@ -135,7 +141,10 @@ export async function doctorChecks(options: DoctorOptions): Promise<DoctorCheck[
     const parked = await options.parked()
     checks.push({
       state: "ok",
-      message: parked === 0 ? "No parked work" : `${String(parked)} parked tasks`,
+      message:
+        parked === 0
+          ? "No parked work"
+          : `${String(parked)} parked ${parked === 1 ? "task" : "tasks"}`,
       ...(parked === 0
         ? {}
         : { action: "Use /adaptive resume or /adaptive cancel in the waiting session." }),

@@ -14,6 +14,8 @@ import { createServer } from "node:http"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { exercisePicker } from "../packages/pi/test/tui/picker.spec.js"
+import { exerciseParking } from "../packages/pi/test/tui/parking.spec.js"
+import { exerciseJourneys } from "../packages/pi/test/tui/journeys.spec.js"
 import { exerciseJson } from "../packages/pi/test/matrix/json.spec.js"
 import {
   assertSupportedPi,
@@ -310,6 +312,8 @@ try {
       fixture,
       screenshot: join(directory, "tui-screen.txt"),
     })
+    await exerciseJourneys({ node, cli, cwd: directory, env, fixture })
+    await exerciseParking({ node, cli, cwd: directory, env, fixture })
     passed.push({ requested, version: actual, surface: "tui" })
     console.log(`Pi ${requested} (${actual}) tui PASS`)
   }
@@ -338,6 +342,6 @@ try {
   )
   writeFileSync(
     join(artifacts, "evidence.json"),
-    `${JSON.stringify({ ...report, minimum: matrix.minimum, requested: matrix.versions, resolved, passed, artifact: { filename: pack.filename, integrity }, generatedAt: new Date().toISOString(), hostNode: node, runnerNode: process.versions.node, optionalExclusions: ["Opt-in paid-provider error capture is not run; golden corpus inspection remains the deterministic gate."], pendingMilestones: ["M6 command/onboarding/status/shortcut and M4 packed all-down/parking journeys remain; this is not milestone completion evidence."] }, null, 2)}\n`,
+    `${JSON.stringify({ ...report, minimum: matrix.minimum, requested: matrix.versions, resolved, passed, artifact: { filename: pack.filename, integrity }, generatedAt: new Date().toISOString(), hostNode: node, runnerNode: process.versions.node, optionalExclusions: ["Opt-in paid-provider error capture is not run; golden corpus inspection remains the deterministic gate."] }, null, 2)}\n`,
   )
 }

@@ -64,11 +64,24 @@ export function versionChecks(
   return checks
 }
 
-const LABELS: Record<DoctorCheck["state"], string> = { ok: "OK", warning: "CHECK", error: "ERROR" }
+const LABELS: Record<DoctorCheck["state"], string> = { ok: "OK", warning: "CHECK", error: "FIX" }
 
+const SEVERITY: readonly DoctorCheck["state"][] = ["error", "warning", "ok"]
+
+/** Problems first: the first screen answers "is anything wrong, and what do I do". */
 export function doctorLines(checks: readonly DoctorCheck[]): string[] {
-  return checks.flatMap((check) => [
-    `${LABELS[check.state]} ${check.message}`,
-    ...(check.action === undefined ? [] : [`  ${check.action}`]),
-  ])
+  const count = (state: DoctorCheck["state"]) =>
+    checks.filter((check) => check.state === state).length
+  const problems = count("error") + count("warning")
+  return [
+    problems === 0
+      ? `All ${String(checks.length)} checks OK`
+      : `${String(count("error"))} to fix · ${String(count("warning"))} to check · ${String(count("ok"))} OK`,
+    ...SEVERITY.flatMap((state) => checks.filter((check) => check.state === state)).flatMap(
+      (check) => [
+        `${LABELS[check.state]} ${check.message}`,
+        ...(check.action === undefined ? [] : [`  ${check.action}`]),
+      ],
+    ),
+  ]
 }

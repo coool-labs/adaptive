@@ -36,11 +36,18 @@ restart, auth rejection without retry, real picker selection, Ctrl+P cycling and
 physical takeover. A fresh child avoids the preferred standard model after another
 process records its 429, proving shared health across real processes. Host-only
 fixture probes exercise widget/status rendering at
-40/80 columns and the available Ctrl+Alt+A binding; these do **not** count as
-Adaptive's unfinished M6 UX.
+40/80 columns and the available Ctrl+Alt+A binding; these probe the host,
+not Adaptive's own surfaces.
 
-The production command/onboarding/status/shortcut journeys must be added when M6
-lands. Packed all-down/parking/restart journeys must be finalized against M4.
+The production PTY journeys (`test/tui/journeys.spec.ts`, `parking.spec.ts`) run against the
+packed extension and Pi's faux provider: first-run proposal and consent, routed turn and
+dim note, 429 retry within the tier, manual model pick (paused note), tier reorder persisting
+across a restart, doctor with a missing credential, two live processes sharing one 429, the
+all-down parked card, reset, Esc during a short wait, and durable mid-run park/wake. The
+first-run, parked card, picker, status, doctor and note screens are checked at 60×24, 80×24
+and 120×40 with the action footer whole; every checked frame is kept under `screens/` in the
+run directory. A park before a session's first message is not restart-durable (Pi writes a
+session file only once it holds a conversation), so restart journeys use mid-run parks.
 Traceability remains a separate mandatory gate and reports missing requirements;
 passing this matrix does not make unfinished milestones release-ready. Paid,
 opt-in error capture is deliberately excluded, not treated as a bypass for the

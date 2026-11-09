@@ -31,6 +31,7 @@ it("loads defaults only for a missing file and rejects malformed settings with f
     registerCommand: vi.fn(),
     registerShortcut: vi.fn(),
     setModel: vi.fn(),
+    registerEntryRenderer: vi.fn(),
   })
   const sources = bindings.sources
   if (sources === undefined) throw new Error("binding missing")

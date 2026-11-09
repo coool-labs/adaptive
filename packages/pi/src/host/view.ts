@@ -1,4 +1,9 @@
-import { parseKey, visibleWidth } from "@earendil-works/pi-tui"
+import {
+  parseKey,
+  replaceControlCharacters,
+  visibleWidth,
+  wrapTextWithAnsi,
+} from "@earendil-works/pi-tui"
 import type { AdaptiveView } from "@coool/adaptive-core/flow/controller"
 import type { SelectOption } from "@coool/adaptive-core/flow/options"
 import { fitLine } from "./entries.js"
@@ -25,9 +30,28 @@ interface DialogHost {
     ): Promise<T>
   }
 }
+/**
+ * Pi draws a two-line footer under a dialog and mis-renders (drops the dialog's last line) a
+ * frame exactly as tall as the terminal, so a dialog keeps one spare row.
+ */
+function available(rows: number): number {
+  return rows - 3
+}
 interface PickResult<T> {
   picked: T | undefined
   action: string | undefined
+}
+
+/** Wrapping keeps whole model names and remedies readable; continuations keep the line's indent. */
+function wrap(lines: readonly string[], width: number): string[] {
+  return lines.flatMap((raw) => {
+    const line = replaceControlCharacters(raw)
+    const indent = Math.min(line.length - line.trimStart().length, Math.max(0, width - 1))
+    const pad = " ".repeat(indent)
+    return wrapTextWithAnsi(line.slice(indent), Math.max(1, width - indent)).map(
+      (part) => `${pad}${part}`,
+    )
+  })
 }
 
 /** Search and page actions stay keyboard-accessible without becoming fake model rows. */
@@ -48,8 +72,8 @@ export function picker<T>(
   return {
     render(width) {
       const rows = filtered()
-      const headings = title.split("\n")
-      const count = Math.max(1, height - headings.length - actions.length - 4)
+      const headings = wrap(title.split("\n"), width)
+      const count = Math.max(1, available(height) - headings.length - actions.length - 2)
       const offset = Math.max(0, selected - count + 1)
       return [
         ...headings,
@@ -61,7 +85,7 @@ export function picker<T>(
               `${offset + index === selected ? ">" : " "} ${row.title}${row.description === undefined ? "" : ` — ${row.description}`}`,
           ),
         ...(rows.length === 0 ? ["No matches"] : []),
-        `${String(rows.length)} choices · Enter select · Esc back`,
+        `${String(rows.length)} ${rows.length === 1 ? "choice" : "choices"} · Enter select · Esc back`,
         ...actions.map((action) => `${action.bind}: ${action.title}`),
       ].map((line) => fitLine(line, width))
     },
@@ -139,13 +163,19 @@ export function piView(host: DialogHost): AdaptiveView {
     }
     await host.ui.custom<undefined>((tui, _theme, _keys, done) => {
       let offset = 0
-      const count = Math.max(1, tui.terminal.rows - 4)
+      let total = Math.max(lines.length, compact.length)
+      const count = Math.max(1, available(tui.terminal.rows) - 2)
       return {
         render(width) {
-          const source = lines.some((line) => visibleWidth(line) > width) ? compact : lines
+          const shown = wrap(
+            lines.some((line) => visibleWidth(line) > width) ? compact : lines,
+            width,
+          )
+          total = shown.length
+          offset = Math.min(offset, Math.max(0, total - count))
           return [
             title,
-            ...source.slice(offset, offset + count),
+            ...shown.slice(offset, offset + count),
             "↑/↓ scroll · Enter or Esc back",
           ].map((line) => fitLine(line, width))
         },
@@ -156,11 +186,7 @@ export function piView(host: DialogHost): AdaptiveView {
             return
           }
           if (key === "up") offset = Math.max(0, offset - 1)
-          if (key === "down")
-            offset = Math.min(
-              Math.max(0, Math.max(lines.length, compact.length) - count),
-              offset + 1,
-            )
+          if (key === "down") offset = Math.min(Math.max(0, total - count), offset + 1)
           tui.requestRender()
         },
         invalidate() {

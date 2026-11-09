@@ -1,0 +1,24 @@
+ ▀▀█  v1.5.0                                                                    
+ █▀ █ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash ·       
+ ctrl+o more                                                                    
+ Press ctrl+o to show full startup help and loaded resources.                   
+                                                                                
+ Pi can explain its own features and look up its docs. Ask it how to use or     
+ extend Pi.                                                                     
+
+
+ Warning: fd not found. Offline mode enabled, skipping download.                
+
+Adaptive is installed
+quick: adaptive-faux/advanced · adaptive-faux/manual-physical
+standard: adaptive-faux/quick · adaptive-faux/standard
+advanced: adaptive-faux/standard-b
+Tool support must be confirmed separately; /adaptive doctor checks it.
+Search: 
+> Save tiers and use Adaptive this session
+  Save tiers, keep my current model
+  Edit suggested tiers…
+  Not now
+4 choices · Enter select · Esc back
+~ (main)
+0.0%/0                                                                      auto

@@ -36,6 +36,7 @@ function fixture(options: { settings?: SettingsV1; preferences?: unknown } = {})
   const entries: { customType: string; data: unknown }[] = []
   const on = vi.fn()
   const registerVirtualModel = vi.fn()
+  const registerEntryRenderer = vi.fn()
   // The fake implements exactly the host surface registerAdaptive consumes; the
   // overloaded `on` cannot be expressed by a plain function.
   const pi = {
@@ -48,6 +49,7 @@ function fixture(options: { settings?: SettingsV1; preferences?: unknown } = {})
     registerCommand: vi.fn(),
     registerShortcut: vi.fn(),
     setModel: vi.fn(),
+    registerEntryRenderer,
     appendEntry: (customType: string, data: unknown) => {
       entries.push({ customType, data })
     },
@@ -67,7 +69,7 @@ function fixture(options: { settings?: SettingsV1; preferences?: unknown } = {})
     .map(([definition]) => definition as { id: string; route: (...args: unknown[]) => unknown })
     .find((definition) => definition.id === "auto")
   if (auto === undefined) throw new Error("auto model missing")
-  return { sources, entries, handler, auto }
+  return { sources, entries, handler, auto, registerEntryRenderer }
 }
 
 const ui = {
@@ -92,6 +94,20 @@ function context(model: unknown, session: string | null = "session") {
 }
 const virtual = { provider: "adaptive", id: "auto" }
 const request = { model: a, reason: "user", thinkingLevel: "off", messages: [] }
+
+it("says when a dispatch is a retry after a failure", async () => {
+  const f = fixture()
+  await f.auto.route({ ...request, reason: "retry" }, context(virtual))
+  await f.handler("session_shutdown")({}, context(virtual))
+  expect(f.entries).toMatchObject([
+    { customType: NOTE_ENTRY, data: { text: "standard → local/b · retry" } },
+  ])
+})
+
+it("renders the notes it writes: the transcript entry type has a registered renderer", () => {
+  const f = fixture()
+  expect(f.registerEntryRenderer).toHaveBeenCalledWith(NOTE_ENTRY, expect.any(Function))
+})
 
 it("keeps the receipt and its outcome even when notes are quiet", async () => {
   const f = fixture({ preferences: quiet })
@@ -124,6 +140,24 @@ it("observes a manual model: one receipt and a note, never an intervention", asy
   expect(f.entries).toMatchObject([
     { customType: NOTE_ENTRY, data: { text: expect.stringContaining("Observing") as unknown } },
   ])
+})
+
+it("notes leaving Adaptive for a physical model, and only then", async () => {
+  const f = fixture()
+  const select = f.handler("model_select")
+  await select({ model: a, previousModel: virtual, source: "set" }, context(a))
+  await select({ model: a, previousModel: undefined, source: "restore" }, context(a))
+  await select({ model: a, previousModel: a, source: "set" }, context(a))
+  await select({ model: virtual, previousModel: a, source: "set" }, context(virtual))
+  expect(f.entries).toEqual([
+    { customType: NOTE_ENTRY, data: { version: 1, text: "Paused · you picked local/a" } },
+  ])
+  const quietly = fixture({ preferences: quiet })
+  await quietly.handler("model_select")({ model: a, previousModel: virtual }, context(a))
+  expect(quietly.entries).toEqual([])
+  const broken = fixture({ preferences: { verbosity: "loud" } })
+  await broken.handler("model_select")({ model: a, previousModel: virtual }, context(a))
+  expect(broken.entries).toEqual([])
 })
 
 it("leaves a manual model alone when Adaptive is off or an input is extension-made", async () => {

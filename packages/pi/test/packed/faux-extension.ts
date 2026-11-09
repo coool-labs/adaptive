@@ -48,6 +48,15 @@ export default function fauxExtension(pi: ExtensionAPI): void {
       file: ctx.sessionManager.getSessionFile(),
       session: ctx.sessionManager.getSessionId(),
     })
+    // A real catalog model this isolated host has no credentials for, for the doctor journey.
+    const keyless = ctx.modelRegistry
+      .getAll()
+      .find(
+        (model) =>
+          !(model.provider.startsWith("adaptive") || ctx.modelRegistry.hasConfiguredAuth(model)),
+      )
+    if (keyless !== undefined)
+      log({ kind: "keyless", provider: keyless.provider, model: keyless.id })
   })
   pi.on("agent_settled", (event) => {
     log({ kind: "settled", aborted: event.aborted })

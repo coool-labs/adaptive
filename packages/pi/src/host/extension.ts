@@ -10,13 +10,13 @@ import { readPreferences } from "../preferences.js"
 import { attachReceiptOutcome, recordReceipt } from "../receipts.js"
 import { effectiveMode } from "../session.js"
 import type { JsonFile, JsonTransactionFile } from "../store.js"
-import { decisionNote, shouldWriteNote, type AdaptiveNote } from "../ui/notes.js"
+import { decisionNote, pausedNote, shouldWriteNote, type AdaptiveNote } from "../ui/notes.js"
 import { observeOutcome, withHealth, type SharedHealth } from "../health.js"
 import type { ToolCapability } from "../capabilities.js"
 import type { ParkingSources } from "../parking.js"
 import type { SharedCapacity } from "../capacity.js"
 import { dispatchCapacity } from "./dispatch-capacity.js"
-import { appendNote } from "./entries.js"
+import { appendNote, registerEntries } from "./entries.js"
 import { observeInput, type NoteTracker } from "./observe.js"
 import {
   CONTINUATION_TYPE,
@@ -54,6 +54,7 @@ type Host = Pick<
   | "registerCommand"
   | "registerShortcut"
   | "setModel"
+  | "registerEntryRenderer"
 >
 
 export interface SettleContext extends Omit<RouteContext, "ui"> {
@@ -73,6 +74,7 @@ export function registerAdaptive(pi: Host, sources: AdaptiveSources, host: HostS
       unit: string | undefined
       tier: TierName
       session: string | undefined
+      retry: boolean
     },
     model: { readonly provider: string; readonly id: string },
   ): Promise<void> => {
@@ -95,11 +97,22 @@ export function registerAdaptive(pi: Host, sources: AdaptiveSources, host: HostS
     if (!shouldWriteNote(verbosity, info.decision, tracker.last)) return
     const note: AdaptiveNote = {
       version: 1,
-      text: decisionNote(info.decision, info.tier),
+      text: decisionNote(info.decision, info.tier, info.retry),
       receiptID: receipt.id,
     }
     appendNote(pi, note)
     tracker.last = info.decision
+  }
+  registerEntries(pi)
+  const pausedAt = async (model: { readonly provider: string; readonly id: string }) => {
+    try {
+      const { verbosity } = await readPreferences(sources.preferences)
+      if (verbosity === "quiet") return
+      appendNote(pi, { version: 1, text: pausedNote(model) })
+      tracker.last = undefined
+    } catch (error) {
+      logFailOpen("notes", error)
+    }
   }
   const parking = parkingHandlers(pi, sources, tracker)
   const surface = adaptiveSurface(pi, sources, host, parking)
@@ -108,8 +121,12 @@ export function registerAdaptive(pi: Host, sources: AdaptiveSources, host: HostS
     if (parked.action === "handled") return parked
     return observeInput(pi, sources, tracker)(event, ctx)
   })
-  pi.on("model_select", (event, ctx) => {
-    if (selectedVirtual(event.model) === undefined) capacity.clear()
+  pi.on("model_select", async (event, ctx) => {
+    if (selectedVirtual(event.model) === undefined) {
+      capacity.clear()
+      // Only leaving Adaptive is news; startup and restored sessions are not.
+      if (selectedVirtual(event.previousModel) !== undefined) await pausedAt(event.model)
+    }
     return parking.modelSelect(event.model, ctx)
   })
   pi.on("session_start", async (_event, ctx) => {

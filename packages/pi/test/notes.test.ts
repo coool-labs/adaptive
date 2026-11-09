@@ -1,7 +1,7 @@
 // covers: ["ADP-057", "ADP-058"]
 import { expect, it } from "vitest"
 import type { Decision } from "@coool/adaptive-core/routing/scheduler/types"
-import { shouldWriteNote, decisionNote } from "../src/ui/notes.js"
+import { shouldWriteNote, decisionNote, pausedNote } from "../src/ui/notes.js"
 import { PI_COPY } from "../src/ui/copy.js"
 import { whatHappened } from "@coool/adaptive-core/flow/receipts"
 
@@ -40,7 +40,23 @@ it("formats the finite decision vocabulary without raw errors or evidence prose"
   expect(decisionNote({ kind: "observe-only", would: apply }, "standard")).toContain(
     "would standard",
   )
-  expect(decisionNote(park, "standard")).toContain("waiting")
+  expect(decisionNote(park, "standard")).toBe("standard waiting · all models unavailable")
+  expect(decisionNote({ ...apply, reason: "fallback" }, "standard")).toBe(
+    "standard → p/m · fallback",
+  )
+  expect(decisionNote({ ...apply, reason: "probe" }, "standard")).toBe(
+    "standard → p/m · testing recovery",
+  )
+  for (const reason of ["no-candidates", "no-compatible-resource", "pin-blocked"] as const)
+    expect(decisionNote({ kind: "park", reason }, "quick")).not.toContain("-")
+  expect(decisionNote({ kind: "defer", reason: "pin-incompatible" }, "quick")).toBe(
+    "Not routing · pin incompatible · /adaptive why",
+  )
+  expect(decisionNote(apply, "standard", true)).toBe("standard → p/m · retry")
+  expect(decisionNote({ kind: "observe-only", would: apply }, "standard", true)).toBe(
+    "Observing · would standard → p/m · retry",
+  )
+  expect(pausedNote({ provider: "p", id: "m" })).toBe("Paused · you picked p/m")
   expect(decisionNote({ kind: "defer", reason: "pin-incompatible" }, "quick")).toContain(
     "/adaptive why",
   )

@@ -62,13 +62,16 @@ export function clearParked(ctx: RouteContext): void {
 export function showParked(ctx: RouteContext, record: Parked): void {
   if (!ctx.hasUI) return
   const when = new Date(record.due).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-  const resume =
-    record.wakes >= MAX_WAKES
-      ? "Automatic wake limit reached. Send a new message or pick a model."
-      : `Resumes ${when}. Send a new message or pick a model to cancel.`
+  const exhausted = record.wakes >= MAX_WAKES
   ctx.ui?.setStatus(
     "adaptive",
-    `⏸ ${record.tier} parked · ${record.wakes >= MAX_WAKES ? "needs your input" : `resumes ${when}`}`,
+    `${record.tier} parked · ${exhausted ? "needs your input" : `resumes ${when}`}`,
   )
-  ctx.ui?.setWidget("adaptive", [`⏸ Parked: no available ${record.tier} model`, resume])
+  ctx.ui?.setWidget("adaptive", [
+    `Parked: no available ${record.tier} model`,
+    exhausted
+      ? "Automatic wakes used up · /adaptive resume tries now"
+      : `Resumes ${when} · /adaptive resume tries now`,
+    "Send a message or pick a model to cancel.",
+  ])
 }

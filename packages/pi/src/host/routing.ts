@@ -205,6 +205,7 @@ export function virtualModels(
       unit: string | undefined
       tier: TierName
       session: string | undefined
+      retry: boolean
     },
   ) => void,
 ) {
@@ -268,6 +269,7 @@ export function virtualModels(
         unit: plan.state?.unit,
         tier: plan.tier,
         session: ctx.sessionManager.getSessionId?.(),
+        retry: request.reason === "retry",
       })
       return {
         model: selected,

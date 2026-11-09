@@ -52,24 +52,31 @@ function userCopies(file: string, prompt: string): number {
   ).length
 }
 
-async function parkedTask(
+/**
+ * Mid-run parks are the restart-durable ones: Pi writes a session file only once it holds a
+ * conversation, so a park before any message cannot survive closing the process.
+ */
+async function durablePark(
   options: PiTerminalOptions,
   trace: string,
   prompt: string,
-): Promise<string> {
-  limitStandard(options, Date.now() + 300_000)
-  const terminal = await launchPi(options)
+): Promise<{ file: string; dispatched: number }> {
+  const terminal = await launchPi({
+    ...options,
+    tools: "matrix_probe",
+    env: { ...options.env, PI_MATRIX_SCENARIO: "durable-park" },
+  })
   try {
     await terminal.waitForText("(adaptive) auto", { timeout: 20_000 })
     await submit(terminal, prompt)
     await terminal.waitForText("Parked: no available standard model", { timeout: 10_000 })
-    assert.deepEqual(dispatchedModels(trace), [], "pre-dispatch parking sent the user's message")
+    assert.deepEqual(dispatchedModels(trace), ["standard", "standard"])
     assert.equal(rows(index(options)).length, 1)
     assert.ok(
       !readFileSync(index(options), "utf8").includes(prompt),
       "global parked index leaked message content",
     )
-    return sessionFile(trace)
+    return { file: sessionFile(trace), dispatched: dispatchedModels(trace).length }
   } finally {
     writeFileSync(join(options.cwd, `${prompt}.parked.txt`), terminal.screen().text())
     await terminal.close()
@@ -117,6 +124,7 @@ export async function exerciseParking(options: PiTerminalOptions): Promise<void>
       limitStandard(saved, Date.now() + 60_000)
       await submit(terminal, "MATRIX_SHORT_ESCAPE")
       await terminal.waitForText("Waiting for a model", { timeout: 10_000 })
+      await terminal.waitForText("Esc cancels", { timeout: 10_000 })
       await terminal.press("Escape")
       await waitForTrace(trace, (events) =>
         events.some((event) => event["kind"] === "settled" && event["aborted"] === true),
@@ -129,40 +137,55 @@ export async function exerciseParking(options: PiTerminalOptions): Promise<void>
       await terminal.close()
     }
 
+    const exhausted = {
+      tiers: {
+        quick: [{ providerID: "adaptive-faux", id: "quick" }],
+        standard: [{ providerID: "adaptive-faux", id: "standard" }],
+        advanced: [{ providerID: "adaptive-faux", id: "advanced" }],
+      },
+    }
+    settings(options, exhausted)
     clean()
-    const prompt = "MATRIX_PRE_PARK_ONCE"
-    const file = await parkedTask(saved, trace, prompt)
-    terminal = await launchPi({ ...saved, session: file })
+    const prompt = "MATRIX_MID_RUN_PARK_ONCE"
+    const parked = await durablePark(saved, trace, prompt)
+    terminal = await launchPi({ ...saved, tools: "matrix_probe", session: parked.file })
     try {
       await terminal.waitForText("Parked: no available standard model", { timeout: 20_000 })
-      assert.deepEqual(dispatchedModels(trace), [], "reopening before reset dispatched parked work")
-    } finally {
-      await terminal.close()
-    }
-    resetSoon(saved, Date.now() + 1_500)
-    terminal = await launchPi({ ...saved, session: file })
-    try {
-      await waitForTrace(trace, (events) => events.some((event) => event["kind"] === "settled"))
-      assert.deepEqual(dispatchedModels(trace), ["standard"])
-      assert.equal(userCopies(file, prompt), 1)
-      assert.equal(rows(index(options))[0]?.["claimed"], true)
-      assert.equal(rows(index(options))[0]?.["wakes"], 1)
+      await terminal.waitForText("Send a message or pick a model to cancel.", { timeout: 10_000 })
+      assert.equal(
+        dispatchedModels(trace).length,
+        parked.dispatched,
+        "reopening before reset dispatched parked work",
+      )
     } finally {
       await terminal.close()
     }
 
     clean()
     const duePrompt = "MATRIX_REOPEN_DUE"
-    const dueFile = await parkedTask(saved, trace, duePrompt)
+    const due = await durablePark(saved, trace, duePrompt)
+    const settledBefore = traceEvents(trace).filter((event) => event["kind"] === "settled").length
     resetSoon(saved, Date.now() - 1_000)
-    terminal = await launchPi({ ...saved, session: dueFile })
+    terminal = await launchPi({ ...saved, tools: "matrix_probe", session: due.file })
     try {
       await terminal.waitForText("Resume the parked task now?", { timeout: 20_000 })
-      assert.deepEqual(dispatchedModels(trace), [], "overdue reopen resumed without consent")
+      assert.equal(
+        dispatchedModels(trace).length,
+        due.dispatched,
+        "overdue reopen resumed without consent",
+      )
       await terminal.press("Enter")
-      await waitForTrace(trace, (events) => events.some((event) => event["kind"] === "settled"))
-      assert.deepEqual(dispatchedModels(trace), ["standard"])
-      assert.equal(userCopies(dueFile, duePrompt), 1)
+      await waitForTrace(
+        trace,
+        (events) => events.filter((event) => event["kind"] === "settled").length > settledBefore,
+      )
+      assert.equal(dispatchedModels(trace).length, due.dispatched + 1)
+      assert.equal(userCopies(due.file, duePrompt), 1)
+      assert.equal(
+        traceEvents(trace).filter((event) => event["kind"] === "probe").length,
+        1,
+        "consenting repeated a durable tool side effect",
+      )
     } finally {
       await terminal.close()
     }

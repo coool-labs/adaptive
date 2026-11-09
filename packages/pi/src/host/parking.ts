@@ -173,7 +173,7 @@ export function parkingHandlers(
         if (!ctx.hasUI) return
         const seconds = Math.ceil(remaining / 1_000)
         const countdown = `${String(Math.floor(seconds / 60))}:${String(seconds % 60).padStart(2, "0")}`
-        const text = `⏸ Waiting for a model · ${countdown} · esc cancels`
+        const text = `Waiting for a model · ${countdown} · Esc cancels`
         ctx.ui?.setStatus("adaptive", text)
         ctx.ui?.setWorkingMessage(text)
       })

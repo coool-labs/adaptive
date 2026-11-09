@@ -192,7 +192,7 @@ it("runs the doctor over this session's Pi, storage, health and parked work", as
   expect(report).toContain("Adaptive doctor")
   expect(report).toContain("OK Pi 1.5.0 (supported: ≥1.5.0 <2)")
   expect(report).toContain("OK Shared storage writable")
-  expect(report).toContain("OK Health: 1 resources limited")
+  expect(report).toContain("OK Health: 1 resource limited")
   expect(report).toContain("OK No parked work")
 })
 

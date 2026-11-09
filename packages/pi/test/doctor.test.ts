@@ -18,9 +18,18 @@ it("distinguishes supported range from actual matrix evidence without fabricatin
   expect(versionChecks("1.5.0-rc", "1.5.0", undefined)[0]?.state).toBe("warning")
   expect(versionChecks("1.5.0", "bad", undefined)[0]?.state).toBe("warning")
   expect(doctorLines([{ state: "error", message: "bad", action: "fix" }])).toEqual([
-    "ERROR bad",
+    "1 to fix · 0 to check · 0 OK",
+    "FIX bad",
     "  fix",
   ])
+  expect(
+    doctorLines([
+      { state: "ok", message: "fine" },
+      { state: "warning", message: "meh" },
+      { state: "error", message: "bad" },
+    ]),
+  ).toEqual(["1 to fix · 1 to check · 1 OK", "FIX bad", "CHECK meh", "OK fine"])
+  expect(doctorLines([{ state: "ok", message: "fine" }])).toEqual(["All 1 checks OK", "OK fine"])
 })
 
 function options(): DoctorOptions {
@@ -64,12 +73,13 @@ it("reports credentials, capability gaps, storage, health and parked work with r
   const checks = await doctorChecks(options())
   const text = doctorLines(checks).join("\n")
   expect(text).toContain("All four Adaptive models")
-  expect(text).toContain("credentials configured")
+  expect(text).toContain("Credentials configured for 1 tier model\n")
   expect(text).toContain("/login local")
   expect(text).toContain("model missing")
-  expect(text).toContain("tool support is not declared")
+  expect(text).toContain("Tool support not declared: local/b, missing/m")
+  expect(text).not.toContain("local/a: tool")
   expect(text).toContain("exclusive lock works")
-  expect(text).toContain("1 resources limited")
+  expect(text).toContain("1 resource limited")
   expect(text).toContain("2 parked tasks")
   expect(
     checks.filter((check) => check.state !== "ok").every((check) => check.action !== undefined),
@@ -104,7 +114,13 @@ it("checks empty tiers, no parked work, registration and potential router confli
   expect(text).toContain("Other router model")
   expect(text).toContain("Custom request handler")
   expect(text).toContain("No parked work")
+  expect(text).toContain("Health: no resources limited")
+  expect(text).not.toContain("No health action needed")
   expect(text).not.toContain("SECRET")
+  const one = doctorLines(await doctorChecks({ ...base, parked: () => Promise.resolve(1) }))
+  expect(one.join("\n")).toContain("1 parked task\n")
+  const many = doctorLines(await doctorChecks({ ...base, health: () => Promise.resolve(3) }))
+  expect(many.join("\n")).toContain("Health: 3 resources limited")
 })
 
 it("uses fixed secret-free error copy for every optional probe failure", async () => {

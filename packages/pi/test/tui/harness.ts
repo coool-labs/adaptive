@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { launchTerminal } from "@termwright/driver"
 import type { HealthPayload } from "@coool/adaptive-core/state/health/types"
@@ -12,6 +12,7 @@ export interface PiTerminalOptions {
   env: Record<string, string>
   fixture: string
   columns?: number
+  rows?: number
   session?: string
   sessionDirectory?: string
   model?: string
@@ -44,7 +45,7 @@ export async function launchPi(options: PiTerminalOptions): Promise<PiTerminal> 
     cwd: options.cwd,
     env: options.env,
     columns: options.columns ?? 80,
-    rows: 40,
+    rows: options.rows ?? 40,
     semanticNegotiationMs: 0,
   })
   if (options.trust === true) {
@@ -92,6 +93,19 @@ export function settings(options: PiTerminalOptions, patch: Record<string, unkno
   const current: unknown = JSON.parse(readFileSync(file, "utf8"))
   assert.ok(object(current))
   writeJson(file, { ...current, inviteDismissed: true, ...patch })
+}
+
+export function adaptiveFile(options: PiTerminalOptions, name: string): string {
+  return join(options.env["PI_CODING_AGENT_DIR"] ?? "", "adaptive", name)
+}
+
+/** Every journey starts from a healthy, unparked, unreceipted agent directory and empty trace. */
+export function resetState(options: PiTerminalOptions): void {
+  writeJson(adaptiveFile(options, "health.json"), { version: 1, records: [] })
+  writeJson(adaptiveFile(options, "parked.json"), { version: 1, records: [] })
+  for (const name of ["receipts.json", "preferences.json", "capacity.json"])
+    rmSync(adaptiveFile(options, name), { force: true })
+  writeFileSync(options.env["PI_MATRIX_TRACE"] ?? "", "")
 }
 
 export function limitStandard(

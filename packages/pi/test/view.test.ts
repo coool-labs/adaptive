@@ -46,7 +46,7 @@ it("supports search, arrows, empty matches, cancellation and separate page actio
     expect(component.render(width).every((line) => visibleWidth(line) <= width)).toBe(true)
 })
 
-function host(mode: string, inputs: string[][] = []) {
+function host(mode: string, inputs: string[][] = [], rows = 8) {
   const notices: string[] = []
   const selections: string[][] = []
   const rendered: string[][] = []
@@ -67,7 +67,7 @@ function host(mode: string, inputs: string[][] = []) {
         new Promise((resolve) => {
           const component = factory(
             {
-              terminal: { rows: 8 },
+              terminal: { rows },
               requestRender: () => {
                 refreshes += 1
               },
@@ -166,4 +166,51 @@ it("uses RPC-native primitives, preserving duplicate labels, search, actions and
   await view.table({ title: "Table", lines: ["one"] })
   await view.alert({ title: "Alert", message: "two" })
   expect(fake.rendered).toEqual([])
+})
+
+it("keeps every dialog one row shorter than the terminal so Pi never drops its footer", async () => {
+  for (const rows of [24, 40]) {
+    const fake = host("tui", [["\u001b"], ["\u001b"]], rows)
+    const view = piView(fake.ctx)
+    await view.table({
+      title: "Long",
+      lines: Array.from({ length: 80 }, (_, index) => `line ${String(index)}`),
+    })
+    await view.selectPaged({
+      title: "Models\nquick: a",
+      options: Array.from({ length: 80 }, (_, index) => ({
+        title: `M${String(index)}`,
+        value: index,
+      })),
+      actions: [{ title: "Next", value: "next", bind: "ctrl+f" }],
+    })
+    expect(fake.rendered).toHaveLength(6)
+    for (const lines of fake.rendered) {
+      expect(lines.length).toBeLessThanOrEqual(rows - 3)
+      expect(lines.some((line) => line.includes("Esc back"))).toBe(true)
+    }
+  }
+})
+
+it("wraps long lines instead of truncating remedies, scrolls the wrapped text, and sanitizes it", async () => {
+  const fake = host("tui", [["\u001b[B", "\u001b[B", "\u001b[A", "\r"]], 8)
+  const view = piView(fake.ctx)
+  const remedy = "Confirm tool support in adaptive/capabilities.json before relying on it"
+  await view.table({ title: "Doctor", lines: ["FIX one", `  ${remedy}`, "bell\u0007", "OK last"] })
+  const narrow = fake.rendered[0] ?? []
+  expect(narrow.every((line) => !line.endsWith("…"))).toBe(true)
+  expect(narrow.join(" ")).not.toContain("\u0007")
+  const wide = fake.rendered[2] ?? []
+  expect(wide.join("\n")).toContain(remedy)
+  const welcome = picker(
+    `Adaptive is installed\nquick: ${"model-name ".repeat(8)}`,
+    [{ title: "Only", value: 1 }],
+    [],
+    24,
+    () => undefined,
+    () => undefined,
+  )
+  const lines = welcome.render(40)
+  expect(lines.every((line) => visibleWidth(line) <= 40 && !line.endsWith("…"))).toBe(true)
+  expect(lines.join("\n")).toContain("1 choice ·")
 })
