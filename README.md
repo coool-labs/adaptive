@@ -1,46 +1,56 @@
 # Adaptive
 
-Keep your goals running when models fail. Adaptive supervises execution in
-[coding agents](https://opencode.ai): it routes every task to the first model
-that works, recovers from quota limits, rate limits, and outages inside the
-tier the work needs, and parks what cannot continue until a model returns —
-so a long goal finishes without you babysitting it.
+**Your goals shouldn't stop when your models do.** Adaptive is a resilience layer for
+coding agents: it routes every task to the first model that works, spends your
+subscriptions before your paid credits, and parks anything that can't continue until a
+model returns — so a long goal finishes without you babysitting it.
 
-**Put your subscriptions first, pay-as-you-go last.** With Claude and OpenAI
-subscriptions at the top of the standard tier and an OpenRouter model at the
-bottom, Adaptive spends your subscriptions before your credits, falls to the
-API while they are out, and switches back the moment a limit resets — as many
-times as limits change mid-goal. Work that runs out of models entirely waits
-and resumes itself, even across a process restart. Completed tool calls are
-never repeated.
+Put your Claude and OpenAI subscriptions at the top of your list and an OpenRouter model
+at the bottom. Adaptive spends the subscriptions first, rides out their limits on the API,
+and switches back the moment a limit resets — as many times as limits change mid-goal.
+Work that runs out of models entirely waits and resumes itself, even across a restart.
+Completed tool calls are never repeated.
 
-## What makes it different
+## Why it's different
 
-- **No classifier, no prompt sniffing.** Tiers are lists you own, in an order
-  you choose. Routing follows fixed rules, not an extra LLM call that may
-  misread the prompt.
-- **Availability is not capability.** A 429 or a dead provider never silently
-  moves work to a stronger or weaker tier. Moving up requires real evidence:
-  a context overflow, a policy rejection, or an explicit agent request — and
-  it is budgeted.
-- **Fail-open by design.** If Adaptive itself malfunctions, your agent keeps
-  working as it would without it. There is no background daemon and no
-  telemetry: receipts and health stay on your machine.
-- **Observe before you trust.** New installs watch only: they record every
-  decision they would have made, with the reason, and change nothing until
-  you switch them to `active`.
+- **No classifier, no prompt sniffing.** Routing follows fixed rules over tier lists you
+  own — not an extra LLM call that may misread the prompt.
+- **Availability is not capability.** A 429 or a dead provider never silently moves work
+  to a stronger or weaker tier. Moving up requires real evidence, and it is budgeted.
+- **Fail-open by design.** If Adaptive itself malfunctions, your agent keeps working as it
+  would without it. No daemon, no telemetry: receipts and health stay on your machine.
+- **Observe before you trust.** New installs watch only: they record every decision they
+  would have made, with the reason, and change nothing until you switch to `active`.
 
-## Packages
+## Get it
 
-| Package                                                 | Install                                        | Needs            |
-| ------------------------------------------------------- | ---------------------------------------------- | ---------------- |
-| [@coool/opencode-adaptive](packages/opencode/README.md) | `opencode plugin add @coool/opencode-adaptive` | OpenCode ≥ 2.2.1 |
-| [@coool/pi-adaptive](packages/pi/README.md)             | `pi install npm:@coool/pi-adaptive`            | Pi ≥ 1.5.0 < 2   |
+### OpenCode — [`@coool/opencode-adaptive`](https://www.npmjs.com/package/@coool/opencode-adaptive)
 
-Both are configured from a single `/adaptive` menu — models, tier order, and
-mode — and share the same decision core: one scheduler, one health model, one
-parking format (`packages/core`, a private workspace), so behavior you verify
-in one host is the behavior the other one runs.
+[![npm version](https://img.shields.io/npm/v/@coool/opencode-adaptive)](https://www.npmjs.com/package/@coool/opencode-adaptive)
+[![npm downloads](https://img.shields.io/npm/dt/@coool/opencode-adaptive)](https://www.npmjs.com/package/@coool/opencode-adaptive)
+
+```sh
+opencode plugin add @coool/opencode-adaptive
+```
+
+Set up entirely from the `/adaptive` menu — no config files, no model IDs to type. See the
+[OpenCode guide](packages/opencode/README.md). Needs OpenCode ≥ 2.2.1.
+
+### Pi — [`@coool/pi-adaptive`](https://www.npmjs.com/package/@coool/pi-adaptive)
+
+[![npm version](https://img.shields.io/npm/v/@coool/pi-adaptive)](https://www.npmjs.com/package/@coool/pi-adaptive)
+[![npm downloads](https://img.shields.io/npm/dt/@coool/pi-adaptive)](https://www.npmjs.com/package/@coool/pi-adaptive)
+
+```sh
+pi install npm:@coool/pi-adaptive
+```
+
+Tier routing, durable park-and-resume, and evidence-backed escalation for
+[Pi](https://github.com/earendil-works/pi). See the [Pi guide](packages/pi/README.md).
+Needs Pi ≥ 1.5.0 < 2.
+
+Both hosts share one decision core (`packages/core`): one scheduler, one health model, one
+parking format — behavior you verify in one host is the behavior the other one runs.
 
 ## Development
 

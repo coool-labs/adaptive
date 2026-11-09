@@ -1,5 +1,6 @@
 # Pi Adaptive
 
+[![npm version](https://img.shields.io/npm/v/@coool/pi-adaptive)](https://www.npmjs.com/package/@coool/pi-adaptive)
 [![npm downloads](https://img.shields.io/npm/dt/@coool/pi-adaptive)](https://www.npmjs.com/package/@coool/pi-adaptive)
 
 **Keep working when your models stop working.** Pi Adaptive is a resilience layer for
