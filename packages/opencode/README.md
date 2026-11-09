@@ -1,6 +1,6 @@
 # @coool/opencode-adaptive
 
-[![npm downloads](https://img.shields.io/npm/dm/@coool/opencode-adaptive)](https://www.npmjs.com/package/@coool/opencode-adaptive)
+[![npm downloads](https://img.shields.io/npm/dt/@coool/opencode-adaptive)](https://www.npmjs.com/package/@coool/opencode-adaptive)
 
 Automatic model fallback and routing for [OpenCode](https://opencode.ai).
 

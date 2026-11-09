@@ -1,6 +1,6 @@
 # Pi Adaptive
 
-[![npm downloads](https://img.shields.io/npm/dm/@coool/pi-adaptive)](https://www.npmjs.com/package/@coool/pi-adaptive)
+[![npm downloads](https://img.shields.io/npm/dt/@coool/pi-adaptive)](https://www.npmjs.com/package/@coool/pi-adaptive)
 
 **Keep working when your models stop working.** Pi Adaptive is a resilience layer for
 [Pi](https://github.com/earendil-works/pi): it spends your subscriptions before your paid
