@@ -1,7 +1,7 @@
 # AGENTS.md — working rules for this repository
 
 Adaptive is a multi-host **execution supervisor**. The existing OpenCode v2 plugin
-is `@coool/opencode-adaptive`; the Pi integration (`packages/pi`) is feature-complete and awaiting release approval. Adaptive
+is `@coool/opencode-adaptive`; the Pi integration (`packages/pi`) is undergoing final release acceptance. Adaptive
 assigns each execution episode to a capability tier (quick / standard /
 advanced), escalates capability only on structured evidence, recovers within a
 tier through provider failures and quota limits, and restores preferred

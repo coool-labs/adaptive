@@ -82,10 +82,30 @@ Cross-process health and the single half-open probe are now covered by
 `packages/pi/test/health.test.ts`: two peers with separate registries share one locked
 file, and exactly one of them gets the probe.
 
-## Remaining gates
+## Release-acceptance follow-up (2026-11-09)
 
-Still unverified: Ctrl+P cycling and `defaultModel: "adaptive/auto"`, the entry
-renderer and `setWidget`, the subagent `--model` inheritance, compaction `direct`
-routes, `after_provider_response` capacity metadata, live provider error capture, and
-the `ctrl+alt+a` shortcut. These remain release blockers, not assumed platform
-guarantees.
+The throwaway spike is no longer the acceptance harness. The packed matrix now
+exercises Pi 1.5.0 and resolved `latest` over SDK, JSON CLI and real PTY surfaces:
+
+- `test/packed/sdk.spec.ts` covers compaction's real `direct` request and its active
+  context; the child-host fixtures cover global extension discovery with
+  `--model adaptive/quick` and the virtual-model defaults.
+- `test/tui/picker.spec.ts` covers Ctrl+P cycling, picker selection and physical
+  takeover. Host fixture probes cover widget/status rendering and Ctrl+Alt+A;
+  production journeys separately exercise Adaptive's actual dialogs and notes.
+- `test/runtime/extension.test.ts` exercises passive response-header capacity
+  ingestion and its status display. This is deterministic faux-provider evidence,
+  not a claim that every live provider transport emits these headers.
+- `test/tui/journeys.spec.ts` and `parking.spec.ts` cover production first-run,
+  routing/recovery notes, parking, cancellation, tier editing and doctor. Retained
+  terminal frames cover 60×24, 80×24 and 120×40.
+
+Paths above are relative to `packages/pi/`. The completed baseline command
+`npm run verify -- --all` passed at `dc835fd` with no skipped gates; the log is
+`test-artifacts/m8/verify-all-2.log`. That baseline does not certify later fixes:
+final acceptance is still addressing first-prompt park persistence, effective-mode
+recovery, pinned-tier escalation, thinking variants and full-context observation.
+
+Live-provider error capture is optional, paid and opt-in. It has not been run and
+is not silently counted as passed. The mandatory versioned, source-attributed
+error corpus and deterministic real-host scenarios remain the release gate.
