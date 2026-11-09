@@ -1,9 +1,9 @@
 import type { AdaptiveView } from "@coool/adaptive-core/flow/controller"
-import { resourceLabel } from "@coool/adaptive-core/flow/tiers"
+import { STATUS_EMPTY_MESSAGE } from "@coool/adaptive-core/flow/status"
 import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 import type { JsonFile } from "../store.js"
 import { NOTE_VERBOSITIES, readPreferences, updatePreferences } from "../preferences.js"
-import { updateToolCapability } from "../capabilities.js"
+import { updateToolCapability, type ToolCapability } from "../capabilities.js"
 
 export const DEFAULT_MODEL_HELP =
   'In Pi settings.json, set:\n{\n  "defaultProvider": "adaptive",\n  "defaultModel": "auto"\n}\nPi exposes no extension API to save this default. Your current model is unchanged.'
@@ -40,41 +40,56 @@ export async function preferencesAction(view: AdaptiveView, file: JsonFile): Pro
   view.toast("Preferences saved", "success")
 }
 
-export async function healthAction(
+function declaredLabel(declared: readonly ToolCapability[], ref: ModelRef): string {
+  const entry = declared.find((model) => model.providerID === ref.providerID && model.id === ref.id)
+  if (entry === undefined) return "not declared · skipped on tool turns"
+  return entry.tools ? "calls tools" : "no tool calls"
+}
+
+/**
+ * Pi's catalog does not say which models call tools, and Adaptive never
+ * guesses from a name: an undeclared model is skipped on every tool turn.
+ */
+export async function toolSupportAction(
   view: AdaptiveView,
+  file: JsonFile,
   models: readonly ModelRef[],
-  reset: (model: ModelRef) => Promise<void>,
+  declared: readonly ToolCapability[],
 ): Promise<void> {
+  // Tool support is declared per model, not per variant.
+  const unique = [
+    ...new Map(
+      models.map((model) => [
+        `${model.providerID}/${model.id}`,
+        { providerID: model.providerID, id: model.id },
+      ]),
+    ),
+  ]
+  if (unique.length === 0) {
+    await view.alert({ title: "Tool support", message: STATUS_EMPTY_MESSAGE })
+    return
+  }
   const ref = await view.select({
-    title: "Health · select a resource to reset",
-    options: models.map((model) => ({
-      title: resourceLabel(model),
+    title: "Tool support · select a model",
+    options: unique.map(([label, model]) => ({
+      title: label,
       value: model,
-      description: "Mark healthy (also clears inherited provider limits)",
+      description: declaredLabel(declared, model),
     })),
   })
   if (ref === undefined) return
-  if (
-    !(await view.confirm({
-      title: "Reset resource health?",
-      message: `Reset ${resourceLabel(ref)} and its inherited provider limits? Other models on this provider may be affected. This does not restore actual provider quota.`,
-    }))
-  )
-    return
-  await reset(ref)
-  view.toast("Health reset", "success")
-}
-
-export async function confirmToolCapability(
-  view: AdaptiveView,
-  file: JsonFile,
-  ref: ModelRef,
-  tools: boolean,
-): Promise<void> {
+  const tools = await view.select({
+    title: `${ref.providerID}/${ref.id}`,
+    options: [
+      { title: "Calls tools", value: true, description: "eligible for tool turns" },
+      { title: "No tool calls", value: false, description: "never routed to on tool turns" },
+    ],
+  })
+  if (tools === undefined) return
   if (
     !(await view.confirm({
       title: "Confirm tool capability",
-      message: `${resourceLabel(ref)}: record tool support as ${tools ? "supported" : "unsupported"}? Only confirm this from provider documentation or a verified request.`,
+      message: `${ref.providerID}/${ref.id}: record tool support as ${tools ? "supported" : "unsupported"}? Only confirm this from provider documentation or a verified request.`,
     }))
   )
     return

@@ -154,6 +154,7 @@ async function withSession(
           sources = resolved
           registerAdaptive(pi, resolved, {
             settings: settingsFile,
+            capabilities: jsonFile(join(cwd, "adaptive", "capabilities.json")),
             version: VERSION,
             minimum: "1.5.0",
             testedUpTo: undefined,

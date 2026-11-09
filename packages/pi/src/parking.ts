@@ -123,11 +123,15 @@ export function claimPark(
   })
 }
 
-export function cancelPark(file: JsonFile, session: string): Promise<void> {
-  return file.update((value) => ({
-    next: { version: 1, records: records(value).filter((row) => row.session !== session) },
-    result: undefined,
-  }))
+/** Drops the session's records; true when one was still waiting (not yet claimed). */
+export function cancelPark(file: JsonFile, session: string): Promise<boolean> {
+  return file.update((value) => {
+    const rows = records(value)
+    return {
+      next: { version: 1, records: rows.filter((row) => row.session !== session) },
+      result: rows.some((row) => row.session === session && !row.claimed),
+    }
+  })
 }
 
 /** Abortable ticks, shared by countdowns and long owned headless waits. */

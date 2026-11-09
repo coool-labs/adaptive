@@ -50,6 +50,9 @@ function fakeView(): FakeView {
       state.selects.push(spec.title)
       state.selectOptions.push(spec.options.map((option) => ({ ...option })))
       const next = state.selectQueue.shift()
+      // Action rows carry closures: tests pick them by title.
+      if (typeof next === "object" && next !== null && "pick" in next)
+        return Promise.resolve(spec.options.find((option) => option.title === next.pick)?.value)
       return next as never
     },
     selectPaged: (spec) => {
@@ -210,30 +213,94 @@ it("opens a requested shared screen before the main menu", async () => {
   expect(e.view.selects).toEqual(["Tier", "Adaptive (observe)"])
 })
 
-it("offers concrete host operations without changing the original menu for other hosts", async () => {
-  const called: string[] = []
-  const e = env()
-  e.view.selectQueue.push("health", "parked", "doctor", "preferences", "defaults", undefined)
-  const action = (name: string) => () => {
-    called.push(name)
-    return Promise.resolve()
-  }
-  await runAdaptive({
-    ...e,
-    actions: {
-      health: action("health"),
-      parked: action("parked"),
-      doctor: action("doctor"),
-      preferences: action("preferences"),
-      defaults: action("defaults"),
-    },
+describe("controller: host operations", () => {
+  const BASE_ROWS = ["Status", "Models", "Mode", "Tier", "Pin", "Receipts"]
+  const titles = (e: ReturnType<typeof env>) =>
+    e.view.selectOptions[0]?.map((option) => option.title.split(" ")[0])
+
+  it("shows each operation row only when the host wires it", async () => {
+    const bare = env()
+    bare.view.selectQueue.push(...EXIT)
+    await runAdaptive(bare)
+    expect(titles(bare)).toEqual(BASE_ROWS)
+
+    const doctorOnly = env()
+    doctorOnly.view.selectQueue.push(...EXIT)
+    await runAdaptive({ ...doctorOnly, actions: { doctor: () => Promise.resolve([]) } })
+    expect(titles(doctorOnly)).toEqual([...BASE_ROWS, "Doctor"])
+
+    const cancelOnly = env()
+    cancelOnly.view.selectQueue.push(...EXIT)
+    await runAdaptive({
+      ...cancelOnly,
+      actions: { cancel: () => Promise.resolve("not-parked" as const) },
+    })
+    expect(titles(cancelOnly)).toEqual([...BASE_ROWS, "Parked"])
   })
-  expect(called).toEqual(["health", "parked", "doctor", "preferences", "defaults"])
-  expect(e.view.selectOptions[0]?.map((option) => option.title)).toContain("Doctor")
-  const unavailable = env()
-  unavailable.view.selectQueue.push("doctor", undefined)
-  await runAdaptive(unavailable)
-  expect(unavailable.view.toasts).toEqual([])
+
+  it("runs wired operations and returns to the menu", async () => {
+    const called: string[] = []
+    const record = (name: string) => () => {
+      called.push(name)
+      return Promise.resolve()
+    }
+    const e = env({ sessionID: "s1" })
+    e.view.selectQueue.push(
+      { pick: "Preferences" },
+      { pick: "Use Adaptive for new sessions" },
+      { pick: "Tool support" },
+      { pick: "Doctor" },
+      { pick: "Health" },
+      ...EXIT,
+    )
+    await runAdaptive({
+      ...e,
+      actions: {
+        resetHealth: () => Promise.resolve(),
+        resume: () => Promise.resolve("resumed" as const),
+        tools: record("tools"),
+        doctor: () => Promise.resolve([{ state: "ok" as const, message: "fine" }]),
+        preferences: record("preferences"),
+        defaults: record("defaults"),
+      },
+    })
+    expect(called).toEqual(["preferences", "defaults", "tools"])
+    expect(e.view.tables).toEqual([
+      { title: "Adaptive doctor", lines: ["All 1 checks OK", "OK fine"] },
+    ])
+    expect(e.view.alerts).toEqual([{ title: "Health", message: STATUS_EMPTY_MESSAGE }])
+    expect(e.view.selects.filter((title) => title.startsWith("Adaptive"))).toHaveLength(6)
+  })
+
+  it("closes the menu once parked work resumes, and toasts a failing operation", async () => {
+    const e = env({
+      sessionID: "s1",
+      api: fakeApi({
+        status: () =>
+          Promise.resolve(
+            statusSnapshot({ waiting: [{ sessionID: "s1", tier: "standard", resumeAt: null }] }),
+          ),
+      }),
+    })
+    e.view.selectQueue.push(
+      { pick: "Doctor" },
+      { pick: "Parked work" },
+      { pick: "This session" },
+      { pick: "Resume now" },
+    )
+    await runAdaptive({
+      ...e,
+      actions: {
+        resume: () => Promise.resolve("resumed" as const),
+        doctor: () => Promise.reject(new Error("doctor down")),
+      },
+    })
+    expect(e.view.toasts).toEqual([
+      { message: "doctor down", variant: "error" },
+      { message: "Resuming parked work", variant: "success" },
+    ])
+    expect(e.view.selectQueue).toEqual([])
+  })
 })
 
 describe("controller: admission failures", () => {

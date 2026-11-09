@@ -4,7 +4,9 @@ import { resourceLabel } from "@coool/adaptive-core/flow/tiers"
 import type { SettingsV1 } from "@coool/adaptive-core/state/settings/types"
 import type { ToolCapability } from "../capabilities.js"
 import { VIRTUAL_IDS } from "../router.js"
-import { versionChecks, type DoctorCheck } from "../ui/doctor.js"
+import { statusChecks, type DoctorCheck } from "@coool/adaptive-core/flow/doctor"
+import type { StatusSnapshot } from "@coool/adaptive-core/status"
+import { versionChecks } from "../ui/doctor.js"
 
 export interface DoctorOptions {
   readonly version: string
@@ -17,8 +19,7 @@ export interface DoctorOptions {
   readonly settings: () => Promise<SettingsV1>
   readonly capabilities: () => Promise<readonly ToolCapability[]>
   readonly storage: () => Promise<void>
-  readonly health: () => Promise<number>
-  readonly parked: () => Promise<number>
+  readonly status: () => Promise<StatusSnapshot>
 }
 
 /** Probe failures use fixed copy: upstream errors/configs may contain credentials. */
@@ -40,12 +41,6 @@ export async function doctorChecks(options: DoctorOptions): Promise<DoctorCheck[
     const credentialed: string[] = []
     const undeclared = new Set<string>()
     for (const tier of TIERS) {
-      if (settings.tiers[tier].length === 0)
-        checks.push({
-          state: "warning",
-          message: `${tier}: no configured models`,
-          action: "Open /adaptive tiers to add a model.",
-        })
       for (const ref of settings.tiers[tier]) {
         const model = options.registry.find(ref.providerID, ref.id)
         if (model === undefined)
@@ -78,7 +73,7 @@ export async function doctorChecks(options: DoctorOptions): Promise<DoctorCheck[
       checks.push({
         state: "warning",
         message: `Tool support not declared: ${[...undeclared].join(", ")}`,
-        action: "List them in adaptive/capabilities.json; Adaptive never guesses from a name.",
+        action: "Open /adaptive tools to declare them; Adaptive never guesses from a name.",
       })
   } catch {
     checks.push({
@@ -119,41 +114,13 @@ export async function doctorChecks(options: DoctorOptions): Promise<DoctorCheck[
       })
   }
   try {
-    const limited = await options.health()
-    checks.push({
-      state: "ok",
-      message:
-        limited === 0
-          ? "Health: no resources limited"
-          : `Health: ${String(limited)} ${limited === 1 ? "resource" : "resources"} limited`,
-      ...(limited === 0
-        ? {}
-        : { action: "Inspect /adaptive health; reset only after checking the provider." }),
-    })
+    checks.push(...statusChecks(await options.status()))
   } catch {
     checks.push({
       state: "error",
-      message: "Shared health could not be read",
-      action: "Inspect adaptive/health.json; do not delete it while another Pi process is running.",
-    })
-  }
-  try {
-    const parked = await options.parked()
-    checks.push({
-      state: "ok",
-      message:
-        parked === 0
-          ? "No parked work"
-          : `${String(parked)} parked ${parked === 1 ? "task" : "tasks"}`,
-      ...(parked === 0
-        ? {}
-        : { action: "Use /adaptive resume or /adaptive cancel in the waiting session." }),
-    })
-  } catch {
-    checks.push({
-      state: "error",
-      message: "Parked work could not be read",
-      action: "Inspect adaptive/parked.json before resuming; no task was dispatched.",
+      message: "Health or parked work could not be read",
+      action:
+        "Inspect adaptive/health.json and parked.json; do not delete them while another Pi process is running.",
     })
   }
   return checks

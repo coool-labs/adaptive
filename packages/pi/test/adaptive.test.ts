@@ -15,9 +15,6 @@ const commands = vi.hoisted(() => ({
   options: undefined as
     | {
         env(ctx: ExtensionContext): Promise<AdaptiveEnv>
-        resume(ctx: ExtensionContext): Promise<void>
-        cancel(ctx: ExtensionContext): Promise<void>
-        clock(): number
       }
     | undefined,
 }))
@@ -26,6 +23,11 @@ vi.mock("../src/host/commands.js", () => ({
     commands.options = options
   },
 }))
+
+function need<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error("action not wired")
+  return value
+}
 
 const faux = fauxProvider({ provider: "local", models: [{ id: "a" }, { id: "b" }] })
 const [a] = faux.models
@@ -58,12 +60,21 @@ function setup(
     appendEntry: vi.fn(),
     setModel: vi.fn(() => Promise.resolve(true)),
   }
-  const parking = { resume: vi.fn(() => Promise.resolve()), cancel: vi.fn(() => Promise.resolve()) }
+  const parking = {
+    resume: vi.fn(() => Promise.resolve("resumed" as const)),
+    cancel: vi.fn(() => Promise.resolve("not-parked" as const)),
+  }
   const refresh = vi.fn(() => Promise.resolve())
   const surface = adaptiveSurface(
     pi,
     sources,
-    { settings, version: "1.5.0", minimum: "1.5.0", testedUpTo: "1.5.0" },
+    {
+      settings,
+      capabilities: memoryFile(),
+      version: "1.5.0",
+      minimum: "1.5.0",
+      testedUpTo: "1.5.0",
+    },
     parking,
     () => refresh,
   )
@@ -131,11 +142,12 @@ it("lists only physical models for the tier editor", async () => {
   expect((await f.env()).models().map((model) => model.modelID)).toEqual(["a", "b"])
 })
 
-it("registers the command with a clock and forwards resume and cancel to the owned parking", async () => {
+it("wires the clock and forwards resume and cancel to the owned parking", async () => {
   const f = setup()
-  expect(commands.options?.clock()).toBe(1_000)
-  await commands.options?.resume(f.ctx)
-  await commands.options?.cancel(f.ctx)
+  const env = await f.env()
+  expect(env.clock?.()).toBe(1_000)
+  expect(await need(env.actions?.resume)("s")).toBe("resumed")
+  expect(await need(env.actions?.cancel)("s")).toBe("not-parked")
   expect(f.parking.resume).toHaveBeenCalledWith(f.ctx)
   expect(f.parking.cancel).toHaveBeenCalledWith(f.ctx)
 })
@@ -155,11 +167,10 @@ it("pauses a virtual session on the last manual model and refuses when there is 
   expect(missing.pi.setModel).not.toHaveBeenCalled()
 })
 
-it("shows parked work for this and other sessions, or says there is none", async () => {
+it("reports parked work for this and other sessions through the status snapshot", async () => {
   const f = setup()
-  const { actions } = await f.env()
-  await actions?.parked()
-  expect(f.shown.at(-1)).toContain("No parked work.")
+  const { api } = await f.env()
+  expect((await api.status()).waiting).toEqual([])
   await f.sources.parking.file.update(() => ({
     next: {
       version: 1,
@@ -170,10 +181,10 @@ it("shows parked work for this and other sessions, or says there is none", async
     },
     result: undefined,
   }))
-  await actions?.parked()
-  expect(f.shown.at(-1)).toContain("This session · standard · waiting · resumes")
-  expect(f.shown.at(-1)).toContain("other · quick · waiting")
-  expect(f.shown.at(-1)).toContain("/adaptive resume or /adaptive cancel")
+  expect((await api.status()).waiting).toEqual([
+    { sessionID: "s", tier: "standard", resumeAt: 5_000 },
+    { sessionID: "other", tier: "quick", resumeAt: 6_000 },
+  ])
 })
 
 it("resets the health of a configured resource, and shows the Pi settings for a default", async () => {
@@ -188,14 +199,21 @@ it("resets the health of a configured resource, and shows the Pi settings for a 
     })
   })
   const { actions } = await f.env()
-  await actions?.health()
-  expect(f.confirm).toHaveBeenCalled()
-  expect(JSON.stringify(f.sources.health.file)).not.toContain("quota")
-  expect(f.shown.at(-1)).toBe("Health reset")
-  await actions?.defaults()
+  await need(actions?.resetHealth)({ providerID: "local", id: "a" })
+  expect(JSON.stringify(await f.sources.health.file.read())).not.toContain("quota")
+  await need(actions?.defaults)()
   expect(f.shown.at(-1)).toContain(DEFAULT_MODEL_HELP.split("\n")[0])
-  await actions?.preferences()
+  await need(actions?.preferences)()
   expect(f.shown.at(-1)).toContain("Preferences")
+})
+
+it("declares tool support for the configured models from the capabilities file", async () => {
+  const f = setup()
+  f.choose.mockImplementation((_title, choices) => choices[0])
+  await need((await f.env()).actions?.tools)()
+  expect(f.shown[0]).toContain("Tool support · select a model")
+  expect(f.shown[0]).toContain("local/a")
+  expect(f.shown.at(-1)).toBe("Tool capability saved")
 })
 
 it("runs the doctor over this session's Pi, storage, health and parked work", async () => {
@@ -209,14 +227,12 @@ it("runs the doctor over this session's Pi, storage, health and parked work", as
       retryAfterMs: 60_000,
     })
   })
-  const { actions } = await f.env()
-  await actions?.doctor()
-  const report = f.shown.at(-1) ?? ""
-  expect(report).toContain("Adaptive doctor")
-  expect(report).toContain("OK Pi 1.5.0 (supported: ≥1.5.0 <2)")
-  expect(report).toContain("OK Shared storage writable")
-  expect(report).toContain("OK Health: 1 resource limited")
-  expect(report).toContain("OK No parked work")
+  const checks = await need((await f.env()).actions?.doctor)()
+  const messages = checks.map((check) => check.message)
+  expect(messages).toContain("Pi 1.5.0 (supported: ≥1.5.0 <2)")
+  expect(messages).toContain("Shared storage writable; exclusive lock works")
+  expect(messages).toContain("Health: 1 model limited")
+  expect(messages).toContain("No parked work")
 })
 
 it("offers first-run setup only with a UI and stays silent without one", async () => {

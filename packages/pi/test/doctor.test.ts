@@ -2,7 +2,9 @@
 import { expect, it } from "vitest"
 import { fauxProvider } from "@earendil-works/pi-ai"
 import { defaultSettings } from "@coool/adaptive-core/state/settings/parse"
-import { versionChecks, doctorLines } from "../src/ui/doctor.js"
+import { doctorLines } from "@coool/adaptive-core/flow/doctor"
+import type { StatusSnapshot, TierResourceStatus } from "@coool/adaptive-core/status"
+import { versionChecks } from "../src/ui/doctor.js"
 import { doctorChecks, type DoctorOptions } from "../src/host/doctor.js"
 
 it("distinguishes supported range from actual matrix evidence without fabricating tested-up-to", () => {
@@ -17,20 +19,36 @@ it("distinguishes supported range from actual matrix evidence without fabricatin
     expect(versionChecks(version, "1.5.0", "1.5.0")[0]?.state).toBe("error")
   expect(versionChecks("1.5.0-rc", "1.5.0", undefined)[0]?.state).toBe("warning")
   expect(versionChecks("1.5.0", "bad", undefined)[0]?.state).toBe("warning")
-  expect(doctorLines([{ state: "error", message: "bad", action: "fix" }])).toEqual([
-    "1 to fix · 0 to check · 0 OK",
-    "FIX bad",
-    "  fix",
-  ])
-  expect(
-    doctorLines([
-      { state: "ok", message: "fine" },
-      { state: "warning", message: "meh" },
-      { state: "error", message: "bad" },
-    ]),
-  ).toEqual(["1 to fix · 1 to check · 1 OK", "FIX bad", "CHECK meh", "OK fine"])
-  expect(doctorLines([{ state: "ok", message: "fine" }])).toEqual(["All 1 checks OK", "OK fine"])
 })
+
+function resource(id: string, health: TierResourceStatus["health"]): TierResourceStatus {
+  return {
+    ref: { providerID: "local", id },
+    health,
+    breaker: "closed",
+    windowed: false,
+    windowUntil: null,
+    usedPercent: null,
+    resetAt: null,
+  }
+}
+
+function status(overrides: Partial<StatusSnapshot> = {}): () => Promise<StatusSnapshot> {
+  return () =>
+    Promise.resolve({
+      mode: "observe",
+      pin: null,
+      tiers: {
+        quick: [resource("a", "healthy")],
+        standard: [resource("b", "quota_exhausted")],
+        advanced: [resource("m", "healthy")],
+      },
+      parked: 2,
+      waiting: [],
+      receipts: 0,
+      ...overrides,
+    })
+}
 
 function options(): DoctorOptions {
   const provider = fauxProvider({ provider: "local", models: [{ id: "a" }, { id: "b" }] })
@@ -64,8 +82,7 @@ function options(): DoctorOptions {
       }),
     capabilities: () => Promise.resolve([{ providerID: "local", id: "a", tools: true }]),
     storage: () => Promise.resolve(),
-    health: () => Promise.resolve(1),
-    parked: () => Promise.resolve(2),
+    status: status(),
   }
 }
 
@@ -79,7 +96,7 @@ it("reports credentials, capability gaps, storage, health and parked work with r
   expect(text).toContain("Tool support not declared: local/b, missing/m")
   expect(text).not.toContain("local/a: tool")
   expect(text).toContain("exclusive lock works")
-  expect(text).toContain("1 resource limited")
+  expect(text).toContain("Health: 1 model limited")
   expect(text).toContain("2 parked tasks")
   expect(
     checks.filter((check) => check.state !== "ok").every((check) => check.action !== undefined),
@@ -94,8 +111,7 @@ it("checks empty tiers, no parked work, registration and potential router confli
   const checks = await doctorChecks({
     ...base,
     settings: () => Promise.resolve(defaultSettings()),
-    health: () => Promise.resolve(0),
-    parked: () => Promise.resolve(0),
+    status: status({ tiers: { quick: [], standard: [], advanced: [] }, parked: 0 }),
     registry: {
       ...base.registry,
       find: () => undefined,
@@ -114,26 +130,21 @@ it("checks empty tiers, no parked work, registration and potential router confli
   expect(text).toContain("Other router model")
   expect(text).toContain("Custom request handler")
   expect(text).toContain("No parked work")
-  expect(text).toContain("Health: no resources limited")
+  expect(text).toContain("Health: no models limited")
   expect(text).not.toContain("No health action needed")
   expect(text).not.toContain("SECRET")
-  const one = doctorLines(await doctorChecks({ ...base, parked: () => Promise.resolve(1) }))
-  expect(one.join("\n")).toContain("1 parked task\n")
-  const many = doctorLines(await doctorChecks({ ...base, health: () => Promise.resolve(3) }))
-  expect(many.join("\n")).toContain("Health: 3 resources limited")
 })
 
 it("uses fixed secret-free error copy for every optional probe failure", async () => {
   const fail = () => Promise.reject(new Error("SECRET"))
   const base = options()
   const text = doctorLines(
-    await doctorChecks({ ...base, settings: fail, storage: fail, health: fail, parked: fail }),
+    await doctorChecks({ ...base, settings: fail, storage: fail, status: fail }),
   ).join("\n")
   expect(text).not.toContain("SECRET")
   expect(text).toContain("Settings or capabilities could not be read")
   expect(text).toContain("lock unavailable")
-  expect(text).toContain("Shared health could not be read")
-  expect(text).toContain("Parked work could not be read")
+  expect(text).toContain("Health or parked work could not be read")
   expect(doctorLines(await doctorChecks({ ...base, capabilities: fail })).join("\n")).not.toContain(
     "SECRET",
   )

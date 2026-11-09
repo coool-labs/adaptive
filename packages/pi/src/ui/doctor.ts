@@ -1,8 +1,4 @@
-export interface DoctorCheck {
-  readonly state: "ok" | "warning" | "error"
-  readonly message: string
-  readonly action?: string
-}
+import type { DoctorCheck } from "@coool/adaptive-core/flow/doctor"
 
 function parts(version: string): readonly [number, number, number] | undefined {
   if (!/^\d+\.\d+\.\d+$/.test(version)) return undefined
@@ -62,26 +58,4 @@ export function versionChecks(
     })
   else checks.push({ state: "ok", message: `Packed hosts tested up to ${String(testedUpTo)}` })
   return checks
-}
-
-const LABELS: Record<DoctorCheck["state"], string> = { ok: "OK", warning: "CHECK", error: "FIX" }
-
-const SEVERITY: readonly DoctorCheck["state"][] = ["error", "warning", "ok"]
-
-/** Problems first: the first screen answers "is anything wrong, and what do I do". */
-export function doctorLines(checks: readonly DoctorCheck[]): string[] {
-  const count = (state: DoctorCheck["state"]) =>
-    checks.filter((check) => check.state === state).length
-  const problems = count("error") + count("warning")
-  return [
-    problems === 0
-      ? `All ${String(checks.length)} checks OK`
-      : `${String(count("error"))} to fix · ${String(count("warning"))} to check · ${String(count("ok"))} OK`,
-    ...SEVERITY.flatMap((state) => checks.filter((check) => check.state === state)).flatMap(
-      (check) => [
-        `${LABELS[check.state]} ${check.message}`,
-        ...(check.action === undefined ? [] : [`  ${check.action}`]),
-      ],
-    ),
-  ]
 }

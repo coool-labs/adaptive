@@ -58,6 +58,7 @@ function fixture(options: { settings?: SettingsV1; preferences?: unknown } = {})
   } as unknown as Parameters<typeof registerAdaptive>[0]
   registerAdaptive(pi, sources, {
     settings: memoryFile(options.settings ?? settings),
+    capabilities: memoryFile(),
     version: "1.5.0",
     minimum: "1.5.0",
     testedUpTo: "1.5.0",

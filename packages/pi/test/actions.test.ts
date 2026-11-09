@@ -1,10 +1,5 @@
 import { expect, it } from "vitest"
-import {
-  healthAction,
-  preferencesAction,
-  confirmToolCapability,
-  DEFAULT_MODEL_HELP,
-} from "../src/host/actions.js"
+import { preferencesAction, toolSupportAction, DEFAULT_MODEL_HELP } from "../src/host/actions.js"
 import { parseSharedHealth, readSharedHealth, resetResourceHealth } from "../src/health-actions.js"
 import { ResourceHealthRegistry, DEFAULT_HEALTH_CONFIG } from "@coool/adaptive-core/health/index"
 import { fakeView } from "./support/view.js"
@@ -31,31 +26,57 @@ it("changes notes and pinned escalation only after the corresponding choice/conf
   expect(DEFAULT_MODEL_HELP).toContain('"defaultProvider": "adaptive"')
 })
 
-it("never writes a tool declaration without consent, and preserves other declarations", async () => {
+it("declares tool support per configured model only after an explicit choice and consent", async () => {
   const file = memoryFile()
-  await confirmToolCapability(fakeView([], [false]).view, file, ref, true)
-  expect(file.value()).toBeUndefined()
-  await confirmToolCapability(fakeView([], [true]).view, file, ref, true)
-  await confirmToolCapability(
-    fakeView([], [true]).view,
+  const other = { providerID: "other", id: "x" }
+  const empty = fakeView()
+  await toolSupportAction(empty.view, file, [], [])
+  expect(empty.alerts).toEqual([
+    { title: "Tool support", message: "No models configured yet — open Models to add some." },
+  ])
+  const listed = fakeView()
+  await toolSupportAction(
+    listed.view,
     file,
-    { providerID: "other", id: "x" },
-    false,
+    [ref, { ...ref, variant: "high" }, other, { providerID: "q", id: "n" }],
+    [
+      { ...ref, tools: true },
+      { ...other, tools: false },
+    ],
   )
-  await confirmToolCapability(fakeView([], [true]).view, file, ref, false)
+  expect(listed.selects[0]?.options).toEqual([
+    { title: "p/m", value: ref, description: "calls tools" },
+    { title: "other/x", value: other, description: "no tool calls" },
+    {
+      title: "q/n",
+      value: { providerID: "q", id: "n" },
+      description: "not declared · skipped on tool turns",
+    },
+  ])
+  for (const [choices, confirms] of [
+    [[0, undefined], []],
+    [[0, 0], [false]],
+  ] satisfies [(number | undefined)[], boolean[]][]) {
+    await toolSupportAction(fakeView(choices, confirms).view, file, [ref], [])
+    expect(file.value()).toBeUndefined()
+  }
+  await toolSupportAction(fakeView([0, 0], [true]).view, file, [ref], [])
+  await toolSupportAction(fakeView([0, 1], [true]).view, file, [other], [])
+  const saved = fakeView([0, 1], [true])
+  await toolSupportAction(saved.view, file, [ref], [])
+  expect(saved.toasts).toEqual([{ message: "Tool capability saved", variant: "success" }])
   expect(file.value()).toEqual({
     models: [
       { providerID: "other", id: "x", tools: false },
       { ...ref, tools: false },
     ],
   })
-  const corrupt = memoryFile({ newer: true })
   await expect(
-    confirmToolCapability(fakeView([], [true]).view, corrupt, ref, true),
+    toolSupportAction(fakeView([0, 0], [true]).view, memoryFile({ newer: true }), [ref], []),
   ).rejects.toThrow("capabilities")
 })
 
-it("resets the actual inherited health blockers only with confirmation", async () => {
+it("resets the actual inherited health blockers", async () => {
   const registry = new ResourceHealthRegistry(() => 100, DEFAULT_HEALTH_CONFIG)
   registry.observe({
     kind: "failure",
@@ -69,13 +90,10 @@ it("resets the actual inherited health blockers only with confirmation", async (
     JSON.stringify({ version: 1, records: registry.snapshot() }),
   )
   const file = memoryFile(serialized)
-  const before = file.value()
-  const reset = (model: typeof ref) => resetResourceHealth(file, model)
-  await healthAction(fakeView().view, [ref], reset)
-  await healthAction(fakeView([0], [false]).view, [ref], reset)
-  expect(file.value()).toBe(before)
-  await healthAction(fakeView([0], [true]).view, [ref], reset)
-  expect((await readSharedHealth(file)).every((record) => record.key.providerID !== "p")).toBe(true)
+  await resetResourceHealth(file, ref)
+  expect((await readSharedHealth(file)).map((record) => record.key)).toEqual([
+    { providerID: "other", modelID: "x" },
+  ])
   expect(parseSharedHealth(undefined)).toEqual([])
   expect(() => parseSharedHealth({ version: 2, records: [] })).toThrow("Adaptive health")
 })

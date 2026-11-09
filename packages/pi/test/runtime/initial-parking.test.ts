@@ -106,6 +106,7 @@ async function withParkedSession(
           (pi) => {
             registerAdaptive(pi, sources, {
               settings: jsonFile(join(cwd, "settings.json")),
+              capabilities: jsonFile(join(cwd, "capabilities.json")),
               version: VERSION,
               minimum: "1.5.0",
               testedUpTo: undefined,

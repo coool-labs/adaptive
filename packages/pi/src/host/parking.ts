@@ -50,7 +50,7 @@ interface ParkingHandlers extends RouteParking {
   ): Promise<void>
   sessionStart(ctx: ParkingContext): Promise<void>
   /** `/adaptive resume`: wake this session's parked task now. */
-  resume(ctx: RouteContext): Promise<void>
+  resume(ctx: RouteContext): Promise<"resumed" | "not-parked">
   /**
    * Drop the parked record of a wake lineage whose run just finished. Task-id
    * scoped: a park from another task in the same session is left alone.
@@ -60,7 +60,7 @@ interface ParkingHandlers extends RouteParking {
     ctx: SettleContext & Pick<RouteContext, "mode" | "signal" | "ui">,
   ): Promise<void>
   /** `/adaptive cancel`: drop this session's wait and parked record. */
-  cancel(ctx: RouteContext): Promise<void>
+  cancel(ctx: RouteContext): Promise<"cancelled" | "not-parked">
   readonly shutdown: () => void
   recover(
     recovery: Recovery,
@@ -85,15 +85,16 @@ export function parkingHandlers(
     disarm?.()
     disarm = undefined
   }
-  const cancel = async (ctx: RouteContext) => {
+  /** True when a still-waiting record was dropped. */
+  const cancel = async (ctx: RouteContext): Promise<boolean> => {
     stop()
     clear(ctx)
     const session = ctx.sessionManager.getSessionId?.()
-    if (
+    return (
       session !== undefined &&
-      ctx.sessionManager.getBranch().some((entry) => entry.customType === PARK_ENTRY)
+      ctx.sessionManager.getBranch().some((entry) => entry.customType === PARK_ENTRY) &&
+      cancelPark(sources.parking.file, session)
     )
-      await cancelPark(sources.parking.file, session)
   }
   const noteResume = async (owned: number, tier: RoutePlan["tier"]): Promise<void> => {
     try {
@@ -110,13 +111,14 @@ export function parkingHandlers(
     saved: Payload,
     now = sources.parking.clock(),
     manual = false,
-  ) => {
+  ): Promise<boolean> => {
     const owned = generation
     if (!(await claimPark(sources.parking.file, record, now, manual))) {
       clear(ctx)
-      return
+      return false
     }
-    if (owned !== generation) return
+    // Superseded while claiming: whoever bumped the generation owns the session now.
+    if (owned !== generation) return false
     clear(ctx)
     if (saved.input !== undefined) {
       resumedInput = { ...saved.state, wakes: record.wakes, wakeToken: record.token }
@@ -146,6 +148,7 @@ export function parkingHandlers(
       )
     }
     await noteResume(owned, record.tier)
+    return true
   }
   const arm = (ctx: RouteContext, record: Parked, saved: Payload) => {
     card(ctx, record)
@@ -351,14 +354,11 @@ export function parkingHandlers(
     const session = ctx.sessionManager.getSessionId?.()
     const record = session === undefined ? undefined : await findPark(sources.parking.file, session)
     const saved = record === undefined ? undefined : payload(ctx, record.token)
-    if (record === undefined || saved === undefined) {
-      ctx.ui?.notify("Nothing is parked in this session.", "info")
-      return
-    }
+    if (record === undefined || saved === undefined) return "not-parked"
     stop()
     // Resuming early is a request to try again now; routing parks again if the tier is still
     // blocked. Manual resume bypasses the automatic give-up budget — the person decided.
-    await wake(ctx, record, saved, record.due, true)
+    return (await wake(ctx, record, saved, record.due, true)) ? "resumed" : "not-parked"
   }
   const clearServed = async (
     task: string,
@@ -385,7 +385,7 @@ export function parkingHandlers(
     sessionStart,
     resume,
     clearServed,
-    cancel,
+    cancel: async (ctx) => ((await cancel(ctx)) ? "cancelled" : "not-parked"),
     shutdown: stop,
     async recover(recovery, ctx) {
       const id = selectedVirtual(ctx.model)

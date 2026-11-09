@@ -41,6 +41,7 @@ import {
 import { errorText, type SelectOption } from "./options.js"
 import type { HostCopy } from "./host-copy.js"
 import { receiptDetail, receiptLine, receiptPage, RECEIPTS_PAGE_SIZE } from "./receipts.js"
+import { runDoctor, runHealthReset, runParkedWork, type AdaptiveActions } from "./actions.js"
 
 export interface AdaptiveView {
   select<Value>(options: {
@@ -88,14 +89,10 @@ export interface AdaptiveEnv {
    * that session's override instead of the global mode.
    */
   sessionID?: string | undefined
-  /** Pi exposes these local operations; hosts without them keep the original menu. */
-  actions?: {
-    health(): Promise<void>
-    parked(): Promise<void>
-    doctor(): Promise<void>
-    preferences(): Promise<void>
-    defaults(): Promise<void>
-  }
+  /** Local operations; each menu row appears only when its operation is wired. */
+  actions?: AdaptiveActions
+  /** Wall clock for relative times; injected so views are deterministic in tests. */
+  clock?: () => number
 }
 
 export const INVITE_MESSAGE =
@@ -189,6 +186,53 @@ async function applyTierRequest(
   return result
 }
 
+/** A wired local operation; true when the menu should close (a resumed run continues). */
+type ActionRun = () => Promise<boolean>
+
+function actionOptions(env: AdaptiveEnv): SelectOption<ActionRun>[] {
+  const actions = env.actions ?? {}
+  const { resetHealth, resume, cancel, tools, doctor, preferences, defaults } = actions
+  const done =
+    (run: () => Promise<void>): ActionRun =>
+    async () => {
+      await run()
+      return false
+    }
+  const rows: (SelectOption<ActionRun> | false)[] = [
+    resetHealth !== undefined && {
+      title: "Health",
+      value: done(() => runHealthReset(env, resetHealth)),
+      description: "reset a model marked limited",
+    },
+    (resume !== undefined || cancel !== undefined) && {
+      title: "Parked work",
+      value: () => runParkedWork(env, actions),
+      description: "resume or cancel waiting work",
+    },
+    tools !== undefined && {
+      title: "Tool support",
+      value: done(tools),
+      description: "declare which models can call tools",
+    },
+    doctor !== undefined && {
+      title: "Doctor",
+      value: done(() => runDoctor(env, doctor)),
+      description: "check setup and compatibility",
+    },
+    preferences !== undefined && {
+      title: "Preferences",
+      value: done(preferences),
+      description: "transcript notes and pinned-tier escalation",
+    },
+    defaults !== undefined && {
+      title: "Use Adaptive for new sessions",
+      value: done(defaults),
+      description: "Pi settings to copy",
+    },
+  ]
+  return rows.filter((row) => row !== false)
+}
+
 export async function runAdaptive(env: AdaptiveEnv, initial?: MainMenuChoice): Promise<void> {
   const loaded = await tryApi(env, () => env.api.settings())
   if (loaded === undefined) return
@@ -235,55 +279,18 @@ export async function runAdaptive(env: AdaptiveEnv, initial?: MainMenuChoice): P
         : await env.api.tierRequest(sessionID).catch(() => undefined)
     const choice =
       next ??
-      (await env.view.select<
-        MainMenuChoice | "health" | "parked" | "doctor" | "preferences" | "defaults"
-      >({
+      (await env.view.select<MainMenuChoice | ActionRun>({
         title: `Adaptive (${override ?? settings.mode})`,
         options: [
           ...mainMenuOptions(settings, status, tierPinned, override ?? settings.mode),
-          ...(env.actions === undefined
-            ? []
-            : [
-                {
-                  title: "Health",
-                  value: "health" as const,
-                  description: "inspect or reset resource health",
-                },
-                {
-                  title: "Parked work",
-                  value: "parked" as const,
-                  description: "resume or cancel waiting work",
-                },
-                {
-                  title: "Doctor",
-                  value: "doctor" as const,
-                  description: "check setup and compatibility",
-                },
-                {
-                  title: "Preferences",
-                  value: "preferences" as const,
-                  description: "transcript notes and pinned-tier escalation",
-                },
-                {
-                  title: "Use Adaptive for new sessions",
-                  value: "defaults" as const,
-                  description: "Pi settings to copy",
-                },
-              ]),
+          ...actionOptions(env),
         ],
       }))
     next = undefined
     if (choice === undefined) return
-    if (
-      choice === "health" ||
-      choice === "parked" ||
-      choice === "doctor" ||
-      choice === "preferences" ||
-      choice === "defaults"
-    ) {
-      await tryApi(env, async () => {
-        await env.actions?.[choice]()
-      })
+    if (typeof choice === "function") {
+      // A resumed run continues in the session: the menu steps aside for it.
+      if ((await tryApi(env, choice)) === true) return
       continue
     }
     if (choice === "status") {

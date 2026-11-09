@@ -4,16 +4,14 @@ import type {
   ModelChangeEntry,
 } from "@earendil-works/pi-coding-agent"
 import type { AdaptiveEnv } from "@coool/adaptive-core/flow/controller"
-import { waitingLabel } from "@coool/adaptive-core/flow/waiting"
 import { TIERS } from "@coool/adaptive-core/routing/tier-policy/types"
 import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
-import { readSharedHealth, resetResourceHealth } from "../health-actions.js"
+import { resetResourceHealth } from "../health-actions.js"
 import { effectiveMode } from "../session.js"
 import { readSettings, updateSettings } from "../settings.js"
 import type { JsonFile } from "../store.js"
 import { PI_COPY } from "../ui/copy.js"
-import { doctorLines } from "../ui/doctor.js"
-import { DEFAULT_MODEL_HELP, healthAction, preferencesAction } from "./actions.js"
+import { DEFAULT_MODEL_HELP, preferencesAction, toolSupportAction } from "./actions.js"
 import { registerCommands } from "./commands.js"
 import { controlApi } from "./control.js"
 import { doctorChecks } from "./doctor.js"
@@ -21,12 +19,13 @@ import type { AdaptiveSources } from "./extension.js"
 import { availablePhysicalModels, modelSummaries, proposalModels } from "./inventory.js"
 import { editTierProposal, runOnboarding } from "./onboarding.js"
 import type { parkingHandlers } from "./parking.js"
-import { readParked, readStatus } from "./status.js"
+import { readStatus } from "./status.js"
 import { piView } from "./view.js"
 
-/** What only the packaged entry knows: the settings file and the Pi version. */
+/** What only the packaged entry knows: the writable files and the Pi version. */
 export interface HostSources {
   readonly settings: JsonFile
+  readonly capabilities: JsonFile
   readonly version: string
   readonly minimum: string
   readonly testedUpTo: string | undefined
@@ -108,31 +107,21 @@ export function adaptiveSurface(
       view,
       models: () => modelSummaries(availablePhysicalModels(ctx.modelRegistry)),
       sessionID: ctx.sessionManager.getSessionId(),
+      clock: sources.parking.clock,
       actions: {
-        health: async () => {
-          await healthAction(view, await configured(), (ref) =>
-            resetResourceHealth(sources.health.file, ref),
+        resetHealth: (ref) => resetResourceHealth(sources.health.file, ref),
+        resume: () => parking.resume(ctx),
+        cancel: () => parking.cancel(ctx),
+        tools: async () => {
+          await toolSupportAction(
+            view,
+            host.capabilities,
+            await configured(),
+            await sources.capabilities(),
           )
         },
-        parked: async () => {
-          const { waiting } = await api.status()
-          const now = sources.parking.clock()
-          await view.alert({
-            title: "Parked work",
-            message:
-              waiting.length === 0
-                ? "No parked work."
-                : [
-                    ...waiting.map(
-                      (entry) =>
-                        `${entry.sessionID === ctx.sessionManager.getSessionId() ? "This session" : entry.sessionID} · ${entry.tier} · ${waitingLabel(entry.resumeAt, now)}`,
-                    ),
-                    "Use /adaptive resume or /adaptive cancel in the waiting session.",
-                  ].join("\n"),
-          })
-        },
-        doctor: async () => {
-          const checks = await doctorChecks({
+        doctor: () =>
+          doctorChecks({
             version: host.version,
             minimum: host.minimum,
             testedUpTo: host.testedUpTo,
@@ -141,26 +130,15 @@ export function adaptiveSurface(
             capabilities: sources.capabilities,
             // An update that changes nothing still takes the exclusive lock.
             storage: () => host.settings.update(() => ({ next: undefined, result: undefined })),
-            health: async () =>
-              (await readSharedHealth(sources.health.file)).filter(
-                (record) => record.health !== "healthy",
-              ).length,
-            parked: async () => (await readParked(sources.parking.file)).length,
-          })
-          await view.table({ title: "Adaptive doctor", lines: doctorLines(checks) })
-        },
+            status: api.status,
+          }),
         preferences: () => preferencesAction(view, sources.preferences),
         defaults: () =>
           view.alert({ title: "Use Adaptive for new sessions", message: DEFAULT_MODEL_HELP }),
       },
     })
   }
-  registerCommands<ExtensionContext>(pi, {
-    env: environment,
-    resume: (ctx) => parking.resume(ctx),
-    cancel: (ctx) => parking.cancel(ctx),
-    clock: sources.health.clock,
-  })
+  registerCommands<ExtensionContext>(pi, { env: environment })
   return {
     async onboard(ctx) {
       const env = await environment(ctx)

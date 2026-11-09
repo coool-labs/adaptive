@@ -1,6 +1,6 @@
 // covers: ["ADP-062"]
 import { expect, it } from "vitest"
-import { registerCommands, runCommand, SUBCOMMANDS } from "../src/host/commands.js"
+import { registerCommands, runCommand } from "../src/host/commands.js"
 import { PI_COPY } from "../src/ui/copy.js"
 import { fakeApi } from "./support/api.js"
 import { fakeView } from "./support/view.js"
@@ -21,11 +21,14 @@ function setup() {
     models: () => [],
     sessionID: "s",
     actions: {
-      health: action("health"),
-      parked: action("parked"),
-      doctor: action("doctor"),
-      preferences: action("preferences"),
-      defaults: action("defaults"),
+      resume: () => {
+        called.push("resume")
+        return Promise.resolve("resumed")
+      },
+      doctor: () => {
+        called.push("doctor")
+        return Promise.resolve([{ state: "ok", message: "fine" }])
+      },
     },
   }
   const notices: string[] = []
@@ -35,50 +38,32 @@ function setup() {
     waitForIdle: action("idle"),
     isIdle: () => true,
   }
-  const options = {
-    env: () => Promise.resolve(env),
-    resume: action("resume"),
-    cancel: action("cancel"),
-    clock: () => 1000,
-  }
+  const options = { env: () => Promise.resolve(env) }
   return { ...state, ...view, env, called, ctx, options, notices }
 }
 
-it("runs every documented subcommand through shared flow or the owned host action", async () => {
+it("hands every subcommand to the shared runner with this session's environment", async () => {
   const state = setup()
-  for (const command of ["", ...SUBCOMMANDS]) await runCommand(command, state.ctx, state.options)
-  expect(state.called).toEqual(["health", "resume", "cancel", "doctor"])
-  expect(state.patches).toEqual([{ mode: "observe" }, { mode: "off" }])
-  expect(state.alerts.some((alert) => alert.message.includes("No decisions"))).toBe(true)
-  expect(state.selects.some((select) => select.title === "Tier")).toBe(true)
-  await runCommand("bogus", state.ctx, state.options)
-  expect(state.toasts.at(-1)?.message).toContain("Unknown adaptive command")
+  await runCommand(" observe   on ", state.ctx, state.options)
+  await runCommand("resume", state.ctx, state.options)
+  await runCommand("doctor", state.ctx, state.options)
+  expect(state.patches).toEqual([{ mode: "observe" }])
+  expect(state.called).toEqual(["resume", "doctor"])
+  expect(state.tables.at(-1)).toEqual({
+    title: "Adaptive doctor",
+    lines: ["All 1 checks OK", "OK fine"],
+  })
+  await runCommand("cancel", state.ctx, state.options)
+  expect(state.toasts.at(-1)?.message).toBe(
+    "Unknown adaptive command. Use: status, why, tiers, resume, observe on, observe off, doctor.",
+  )
 })
 
-it("shows the latest receipt from this session and validates observation save failures", async () => {
+it("refuses without a UI instead of opening a dialog nobody can answer", async () => {
   const state = setup()
-  state.env.api.receipts = () =>
-    Promise.resolve([
-      { id: 1, at: 0, sessionID: "other", decision: { kind: "defer", reason: "adaptive-off" } },
-      { id: 2, at: 0, sessionID: "s", decision: { kind: "defer", reason: "adaptive-off" } },
-    ])
-  await runCommand("why", state.ctx, state.options)
-  expect(state.alerts[0]?.message).toContain("id: 2")
-  state.env.api.setSettings = () => Promise.resolve({ ok: false, errors: ["invalid mode"] })
-  await runCommand(" observe   off ", state.ctx, state.options)
-  expect(state.toasts.at(-1)).toEqual({ message: "invalid mode", variant: "error" })
-  await runCommand("doctor", state.ctx, {
-    ...state.options,
-    env: () =>
-      Promise.resolve({
-        copy: state.env.copy,
-        api: state.env.api,
-        view: state.env.view,
-        models: state.env.models,
-      }),
-  })
   await runCommand("", { ...state.ctx, hasUI: false }, state.options)
   expect(state.notices.at(-1)).toContain("interactive or RPC")
+  expect(state.selects).toEqual([])
 })
 
 it("registers completions and guards shortcuts/command failures without waking a model", async () => {

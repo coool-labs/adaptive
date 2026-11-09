@@ -43,6 +43,7 @@ export function routingFixture(settings: SettingsV1 = defaultSettings()) {
   } as unknown as Parameters<typeof registerAdaptive>[0]
   registerAdaptive(pi, sources, {
     settings: memoryFile(),
+    capabilities: memoryFile(),
     version: "1.5.0",
     minimum: "1.5.0",
     testedUpTo: "1.5.0",

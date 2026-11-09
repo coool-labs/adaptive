@@ -58,6 +58,7 @@ export default function adaptive(pi: Parameters<typeof registerAdaptive>[0]): vo
     },
     {
       settings: jsonFile(path),
+      capabilities: jsonFile(join(getAgentDir(), "adaptive", "capabilities.json")),
       version: VERSION,
       minimum: matrix.minimum,
       // The last recorded packed-host matrix; a release records its own after verification.

@@ -11,6 +11,7 @@ import { observeCodexHeaders } from "../src/capacity.js"
 import { readReceipts } from "../src/receipts.js"
 import {
   cancelPark,
+  claimPark,
   findPark,
   MAX_WAKES,
   PARK_ENTRY,
@@ -850,15 +851,16 @@ it("receipts a park without a transcript note when quiet, and still parks if the
   expect(await findPark(broken.file, "session")).toBeDefined()
 })
 
-it("resumes a parked task on request, and says so when nothing is parked", async () => {
+it("resumes a parked task on request, and reports when nothing is parked", async () => {
   const f = fixture()
-  await f.handlers.resume(f.ctx)
-  expect(f.ctx.ui.notify).toHaveBeenLastCalledWith("Nothing is parked in this session.", "info")
-  await f.handlers.resume({ ...f.ctx, sessionManager: { getBranch: () => f.branch } })
-  expect(f.ctx.ui.notify).toHaveBeenCalledTimes(2)
+  expect(await f.handlers.resume(f.ctx)).toBe("not-parked")
+  expect(await f.handlers.resume({ ...f.ctx, sessionManager: { getBranch: () => f.branch } })).toBe(
+    "not-parked",
+  )
+  expect(f.ctx.ui.notify).not.toHaveBeenCalled()
   await f.blocked()
   const { mode, hasUI, sessionManager, modelRegistry } = f.ctx
-  await f.handlers.resume({ mode, hasUI, sessionManager, modelRegistry })
+  expect(await f.handlers.resume({ mode, hasUI, sessionManager, modelRegistry })).toBe("resumed")
   expect(f.host.sendMessage).toHaveBeenCalledTimes(1)
   expect(f.host.sendMessage.mock.calls[0]?.[0]).toMatchObject({
     customType: "adaptive.continuation",
@@ -869,10 +871,37 @@ it("resumes a parked task on request, and says so when nothing is parked", async
   expect(f.host.sendMessage).toHaveBeenCalledTimes(1)
 })
 
-it("cancels a parked task on request without waking it", async () => {
+it("reports nothing parked when another Pi process claims the task first", async () => {
   const f = fixture()
   await f.blocked()
-  await f.handlers.cancel(f.ctx)
+  let raced = false
+  // Another process claims the record between this resume's lookup and its claim.
+  const racing: JsonFile = {
+    read: () => f.file.read(),
+    async update<R>(change: (current: unknown) => { readonly next: unknown; readonly result: R }) {
+      const result = await f.file.update(change)
+      if (!raced) {
+        raced = true
+        const record = await findPark(f.file, "session")
+        if (record !== undefined) await claimPark(f.file, record, record.due, true)
+      }
+      return result
+    },
+  }
+  const handlers = parkingHandlers(f.host, {
+    ...f.sources,
+    parking: { ...f.sources.parking, file: racing },
+  })
+  expect(await handlers.resume(f.ctx)).toBe("not-parked")
+  expect(f.host.sendMessage).not.toHaveBeenCalled()
+})
+
+it("cancels a parked task on request without waking it", async () => {
+  const f = fixture()
+  expect(await f.handlers.cancel(f.ctx)).toBe("not-parked")
+  await f.blocked()
+  expect(await f.handlers.cancel(f.ctx)).toBe("cancelled")
+  expect(await f.handlers.cancel(f.ctx)).toBe("not-parked")
   expect(await findPark(f.file, "session")).toBeUndefined()
   await vi.advanceTimersByTimeAsync(1_000_000)
   expect(f.host.sendMessage).not.toHaveBeenCalled()
