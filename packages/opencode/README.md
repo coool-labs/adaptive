@@ -1,5 +1,7 @@
 # @coool/opencode-adaptive
 
+[![npm downloads](https://img.shields.io/npm/dm/@coool/opencode-adaptive)](https://www.npmjs.com/package/@coool/opencode-adaptive)
+
 Automatic model fallback and routing for [OpenCode](https://opencode.ai).
 
 You list your models in order of preference. Adaptive runs each task on the first one that works. When a model hits a quota, rate limit or outage, work moves to the next one. When the preferred model is back, it is used again.
