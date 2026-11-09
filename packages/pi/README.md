@@ -1,8 +1,7 @@
 # Pi Adaptive
 
-Not yet published. Release is gated on maintainer approval.
-
-Capability-tier routing and bounded recovery for Pi. You choose the available
+Capability-tier routing and bounded recovery for [Pi](https://github.com/earendil-works/pi), published as
+[`@coool/pi-adaptive`](https://www.npmjs.com/package/@coool/pi-adaptive). You choose the available
 models and their tier order; Adaptive keeps provider failures separate from
 capability gaps. Pi still owns the agent, tools, sessions, and model calls.
 
@@ -10,8 +9,6 @@ See the [Pi plan](../../docs/plans/pi-plugin.md) for the design and the
 [test strategy](docs/TEST_STRATEGY.md) for the evidence each release requires.
 
 ## Install
-
-After publication:
 
 ```sh
 pi install npm:@coool/pi-adaptive
@@ -173,10 +170,13 @@ Parking keeps work in the required tier:
   user intent, not automatic cross-tier recovery.
 - Reopening a parked interactive session re-arms its wait; already-due work asks
   for confirmation. An owned wake writes a resumed note unless verbosity is
-  quiet. Automatic wakes are limited to **three per task**. Terminal
-  infrastructure failures get at most **two automatic restarts per task**;
-  capability escalation is separately bounded. Permanent auth/configuration
-  errors do not enter recovery loops.
+  quiet. Wake cycles that find every model still unavailable are free — they
+  re-arm and try again later — so the give-up budget counts **failed resume
+  deliveries, at most five per task**. Reaching it stops automatic wakes and
+  says so in the transcript; `/adaptive resume` or reopening with consent
+  still tries immediately. Terminal infrastructure failures get at most
+  **two automatic restarts per task**; capability escalation is separately
+  bounded. Permanent auth/configuration errors do not enter recovery loops.
 
 Headless print/JSON runs never show dialogs. Detached wake timers are not a
 supported headless continuation mechanism: Pi can exit or invalidate the

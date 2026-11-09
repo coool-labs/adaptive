@@ -1,17 +1,46 @@
 # Adaptive
 
-Execution supervision for coding agents: capability-tier routing, evidence-backed
-escalation, same-tier recovery, and durable parking. No model classifier, no hidden
-cross-tier borrowing, and no telemetry.
+Keep your goals running when models fail. Adaptive supervises execution in
+[coding agents](https://opencode.ai): it routes every task to the first model
+that works, recovers from quota limits, rate limits, and outages inside the
+tier the work needs, and parks what cannot continue until a model returns —
+so a long goal finishes without you babysitting it.
+
+**Put your subscriptions first, pay-as-you-go last.** With Claude and OpenAI
+subscriptions at the top of the standard tier and an OpenRouter model at the
+bottom, Adaptive spends your subscriptions before your credits, falls to the
+API while they are out, and switches back the moment a limit resets — as many
+times as limits change mid-goal. Work that runs out of models entirely waits
+and resumes itself, even across a process restart. Completed tool calls are
+never repeated.
+
+## What makes it different
+
+- **No classifier, no prompt sniffing.** Tiers are lists you own, in an order
+  you choose. Routing follows fixed rules, not an extra LLM call that may
+  misread the prompt.
+- **Availability is not capability.** A 429 or a dead provider never silently
+  moves work to a stronger or weaker tier. Moving up requires real evidence:
+  a context overflow, a policy rejection, or an explicit agent request — and
+  it is budgeted.
+- **Fail-open by design.** If Adaptive itself malfunctions, your agent keeps
+  working as it would without it. There is no background daemon and no
+  telemetry: receipts and health stay on your machine.
+- **Observe before you trust.** New installs watch only: they record every
+  decision they would have made, with the reason, and change nothing until
+  you switch them to `active`.
 
 ## Packages
 
-- [OpenCode Adaptive](packages/opencode/README.md) — `@coool/opencode-adaptive`.
-- Shared routing, health, state, and dialog logic live in `packages/core`;
-  loopback provider fixtures live in `packages/testkit`. Both are private workspaces.
-- [Pi Adaptive](packages/pi/README.md) — `@coool/pi-adaptive`, not yet
-  published. See the [Pi plan](docs/plans/pi-plugin.md) and
-  [release test strategy](packages/pi/docs/TEST_STRATEGY.md).
+| Package                                                 | Install                                        | Needs            |
+| ------------------------------------------------------- | ---------------------------------------------- | ---------------- |
+| [@coool/opencode-adaptive](packages/opencode/README.md) | `opencode plugin add @coool/opencode-adaptive` | OpenCode ≥ 2.2.1 |
+| [@coool/pi-adaptive](packages/pi/README.md)             | `pi install npm:@coool/pi-adaptive`            | Pi ≥ 1.5.0 < 2   |
+
+Both are configured from a single `/adaptive` menu — models, tier order, and
+mode — and share the same decision core: one scheduler, one health model, one
+parking format (`packages/core`, a private workspace), so behavior you verify
+in one host is the behavior the other one runs.
 
 ## Development
 
