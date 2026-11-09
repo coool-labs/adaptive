@@ -1,24 +1,27 @@
-// covers: ["ADP-010", "ADP-011", "ADP-013", "ADP-014", "ADP-022", "ADP-024", "ADP-057", "ADP-059", "ADP-060", "ADP-061", "ADP-064"]
+// covers: ["ADP-003", "ADP-010", "ADP-011", "ADP-013", "ADP-014", "ADP-015", "ADP-022", "ADP-024", "ADP-028", "ADP-029", "ADP-032", "ADP-055", "ADP-056", "ADP-057", "ADP-059", "ADP-060", "ADP-061", "ADP-062", "ADP-063", "ADP-064"]
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expect, it } from "vitest"
-import type { AgentSession } from "@earendil-works/pi-coding-agent"
+import type { AgentSession, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import {
   createAgentSession,
   DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
   SettingsManager,
+  VERSION,
 } from "@earendil-works/pi-coding-agent"
 import {
   fauxProvider,
   fauxAssistantMessage,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux"
+import type { SettingsV1 } from "@coool/adaptive-core/state/settings/types"
 import { defaultSettings } from "@coool/adaptive-core/state/settings/parse"
 import { registerAdaptive } from "../../src/host/extension.js"
-import { jsonFile } from "../../src/store.js"
+import { jsonFile, type JsonFile } from "../../src/store.js"
+import { readSettings } from "../../src/settings.js"
 import { withHealth } from "../../src/health.js"
 import type { AdaptiveSources } from "../../src/host/extension.js"
 
@@ -30,12 +33,16 @@ interface Harness {
   readonly settingsReads: () => number
   readonly probeCalls: readonly string[]
   readonly sources: AdaptiveSources
+  readonly settingsFile: JsonFile
+  /** Everything Adaptive showed through the dialogs of the scripted UI. */
+  readonly shown: readonly string[]
   readonly waits: readonly number[]
   setOnWait(callback: (() => void) | undefined): void
 }
 
 const settings = {
   ...defaultSettings(),
+  inviteDismissed: true,
   mode: "active" as const,
   tiers: {
     quick: [{ providerID: "adaptive-faux", id: "quick" }],
@@ -44,8 +51,15 @@ const settings = {
   },
 }
 
+/** Scripted answers for the dialogs of an RPC-style host; omitted means no UI. */
+interface Dialogs {
+  select(title: string, options: readonly string[]): string | undefined
+  confirm(title: string, message: string, harness: Pick<Harness, "settingsFile">): Promise<boolean>
+}
+
 interface SessionOptions {
-  readonly settings?: typeof settings
+  readonly settings?: SettingsV1
+  readonly dialogs?: Dialogs
   /** Pi's native retry; off unless a scenario exercises it. */
   readonly retry?: boolean
 }
@@ -73,6 +87,9 @@ async function withSession(
     await runtime.refresh()
     let settingsReads = 0
     let ids = 0
+    const settingsFile = jsonFile(join(cwd, "adaptive", "settings.json"))
+    await settingsFile.update(() => ({ next: routed, result: undefined }))
+    const shown: string[] = []
     const probeCalls: string[] = []
     const waits: number[] = []
     let now = 1_000
@@ -91,7 +108,7 @@ async function withSession(
             capacity: { file: jsonFile(join(cwd, "adaptive", "capacity.json")), clock: () => now },
             settings: () => {
               settingsReads += 1
-              return Promise.resolve(routed)
+              return readSettings(settingsFile)
             },
             capabilities: () =>
               Promise.resolve(
@@ -135,7 +152,12 @@ async function withSession(
             },
           }
           sources = resolved
-          registerAdaptive(pi, resolved)
+          registerAdaptive(pi, resolved, {
+            settings: settingsFile,
+            version: VERSION,
+            minimum: "1.5.0",
+            testedUpTo: undefined,
+          })
           pi.registerTool({
             name: "adaptive_test_probe",
             label: "Probe",
@@ -165,7 +187,30 @@ async function withSession(
       }),
     })
     try {
-      await session.bindExtensions({})
+      const dialogs = options.dialogs
+      const base = session.extensionRunner.getUIContext()
+      const harnessSettings = { settingsFile }
+      await session.bindExtensions(
+        dialogs === undefined
+          ? {}
+          : {
+              mode: "rpc",
+              uiContext: {
+                ...base,
+                select: (title, choices) => {
+                  shown.push(`${title}\n${choices.join("\n")}`)
+                  return Promise.resolve(dialogs.select(title, choices))
+                },
+                confirm: (title, message) => {
+                  shown.push(`${title}\n${message}`)
+                  return dialogs.confirm(title, message, harnessSettings)
+                },
+                notify: (message) => {
+                  shown.push(message)
+                },
+              } satisfies ExtensionUIContext,
+            },
+      )
       session.setActiveToolsByName([])
       if (sources === undefined) throw new Error("sources missing")
       await run({
@@ -176,6 +221,8 @@ async function withSession(
         settingsReads: () => settingsReads,
         probeCalls,
         sources,
+        settingsFile,
+        shown,
         waits,
         setOnWait: (callback) => {
           onWait = callback
@@ -611,31 +658,235 @@ it("aborts an owned route countdown without dispatching or restarting", async ()
 })
 
 it("attributes passive Codex headers to the dispatched physical provider, never adaptive", async () => {
-  await withSession(async (harness) => {
-    const { session, faux, runtime } = harness
-    await selectVirtual(harness, "auto")
-    const physical = runtime.getModel("adaptive-faux", "standard")
-    if (physical === undefined) throw new Error("model missing")
-    faux.setResponses([
-      async (_context, options) => {
-        await options?.onResponse?.(
+  await withSession(
+    async (harness) => {
+      const { session, faux, runtime } = harness
+      await selectVirtual(harness, "auto")
+      const physical = runtime.getModel("adaptive-faux", "standard")
+      if (physical === undefined) throw new Error("model missing")
+      faux.setResponses([
+        async (_context, options) => {
+          await options?.onResponse?.(
+            {
+              status: 200,
+              headers: {
+                "x-codex-primary-used-percent": "45",
+                "x-codex-primary-reset-after-seconds": "60",
+              },
+            },
+            physical,
+          )
+          return fauxAssistantMessage("Observed")
+        },
+      ])
+      await session.prompt("Capture passive capacity")
+      expect(
+        JSON.parse(await readFile(join(harness.cwd, "adaptive", "capacity.json"), "utf8")),
+      ).toMatchObject({
+        readings: [{ key: { providerID: "adaptive-faux" }, reading: { usedRatio: 0.45 } }],
+      })
+      // Another instance serving /adaptive status reads the same mirror.
+      await session.prompt("/adaptive status")
+      expect(harness.shown.join("\n---\n")).toMatch(
+        /adaptive-faux\/standard\nstandard · healthy\n {2}used 45%\n {2}resets \d{4}-\d\d-\d\d \d\d:\d\d/,
+      )
+    },
+    { dialogs: { select: () => undefined, confirm: () => Promise.resolve(false) } },
+  )
+})
+
+/** The RPC-style dialogs of a user who answers by choice title, never by position. */
+function answering(
+  choices: Record<string, string>,
+  confirmed = true,
+  onConfirm?: (saved: unknown) => void,
+): Dialogs {
+  return {
+    select: (title, options) => {
+      const wanted = Object.entries(choices).find(([prefix]) => title.startsWith(prefix))?.[1]
+      return options.find((option) => wanted !== undefined && option.includes(wanted))
+    },
+    confirm: async (_title, _message, harness) => {
+      onConfirm?.(await harness.settingsFile.read())
+      return confirmed
+    },
+  }
+}
+
+async function receipts(harness: Harness): Promise<unknown> {
+  return JSON.parse(await readFile(join(harness.cwd, "adaptive", "receipts.json"), "utf8"))
+}
+
+const unconfigured = { ...defaultSettings(), inviteDismissed: false }
+
+it("offers the first-run proposal once, saving tiers and Observe only after confirmation", async () => {
+  let atConfirmation: unknown
+  await withSession(
+    async (harness) => {
+      expect(harness.shown[0]).toContain("Adaptive is installed")
+      expect(harness.shown[0]).toContain("standard: adaptive-faux/")
+      // Nothing is saved while the user is still deciding.
+      expect(atConfirmation).toEqual(unconfigured)
+      const saved = await readSettings(harness.settingsFile)
+      expect(saved).toMatchObject({ mode: "observe", inviteDismissed: true })
+      expect(saved.tiers.standard.length).toBeGreaterThan(0)
+      // A reload starts the session again; a dismissed invitation never repeats.
+      const offers = harness.shown.filter((text) => text.startsWith("Adaptive is installed"))
+      await harness.session.reload()
+      expect(harness.shown.filter((text) => text.startsWith("Adaptive is installed"))).toEqual(
+        offers,
+      )
+    },
+    {
+      settings: unconfigured,
+      dialogs: answering({ "Adaptive is installed": "keep my current model" }, true, (saved) => {
+        atConfirmation = saved
+      }),
+    },
+  )
+})
+
+it("saves nothing but the dismissal when the user declines the first-run proposal", async () => {
+  await withSession(
+    async (harness) => {
+      expect(harness.shown.filter((text) => text.startsWith("Adaptive is installed"))).toHaveLength(
+        1,
+      )
+      expect(await readSettings(harness.settingsFile)).toMatchObject({
+        mode: "observe",
+        inviteDismissed: true,
+        tiers: { quick: [], standard: [], advanced: [] },
+      })
+    },
+    { settings: unconfigured, dialogs: answering({ "Adaptive is installed": "Not now" }) },
+  )
+})
+
+const dismissed = (patch: Partial<SettingsV1>): SettingsV1 => ({ ...settings, ...patch })
+const preferB = {
+  ...settings.tiers,
+  standard: [
+    { providerID: "adaptive-faux", id: "standard-b" },
+    { providerID: "adaptive-faux", id: "standard" },
+  ],
+}
+const acknowledging = answering({ "": "Back" })
+
+it("observes a manual model with a receipt and an 'Observing · would' note, then explains it", async () => {
+  await withSession(
+    async (harness) => {
+      const { faux, session } = harness
+      faux.setResponses([fauxAssistantMessage("Manual answer")])
+      await session.prompt("Manual task")
+      expect(assistants(session).map((message) => message.model)).toEqual(["standard"])
+      expect(session.model?.id).toBe("standard")
+      expect(await receipts(harness)).toMatchObject({
+        receipts: [
           {
-            status: 200,
-            headers: {
-              "x-codex-primary-used-percent": "45",
-              "x-codex-primary-reset-after-seconds": "60",
+            tier: "standard",
+            decision: {
+              kind: "observe-only",
+              would: { kind: "apply", model: { id: "standard-b" } },
             },
           },
-          physical,
-        )
-        return fauxAssistantMessage("Observed")
-      },
-    ])
-    await session.prompt("Capture passive capacity")
-    expect(
-      JSON.parse(await readFile(join(harness.cwd, "adaptive", "capacity.json"), "utf8")),
-    ).toMatchObject({
-      readings: [{ key: { providerID: "adaptive-faux" }, reading: { usedRatio: 0.45 } }],
-    })
-  })
+        ],
+      })
+      expect(
+        session.sessionManager
+          .getBranch()
+          .filter((entry) => entry.type === "custom" && entry.customType === "adaptive.note"),
+      ).toMatchObject([{ data: { text: "Observing · would standard → adaptive-faux/standard-b" } }])
+      await session.prompt("/adaptive why")
+      expect(harness.shown.at(-1)).toContain("Latest decision")
+      expect(harness.shown.at(-1)).toContain("Adaptive is observing")
+      // Observe and active share one scheduler: a virtual selection picks what was predicted.
+      await selectVirtual(harness, "auto")
+      faux.setResponses([fauxAssistantMessage("Routed answer")])
+      await session.prompt("Routed task")
+      expect(assistants(session).at(-1)?.model).toBe("standard-b")
+    },
+    { settings: dismissed({ mode: "observe", tiers: preferB }), dialogs: acknowledging },
+  )
+})
+
+it("records and changes nothing for a manual model while Adaptive is off", async () => {
+  await withSession(
+    async (harness) => {
+      const { faux, session } = harness
+      faux.setResponses([fauxAssistantMessage("Manual answer")])
+      await session.prompt("Manual task")
+      expect(assistants(session).map((message) => message.model)).toEqual(["standard"])
+      expect(session.sessionManager.getBranch().filter((entry) => entry.type === "custom")).toEqual(
+        [],
+      )
+      await expect(
+        readFile(join(harness.cwd, "adaptive", "receipts.json"), "utf8"),
+      ).rejects.toMatchObject({ code: "ENOENT" })
+      await expect(
+        readFile(join(harness.cwd, "adaptive", "health.json"), "utf8"),
+      ).rejects.toMatchObject({ code: "ENOENT" })
+    },
+    { settings: dismissed({ mode: "off", tiers: preferB }) },
+  )
+})
+
+it("falls back to the tier's first compatible model when the pin cannot be verified", async () => {
+  await withSession(
+    async (harness) => {
+      const { faux, session } = harness
+      await selectVirtual(harness, "auto")
+      faux.setResponses([fauxAssistantMessage("Ordinary routing")])
+      await session.prompt("Pinned to a model Pi does not have")
+      expect(outcomes(session)).toEqual([["standard-b", "stop"]])
+      expect(await receipts(harness)).toMatchObject({
+        receipts: [{ decision: { kind: "defer", reason: "pin-unverifiable" } }],
+      })
+    },
+    {
+      settings: dismissed({ tiers: preferB, pin: { providerID: "adaptive-faux", id: "ghost" } }),
+    },
+  )
+})
+
+it("refuses to guess a model when the virtual entry has no tier to fall back to", async () => {
+  await withSession(
+    async (harness) => {
+      const { faux, session } = harness
+      await selectVirtual(harness, "auto")
+      faux.setResponses([fauxAssistantMessage("never reached")])
+      await session.prompt("Nothing is configured")
+      const [failure] = assistants(session)
+      expect(failure?.stopReason).toBe("error")
+      expect(failure?.errorMessage).toContain("Adaptive is not set up")
+      expect(faux.state.callCount).toBe(0)
+    },
+    {
+      settings: dismissed({
+        tiers: { quick: [], standard: [], advanced: [] },
+        pin: { providerID: "adaptive-faux", id: "ghost" },
+      }),
+    },
+  )
+})
+
+it("reports setup problems with a remedy in /adaptive doctor", async () => {
+  await withSession(
+    async (harness) => {
+      await harness.session.prompt("/adaptive doctor")
+      const report = harness.shown.at(-1) ?? ""
+      expect(report).toContain("Adaptive doctor")
+      expect(report).toContain(`OK Pi ${VERSION} (supported: ≥1.5.0 <2)`)
+      expect(report).toContain("OK All four Adaptive models registered")
+      expect(report).toContain("OK adaptive-faux/standard (standard): credentials configured")
+      expect(report).toContain("ERROR adaptive-faux/ghost (advanced): model missing")
+      expect(report).toContain("Refresh Pi's model catalog or remove this tier entry.")
+      expect(report).toContain("OK Shared storage writable")
+    },
+    {
+      settings: dismissed({
+        tiers: { ...settings.tiers, advanced: [{ providerID: "adaptive-faux", id: "ghost" }] },
+      }),
+      dialogs: acknowledging,
+    },
+  )
 })

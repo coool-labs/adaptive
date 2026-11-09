@@ -18,7 +18,6 @@ const models = () =>
 function setup(choices: (string | number | undefined)[] = [], confirms: boolean[] = []) {
   const state = fakeApi(defaultSettings())
   const view = fakeView(choices, confirms)
-  const logs: string[] = []
   const activations: string[] = []
   const options: OnboardingOptions = {
     hasUI: true,
@@ -30,9 +29,8 @@ function setup(choices: (string | number | undefined)[] = [], confirms: boolean[
       activations.push("active")
       return Promise.resolve(true)
     },
-    log: (message) => logs.push(message),
   }
-  return { ...state, ...view, options, logs, activations }
+  return { ...state, ...view, options, activations }
 }
 
 it("dismisses once without saving tiers, changing models, or prompting headless", async () => {
@@ -46,7 +44,6 @@ it("dismisses once without saving tiers, changing models, or prompting headless"
   await runOnboarding({ ...headless.options, hasUI: false })
   expect(headless.selects).toEqual([])
   expect(headless.patches).toEqual([])
-  expect(headless.logs).toHaveLength(1)
 })
 
 it("keeps proposal edits local until a positive confirmation", async () => {

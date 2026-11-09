@@ -52,18 +52,13 @@ export interface OnboardingOptions {
   readonly models: () => readonly ProposalModel[]
   readonly edit: (draft: SettingsV1) => Promise<SettingsV1>
   readonly activate: () => Promise<boolean>
-  readonly log: (message: string) => void
 }
 
 export async function runOnboarding(options: OnboardingOptions): Promise<void> {
   const current = await options.api.settings()
   if (current.inviteDismissed) return
-  if (!options.hasUI) {
-    options.log(
-      "Adaptive observes by default. Configure tiers with /adaptive in an interactive session.",
-    )
-    return
-  }
+  // Print and JSON runs keep stdout/stderr machine-clean; they observe by default.
+  if (!options.hasUI) return
   let draft = {
     ...current,
     mode: "observe" as const,

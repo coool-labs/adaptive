@@ -11,6 +11,6 @@ export default defineConfig({
   deps: {
     alwaysBundle: [/^@coool\/adaptive-core\//, /^@earendil-works\/pi-ai\/utils\/estimate$/],
     onlyBundle: [/^@coool\/adaptive-core\//, /^@earendil-works\/pi-ai$/],
-    neverBundle: [/^@earendil-works\/(pi-ai|pi-coding-agent)$/],
+    neverBundle: [/^@earendil-works\/(pi-ai|pi-coding-agent|pi-tui)$/],
   },
 })

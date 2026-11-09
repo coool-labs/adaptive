@@ -45,11 +45,19 @@ function fixture(options: { settings?: SettingsV1; preferences?: unknown } = {})
     on,
     sendMessage: vi.fn(),
     sendUserMessage: vi.fn(),
+    registerCommand: vi.fn(),
+    registerShortcut: vi.fn(),
+    setModel: vi.fn(),
     appendEntry: (customType: string, data: unknown) => {
       entries.push({ customType, data })
     },
   } as unknown as Parameters<typeof registerAdaptive>[0]
-  registerAdaptive(pi, sources)
+  registerAdaptive(pi, sources, {
+    settings: memoryFile(),
+    version: "1.5.0",
+    minimum: "1.5.0",
+    testedUpTo: "1.5.0",
+  })
   const handler = (name: string): ((event: unknown, ctx: unknown) => Promise<unknown>) => {
     const call = on.mock.calls.find(([event]) => event === name)
     if (call === undefined) throw new Error(`no ${name} handler`)
@@ -88,9 +96,8 @@ const request = { model: a, reason: "user", thinkingLevel: "off", messages: [] }
 it("keeps the receipt and its outcome even when notes are quiet", async () => {
   const f = fixture({ preferences: quiet })
   await f.auto.route(request, context(virtual))
-  await vi.waitFor(async () => {
-    expect(await readReceipts(f.sources.receipts)).toHaveLength(1)
-  })
+  await f.handler("session_shutdown")({}, context(virtual))
+  expect(await readReceipts(f.sources.receipts)).toHaveLength(1)
   expect(f.entries.filter((entry) => entry.customType === NOTE_ENTRY)).toEqual([])
   await f.handler("message_end")(
     { message: { role: "assistant", provider: "local", model: "b", stopReason: "stop" } },
@@ -103,9 +110,7 @@ it("routes a sessionless host without recording receipts", async () => {
   const f = fixture()
   const routed = await f.auto.route(request, context(virtual, null))
   expect(routed).toMatchObject({ model: { id: "b" } })
-  await new Promise((resolve) => {
-    setImmediate(resolve)
-  })
+  await f.handler("session_shutdown")({}, context(virtual))
   expect(await f.sources.receipts.read()).toBeUndefined()
 })
 
@@ -149,22 +154,38 @@ it("notes only changes in what Adaptive would do, and routes on when a receipt f
   expect(f.entries.filter((entry) => entry.customType === NOTE_ENTRY)).toHaveLength(1)
   vi.spyOn(f.sources.receipts, "transaction").mockRejectedValue(new Error("locked"))
   expect(await f.auto.route(request, context(virtual))).toMatchObject({ model: { id: "b" } })
-  await new Promise((resolve) => {
-    setImmediate(resolve)
-  })
+  await f.handler("session_shutdown")({}, context(virtual))
 })
 
 it("receipts a deferred pin as the host's choice and does not attach outcomes to it", async () => {
   const f = fixture({ settings: { ...settings, pin: { providerID: "local", id: "ghost" } } })
   expect(await f.auto.route(request, context(virtual))).toMatchObject({ model: { id: "b" } })
-  await vi.waitFor(async () => {
-    expect(await readReceipts(f.sources.receipts)).toMatchObject([
-      { decision: { kind: "defer", reason: "pin-unverifiable" } },
-    ])
-  })
+  await f.handler("session_shutdown")({}, context(virtual))
+  expect(await readReceipts(f.sources.receipts)).toMatchObject([
+    { decision: { kind: "defer", reason: "pin-unverifiable" } },
+  ])
   await f.handler("message_end")(
     { message: { role: "assistant", provider: "local", model: "b", stopReason: "stop" } },
     context(virtual),
   )
   expect((await readReceipts(f.sources.receipts))[0]?.outcome).toBeUndefined()
+})
+
+it("fails open when the first-run offer cannot be made", async () => {
+  const f = fixture()
+  const log = vi.spyOn(console, "error").mockImplementation(() => undefined)
+  const start = f.handler("session_start")
+  await start({}, { ...context(a), mode: "rpc", hasUI: true, sessionManager: {} })
+  expect(log).toHaveBeenCalledWith(expect.stringContaining("onboarding"))
+  log.mockRestore()
+})
+
+it("attaches the outcome even when the turn ends before the receipt write settled", async () => {
+  const f = fixture()
+  await f.auto.route(request, context(virtual))
+  await f.handler("message_end")(
+    { message: { role: "assistant", provider: "local", model: "b", stopReason: "stop" } },
+    context(virtual),
+  )
+  expect((await readReceipts(f.sources.receipts))[0]?.outcome).toEqual({ status: "succeeded" })
 })

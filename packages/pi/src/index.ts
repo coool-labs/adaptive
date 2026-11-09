@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
-import { getAgentDir } from "@earendil-works/pi-coding-agent"
+import { getAgentDir, VERSION } from "@earendil-works/pi-coding-agent"
 import { applyPatch, defaultSettings } from "@coool/adaptive-core/state/settings/parse"
 import { registerAdaptive } from "./host/extension.js"
 import { loadToolCapabilities } from "./capabilities.js"
@@ -10,43 +10,56 @@ import { timer } from "./host/timer.js"
 
 export default function adaptive(pi: Parameters<typeof registerAdaptive>[0]): void {
   const path = join(getAgentDir(), "adaptive", "settings.json")
-  registerAdaptive(pi, {
-    newId: randomUUID,
-    capacity: { file: jsonFile(join(getAgentDir(), "adaptive", "capacity.json")), clock: Date.now },
-    parking: {
-      file: jsonFile(join(getAgentDir(), "adaptive", "parked.json")),
-      clock: Date.now,
-      timer,
-    },
-    health: {
-      file: jsonFile(join(getAgentDir(), "adaptive", "health.json")),
-      clock: Date.now,
+  registerAdaptive(
+    pi,
+    {
       newId: randomUUID,
+      capacity: {
+        file: jsonFile(join(getAgentDir(), "adaptive", "capacity.json")),
+        clock: Date.now,
+      },
+      parking: {
+        file: jsonFile(join(getAgentDir(), "adaptive", "parked.json")),
+        clock: Date.now,
+        timer,
+      },
+      health: {
+        file: jsonFile(join(getAgentDir(), "adaptive", "health.json")),
+        clock: Date.now,
+        newId: randomUUID,
+      },
+      receipts: jsonFile(join(getAgentDir(), "adaptive", "receipts.json")),
+      preferences: jsonFile(join(getAgentDir(), "adaptive", "preferences.json")),
+      settings: async () => {
+        let text: string
+        try {
+          text = await readFile(path, "utf8")
+        } catch (error) {
+          if (error instanceof Error && "code" in error && error.code === "ENOENT")
+            return defaultSettings()
+          throw error
+        }
+        let raw: unknown
+        try {
+          raw = JSON.parse(text)
+        } catch {
+          throw new Error("Adaptive settings: invalid JSON")
+        }
+        const parsed = applyPatch(defaultSettings(), raw)
+        if (!parsed.ok) throw new Error(`Adaptive settings: ${parsed.errors.join(", ")}`)
+        return parsed.settings
+      },
+      capabilities: () =>
+        loadToolCapabilities(join(getAgentDir(), "adaptive", "capabilities.json"), (file) =>
+          readFile(file, "utf8"),
+        ),
     },
-    receipts: jsonFile(join(getAgentDir(), "adaptive", "receipts.json")),
-    preferences: jsonFile(join(getAgentDir(), "adaptive", "preferences.json")),
-    settings: async () => {
-      let text: string
-      try {
-        text = await readFile(path, "utf8")
-      } catch (error) {
-        if (error instanceof Error && "code" in error && error.code === "ENOENT")
-          return defaultSettings()
-        throw error
-      }
-      let raw: unknown
-      try {
-        raw = JSON.parse(text)
-      } catch {
-        throw new Error("Adaptive settings: invalid JSON")
-      }
-      const parsed = applyPatch(defaultSettings(), raw)
-      if (!parsed.ok) throw new Error(`Adaptive settings: ${parsed.errors.join(", ")}`)
-      return parsed.settings
+    {
+      settings: jsonFile(path),
+      version: VERSION,
+      minimum: "1.5.0",
+      // No build-time constant records the matrix result yet, so doctor says so.
+      testedUpTo: undefined,
     },
-    capabilities: () =>
-      loadToolCapabilities(join(getAgentDir(), "adaptive", "capabilities.json"), (file) =>
-        readFile(file, "utf8"),
-      ),
-  })
+  )
 }

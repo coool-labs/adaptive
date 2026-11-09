@@ -696,3 +696,31 @@ it("receipts a park without a transcript note when quiet, and still parks if the
   expect(broken.branch.map((entry) => entry.customType)).toEqual([PARK_ENTRY])
   expect(await findPark(broken.file, "session")).toBeDefined()
 })
+
+it("resumes a parked task on request, and says so when nothing is parked", async () => {
+  const f = fixture()
+  await f.handlers.resume(f.ctx)
+  expect(f.ctx.ui.notify).toHaveBeenLastCalledWith("Nothing is parked in this session.", "info")
+  await f.handlers.resume({ ...f.ctx, sessionManager: { getBranch: () => f.branch } })
+  expect(f.ctx.ui.notify).toHaveBeenCalledTimes(2)
+  await f.blocked()
+  const { mode, hasUI, sessionManager, modelRegistry } = f.ctx
+  await f.handlers.resume({ mode, hasUI, sessionManager, modelRegistry })
+  expect(f.host.sendMessage).toHaveBeenCalledTimes(1)
+  expect(f.host.sendMessage.mock.calls[0]?.[0]).toMatchObject({
+    customType: "adaptive.continuation",
+    details: { task: "t", wakes: 1 },
+  })
+  expect(await findPark(f.file, "session")).toBeUndefined()
+  await vi.runAllTimersAsync()
+  expect(f.host.sendMessage).toHaveBeenCalledTimes(1)
+})
+
+it("cancels a parked task on request without waking it", async () => {
+  const f = fixture()
+  await f.blocked()
+  await f.handlers.cancel(f.ctx)
+  expect(await findPark(f.file, "session")).toBeUndefined()
+  await vi.advanceTimersByTimeAsync(1_000_000)
+  expect(f.host.sendMessage).not.toHaveBeenCalled()
+})

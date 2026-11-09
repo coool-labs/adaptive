@@ -29,6 +29,7 @@ import {
 import { escalationTool, selectedVirtual, tierTool } from "./tools.js"
 import { physical, virtualModels, type RouteContext } from "./routing.js"
 import { parkingHandlers } from "./parking.js"
+import { adaptiveSurface, type HostSources } from "./adaptive.js"
 
 export interface AdaptiveSources {
   readonly settings: () => Promise<SettingsV1>
@@ -50,6 +51,9 @@ type Host = Pick<
   | "sendMessage"
   | "sendUserMessage"
   | "appendEntry"
+  | "registerCommand"
+  | "registerShortcut"
+  | "setModel"
 >
 
 export interface SettleContext extends Omit<RouteContext, "ui"> {
@@ -58,7 +62,7 @@ export interface SettleContext extends Omit<RouteContext, "ui"> {
   readonly ui: { notify(message: string, type?: "info" | "warning" | "error"): void }
 }
 
-export function registerAdaptive(pi: Host, sources: AdaptiveSources): void {
+export function registerAdaptive(pi: Host, sources: AdaptiveSources, host: HostSources): void {
   const capacity = dispatchCapacity(sources.capacity)
   const tracker: NoteTracker = { last: undefined }
   const dispatched: DispatchTracker = { last: undefined }
@@ -98,6 +102,7 @@ export function registerAdaptive(pi: Host, sources: AdaptiveSources): void {
     tracker.last = info.decision
   }
   const parking = parkingHandlers(pi, sources, tracker)
+  const surface = adaptiveSurface(pi, sources, host, parking)
   pi.on("input", async (event, ctx) => {
     const parked = await parking.input(event, ctx)
     if (parked.action === "handled") return parked
@@ -107,29 +112,44 @@ export function registerAdaptive(pi: Host, sources: AdaptiveSources): void {
     if (selectedVirtual(event.model) === undefined) capacity.clear()
     return parking.modelSelect(event.model, ctx)
   })
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     capacity.clear()
     tracker.last = undefined
-    return parking.sessionStart(ctx)
+    await parking.sessionStart(ctx)
+    try {
+      await surface.onboard(ctx)
+    } catch (error) {
+      logFailOpen("onboarding", error)
+    }
   })
-  pi.on("session_shutdown", parking.shutdown)
+  // Receipt writes run beside the turn; settling them before the outcome is
+  // attached and before the session goes away keeps both ordered and never
+  // touches a replaced session context.
+  let pending: Promise<void> = Promise.resolve()
+  pi.on("session_shutdown", async () => {
+    await pending
+    parking.shutdown()
+  })
   for (const definition of virtualModels(
     sources,
     () => pi.getActiveTools(),
     parking,
     (model, info) => {
       capacity.selected(model.provider)
-      void dispatchRecord(info, model).catch((error: unknown) => {
-        logFailOpen("receipts", error)
-      })
+      pending = pending.then(() =>
+        dispatchRecord(info, model).catch((error: unknown) => {
+          logFailOpen("receipts", error)
+        }),
+      )
     },
   ))
     pi.registerVirtualModel(definition)
   pi.registerTool(tierTool(sources.settings))
   pi.registerTool(escalationTool(sources.settings))
-  pi.on("message_end", (event, ctx) => {
+  pi.on("message_end", async (event, ctx) => {
     if (event.message.role === "assistant") capacity.clear()
-    return recordOutcome(event.message, ctx, sources, dispatched)
+    await pending
+    await recordOutcome(event.message, ctx, sources, dispatched)
   })
   pi.on("after_provider_response", (event) => capacity.response(event.headers))
   pi.on("agent_settled", (event, ctx) => {

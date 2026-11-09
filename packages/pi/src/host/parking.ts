@@ -49,6 +49,10 @@ interface ParkingHandlers extends RouteParking {
     ctx: RouteContext,
   ): Promise<void>
   sessionStart(ctx: ParkingContext): Promise<void>
+  /** `/adaptive resume`: wake this session's parked task now. */
+  resume(ctx: RouteContext): Promise<void>
+  /** `/adaptive cancel`: drop this session's wait and parked record. */
+  cancel(ctx: RouteContext): Promise<void>
   readonly shutdown: () => void
   recover(
     recovery: Recovery,
@@ -83,9 +87,14 @@ export function parkingHandlers(
     )
       await cancelPark(sources.parking.file, session)
   }
-  const wake = async (ctx: RouteContext, record: Parked, saved: Payload) => {
+  const wake = async (
+    ctx: RouteContext,
+    record: Parked,
+    saved: Payload,
+    now = sources.parking.clock(),
+  ) => {
     const owned = generation
-    if (!(await claimPark(sources.parking.file, record, sources.parking.clock()))) {
+    if (!(await claimPark(sources.parking.file, record, now))) {
       clear(ctx)
       return
     }
@@ -292,10 +301,24 @@ export function parkingHandlers(
       logFailOpen("parking", error)
     }
   }
+  const resume: ParkingHandlers["resume"] = async (ctx) => {
+    const session = ctx.sessionManager.getSessionId?.()
+    const record = session === undefined ? undefined : await findPark(sources.parking.file, session)
+    const saved = record === undefined ? undefined : payload(ctx, record.token)
+    if (record === undefined || saved === undefined) {
+      ctx.ui?.notify("Nothing is parked in this session.", "info")
+      return
+    }
+    stop()
+    // Resuming early is a request to try again now; routing parks again if the tier is still blocked.
+    await wake(ctx, record, saved, record.due)
+  }
   return {
     input,
     modelSelect,
     sessionStart,
+    resume,
+    cancel,
     shutdown: stop,
     async recover(recovery, ctx) {
       const id = selectedVirtual(ctx.model)
