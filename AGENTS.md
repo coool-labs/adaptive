@@ -1,7 +1,7 @@
 # AGENTS.md — working rules for this repository
 
 Adaptive is a multi-host **execution supervisor**. The existing OpenCode v2 plugin
-is `@coool/opencode-adaptive`; the Pi integration is under development. Adaptive
+is `@coool/opencode-adaptive`; the Pi integration (`packages/pi`) is feature-complete and awaiting release approval. Adaptive
 assigns each execution episode to a capability tier (quick / standard /
 advanced), escalates capability only on structured evidence, recovers within a
 tier through provider failures and quota limits, and restores preferred
@@ -127,6 +127,17 @@ before relying on them on a new surface:
   the retry hook veto assigns `{ retry: false }` onto the input object.
 - **`session.switchModel` at a safe boundary only** (`session.wait` first,
   then switch, then resume) — timestamps compared, never raced.
+
+## Pi platform facts (empirical)
+
+- Pi >= 1.5.0 < 2; tested against the packed minimum and `latest` host. SDK imports stay
+  in `src/host` and `src/index.ts`; `@earendil-works/pi-ai` and `-pi-tui` are never bundled.
+- Virtual models route at `route()`; `input` may return `{ action: "handled" }` to
+  consume a prompt. Detached timers hit "extension ctx is stale", so headless waits must
+  be awaited inside the owned handler/route.
+- `registerEntries` must run in production or `adaptive.note` entries are never drawn.
+- A dialog as tall as the terminal loses its last row; keep one spare row.
+- Pi writes a session file only once it holds a conversation.
 
 ## Testing rules
 

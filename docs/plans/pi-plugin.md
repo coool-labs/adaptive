@@ -727,6 +727,13 @@ processes compete for the same `parked.json` wake; exactly one claims it.
   nothing changes.
 - **Exit:** ADP-015 and 029 are covered, plus the Observe/Control identity property test.
 
+Implemented: observation runs on the `input` event, not `before_agent_start`, because
+the latter carries no messages to size the context demand. It uses the same
+`prepareAdmission` path as dispatch with `preview = true` (no probe lease is taken) and
+wraps the result with the core `forMode`. A virtual model is always `active`; a manual
+model is `observe` unless the session or global mode is `off`. Health is learned from
+manual-model errors in observe mode.
+
 ### M6 — UX surfaces (L; this is where the polish goes)
 
 - `host/view.ts` (the shared flow over `ctx.ui`), with the `HostCopy` set to "Pi".
@@ -738,6 +745,14 @@ processes compete for the same `parked.json` wake; exactly one claims it.
 - **UI review pass.** Termwright screenshots at 80x24, 120x40 and narrow 60x24 for every
   state in UX §3–7. Review them against the copy rules and fix anything noisy.
 - **Exit:** ADP-057, 058, 062 and 063 are covered.
+
+Implemented in `src/host/{adaptive,commands,control,doctor,onboarding,view,entries}.ts`
+and `src/ui/*`, with PTY frames at 60x24, 80x24 and 120x40 and screenshots under
+`packages/pi/docs/screenshots/`. Findings from the real terminal: `registerEntries` must
+be called in production or notes are written but never drawn; a dialog as tall as the
+terminal loses its last (footer) row, so dialogs keep one spare row; Pi's argument menu
+consumes the first Enter of a typed `/adaptive <sub>`. No "resumed" note is emitted after
+a wake; the resume is visible through dispatches.
 
 ### M7 — real-host E2E and version matrix (M)
 
@@ -771,6 +786,12 @@ processes compete for the same `parked.json` wake; exactly one claims it.
   the planner treats the never-tagged package as all commits since `packages/pi`
   existed). Install it from npm into a clean Pi and run one routed turn plus doctor.
 - Optional, after the release: list it on pi.dev/packages.
+
+Status: README, CHANGELOG and TEST_STRATEGY are written; the AGENTS.md Pi facts are
+recorded. The remaining steps are `private` removal and the release, both of which need
+maintainer approval and npm authentication. Known limit: a park before the session's
+first message does not survive closing Pi, because Pi persists a session file only once
+it holds a conversation (ADP-024 is met for mid-run parks).
 
 ## Effort
 

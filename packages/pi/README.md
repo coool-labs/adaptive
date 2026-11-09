@@ -1,14 +1,13 @@
 # Pi Adaptive
 
-Under development — not yet published or release-ready.
+Not yet published. Release is gated on maintainer approval.
 
 Capability-tier routing and bounded recovery for Pi. You choose the available
 models and their tier order; Adaptive keeps provider failures separate from
 capability gaps. Pi still owns the agent, tools, sessions, and model calls.
 
-This is release-candidate documentation for the [Pi plan](../../docs/plans/pi-plugin.md),
-not evidence that its parking, UX, or host-matrix gates have passed. The package
-remains private at `0.0.0` until those gates are complete.
+See the [Pi plan](../../docs/plans/pi-plugin.md) for the design and the
+[test strategy](docs/TEST_STRATEGY.md) for the evidence each release requires.
 
 ## Install
 
@@ -18,9 +17,11 @@ After publication:
 pi install npm:@coool/pi-adaptive
 ```
 
-The package declares Pi `>=1.5.0 <2`. The minimum/latest packed matrix must pass
-before release; the declared range alone is not a compatibility test. For local
-development, run `pi install ./packages/pi` from the repository root after building.
+The package declares Pi `>=1.5.0 <2`. The declared range is not itself a
+compatibility test: the packed minimum (1.5.0) and latest Pi hosts run the
+SDK, JSON, and real-terminal matrix before release, and `/adaptive doctor`
+reports the last host version that matrix recorded. For local development, run
+`pi install ./packages/pi` from the repository root after building.
 
 ## How it decides
 
@@ -50,8 +51,8 @@ development, run `pi install ./packages/pi` from the repository root after build
 | `adaptive/advanced` | Pin the advanced tier; recover within it.                                |
 
 **Observe is the default.** It explains what the same scheduler would choose
-without changing a manually selected model. Choosing an Adaptive entry is the
-release-candidate activation flow; choosing any normal model hands control back
+without changing a manually selected model. Choosing an Adaptive entry
+activates routing for that session; choosing any normal model hands control back
 immediately. With observation disabled and a normal model selected, Adaptive is
 off. Off mode does not route or recover work.
 
@@ -91,9 +92,8 @@ actual Pi provider/model IDs:
 
 List multiple models in a tier in your preferred order for same-tier recovery.
 Empty tiers do not authorize cross-tier fallback. The interactive tier editor
-and first-run proposal are part of the release-candidate UX: proposals use
-available-model metadata, not prompt classification, and require confirmation
-before saving.
+and the first-run proposal build tiers from available-model metadata, never
+from prompt classification, and nothing is saved until you confirm.
 
 Pi's catalogue does not declare model-level tool capability. Explicit
 declarations live in `adaptive/capabilities.json` beside the settings file:
@@ -113,13 +113,18 @@ remaining quota, and not every provider exposes usable capacity readings.
 
 ## Status, notes, and commands
 
-The release-candidate UI provides a footer status, one-line routing notes, and a
-parked-work card. Notes stay out of model context. The note verbosity choices are
-`changes` (default: model changes or problems), `all` (every unit), and `quiet`
-(no transcript notes; status remains). Exact controls and rendering remain
-subject to the M6 PTY review.
+Adaptive shows one-line routing notes in the transcript, a status line while
+waiting, and a parked-work card. Notes stay out of model context. The note
+verbosity choices are `changes` (default: model changes or problems), `all`
+(every unit), and `quiet` (no transcript notes; receipts are still kept).
+Real-terminal frames at 80 columns are in [docs/screenshots](docs/screenshots/README.md):
+[first-run proposal](docs/screenshots/first-run-proposal-80x24.txt),
+[routed note](docs/screenshots/routed-note-80x24.txt),
+[parked card](docs/screenshots/parked-card-80x24.txt), and
+[doctor](docs/screenshots/doctor-80x24.txt). Dialogs are checked at 60, 80, and
+120 columns.
 
-The planned `/adaptive` command uses the same dialog flow as OpenCode:
+The `/adaptive` command (also `Ctrl+Alt+A`) uses the same dialog flow as OpenCode:
 
 | Command                     | Purpose                                                                                                         |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -133,18 +138,19 @@ The planned `/adaptive` command uses the same dialog flow as OpenCode:
 | `/adaptive observe on\|off` | Enable or disable observation of manual-model sessions.                                                         |
 | `/adaptive doctor`          | Check host compatibility, credentials, capability declarations, storage, router conflicts, health, and parking. |
 
-Command availability and doctor output must be checked against the completed M6
-implementation. No interactive-note shortcut or default-model settings writer
-is promised here without host verification.
+Typed subcommands complete in Pi's argument menu; the first Enter accepts the
+completion and the second runs it.
 
 ## Waiting, parking, and cancellation
 
-The release-candidate parking contract keeps work in the required tier:
+Parking keeps work in the required tier:
 
 - A known reset within two minutes waits in place with a countdown; Esc cancels.
 - Longer waits persist parked work with its session and a shared local index.
   A cross-process claim permits at most one wake for a parked record.
-- Work parked before dispatch is submitted only when resumed. After partial
+- Work parked before dispatch is submitted only when resumed. Pi writes a session
+  file only once it holds a conversation, so a prompt parked before the session's
+  first message does not survive closing Pi. After partial
   execution, recovery uses one hidden continuation message telling the agent to
   continue from existing session/workspace state, not replay the original prompt
   or redo completed steps. That small continuation **does** enter model context;
@@ -161,9 +167,8 @@ The release-candidate parking contract keeps work in the required tier:
 Headless print/JSON runs never show dialogs. Detached wake timers are not a
 supported headless continuation mechanism: Pi can exit or invalidate the
 extension context after the owned handler returns. Only an awaited, owned
-recovery may continue that process; otherwise the run must end with a clear
-unavailability error. Exact long-wait behavior is an M4/M7 acceptance check, not
-a promise of a background daemon.
+recovery may continue that process; otherwise the run ends with a clear
+unavailability error. There is no background daemon.
 
 ## Privacy
 
@@ -181,16 +186,15 @@ These are **source-audit facts, not runtime benchmarks**, from the
 [2026-11-08 audit](../../research_notes/Pi%20port%20feasibility/pi_auto_model_audit.md).
 They apply only to the inspected versions; none of those packages was run.
 
-| Inspected router                           | Selection and recovery found in source                                                                                     |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `pi-auto-model` **0.9.2**                  | Keyword analysis, optional LLM classification (off by default), and utility ranking; its failover target list spans tiers. |
-| `pi-shift-router` **1.8.0**                | An LLM judge chooses fast/smart; its failover explicitly stays within the tier.                                            |
-| `@pedro_klein/pi-gateway` **0.6.0**        | User-declared tier aliases with same-slot fallback and atomically persisted unhealthy-until times.                         |
-| Pi Adaptive **release-candidate contract** | Explicit capability tiers without a classifier; same-tier recovery, evidence-backed escalation, and durable parking.       |
+| Inspected router                    | Selection and recovery found in source                                                                                     |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `pi-auto-model` **0.9.2**           | Keyword analysis, optional LLM classification (off by default), and utility ranking; its failover target list spans tiers. |
+| `pi-shift-router` **1.8.0**         | An LLM judge chooses fast/smart; its failover explicitly stays within the tier.                                            |
+| `@pedro_klein/pi-gateway` **0.6.0** | User-declared tier aliases with same-slot fallback and atomically persisted unhealthy-until times.                         |
+| Pi Adaptive                         | Explicit capability tiers without a classifier; same-tier recovery, evidence-backed escalation, and durable parking.       |
 
 The audit found no durable park-and-auto-resume path in those three inspected
-routers. This does not establish behavior of later versions or claim that
-Adaptive's unfinished release gates have passed.
+routers. This does not establish behavior of later versions.
 
 ## Development and release evidence
 
@@ -202,7 +206,6 @@ npm run verify -- --pkg pi
 npm run verify -- --all
 ```
 
-See the [test strategy](docs/TEST_STRATEGY.md) for the required unit, real-SDK,
-packed-host, and PTY evidence. M4–M7 completion and a full, unskipped root verify
-are required before publication. A green partial or scoped run alone does not
-make this package release-ready.
+See the [test strategy](docs/TEST_STRATEGY.md) for the unit, real-SDK,
+packed-host, and PTY evidence. Publication requires a full, unskipped
+`npm run verify -- --all`; a scoped run alone is not release evidence.
