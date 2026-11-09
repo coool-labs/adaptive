@@ -93,16 +93,17 @@ Undeclared models are treated as unknown, never guessed.
 
 ## Commands
 
-| Command            | Purpose                                                      |
-| ------------------ | ------------------------------------------------------------ |
-| `/adaptive`        | Main menu (also `Ctrl+Alt+A`).                               |
-| `/adaptive status` | Tiers, resource health, capacity evidence.                   |
-| `/adaptive why`    | Explain the latest routing decision.                         |
-| `/adaptive tiers`  | Edit ordered tier membership.                                |
-| `/adaptive health` | Inspect health; manually mark a resource healthy.            |
-| `/adaptive resume` | Retry parked work now (bypasses the give-up budget).         |
-| `/adaptive cancel` | Cancel parked work.                                          |
-| `/adaptive doctor` | Check host, credentials, capabilities, storage, and parking. |
+| Command                     | Purpose                                                      |
+| --------------------------- | ------------------------------------------------------------ |
+| `/adaptive`                 | Main menu (also `Ctrl+Alt+A`).                               |
+| `/adaptive status`          | Tiers, resource health, capacity evidence.                   |
+| `/adaptive why`             | Explain the latest routing decision.                         |
+| `/adaptive tiers`           | Edit ordered tier membership.                                |
+| `/adaptive health`          | Inspect health; manually mark a resource healthy.            |
+| `/adaptive resume`          | Retry parked work now (bypasses the give-up budget).         |
+| `/adaptive cancel`          | Cancel parked work.                                          |
+| `/adaptive observe on\|off` | Enable or disable observation of manual-model sessions.      |
+| `/adaptive doctor`          | Check host, credentials, capabilities, storage, and parking. |
 
 ## For comparison
 
