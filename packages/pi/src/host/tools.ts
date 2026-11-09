@@ -41,16 +41,21 @@ export function selectedVirtual(model: ToolContext["model"]): VirtualID | undefi
 }
 
 /**
- * Why Adaptive will not act on an agent's request in this session, or
- * `undefined` when Adaptive Auto routes it. Manual intent wins: a physical
- * model, a pinned virtual tier, or a pinned model ignore agent requests.
+ * Resolve routing eligibility and the selected task together. Physical model
+ * pins always win; tier pins require the user's explicit escalation opt-in.
  */
-function notRouting(settings: SettingsV1, model: ToolContext["model"]): string | undefined {
+function routing(
+  settings: SettingsV1,
+  model: ToolContext["model"],
+  escalateFromPinned: boolean,
+): { readonly id: VirtualID } | { readonly ignored: string } {
   const id = selectedVirtual(model)
-  if (id === undefined) return "Adaptive is not routing this session: the user picked a model."
-  if (id !== "auto") return `The user pinned Adaptive ${id}.`
-  if (settings.pin !== null) return `The user pinned ${settings.pin.providerID}/${settings.pin.id}.`
-  return undefined
+  if (id === undefined)
+    return { ignored: "Adaptive is not routing this session: the user picked a model." }
+  if (settings.pin !== null)
+    return { ignored: `The user pinned ${settings.pin.providerID}/${settings.pin.id}.` }
+  if (id !== "auto" && !escalateFromPinned) return { ignored: `The user pinned Adaptive ${id}.` }
+  return { id }
 }
 
 export function tierTool(settings: () => Promise<SettingsV1>) {
@@ -82,21 +87,20 @@ export function tierTool(settings: () => Promise<SettingsV1>) {
       if (typeof requested !== "string" || !isTierName(requested))
         return rejected("adaptive_tier rejected: tier must be quick, standard, or advanced.")
       const current = await settings()
-      const ignored = notRouting(current, ctx.model)
-      if (ignored !== undefined) return reply(`${ignored} The tier request was not recorded.`)
-      const observing =
-        current.mode === "active"
-          ? ""
-          : ` Adaptive is in ${current.mode} mode, so it will not change models.`
-      return reply(
-        `Tier request recorded: ${requested}. It applies from the next user prompt.${observing}`,
-        { tier: requested },
-      )
+      const route = routing(current, ctx.model, false)
+      if ("ignored" in route) return reply(`${route.ignored} The tier request was not recorded.`)
+      // A selected virtual model is active regardless of the global default.
+      return reply(`Tier request recorded: ${requested}. It applies from the next user prompt.`, {
+        tier: requested,
+      })
     },
   }
 }
 
-export function escalationTool(settings: () => Promise<SettingsV1>) {
+export function escalationTool(
+  settings: () => Promise<SettingsV1>,
+  escalateFromPinned: () => Promise<boolean>,
+) {
   return {
     name: ESCALATION_TOOL_NAME,
     label: "Adaptive escalate",
@@ -132,17 +136,13 @@ export function escalationTool(settings: () => Promise<SettingsV1>) {
           "adaptive_escalate rejected: reason and evidence are required non-empty strings.",
         )
       const current = await settings()
-      const ignored = notRouting(current, ctx.model)
-      if (ignored !== undefined)
+      const route = routing(current, ctx.model, await escalateFromPinned())
+      if ("ignored" in route)
         return reply(
-          `${ignored} Adaptive will not escalate; tell the user if you need a stronger model.`,
+          `${route.ignored} Adaptive will not escalate; tell the user if you need a stronger model.`,
         )
-      if (current.mode !== "active")
-        return reply(
-          `Adaptive is in ${current.mode} mode and will not escalate; tell the user if you need a stronger model.`,
-        )
-      const state = branchState(ctx.sessionManager.getBranch(), "auto")
-      const tier = state?.tier ?? "standard"
+      const state = branchState(ctx.sessionManager.getBranch(), route.id)
+      const tier = state?.tier ?? (route.id === "auto" ? "standard" : route.id)
       const used = state?.escalations ?? 0
       const next = nextTier(tier)
       const details = { reason: request.reason, evidence: request.evidence }

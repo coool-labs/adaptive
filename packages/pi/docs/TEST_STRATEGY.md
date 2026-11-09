@@ -142,3 +142,7 @@ may remove the private flag in its own commit. **Stop for user approval before
 `npm run release -- --pi minor`.** Only the release CLI may prepare/verify the
 bumped artifacts, commit/tag, publish, and push. After an approved publication,
 verify a clean npm install with one routed turn and `/adaptive doctor`.
+
+The release CLI includes other pending publishable packages by default. If only
+Pi is approved, explicitly select `--opencode skip --pi minor`; do not bundle an
+unapproved OpenCode publication into the first Pi release.

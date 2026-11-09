@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { CONTINUATION_PROMPT } from "@coool/adaptive-core/execution/continuation/prompts"
 import { ESCALATION_TOOL_NAME } from "@coool/adaptive-core/execution/escalation/index"
 import { logFailOpen } from "@coool/adaptive-core/log"
@@ -8,7 +8,7 @@ import type { SettingsV1 } from "@coool/adaptive-core/state/settings/types"
 import type { ReceiptOutcome } from "@coool/adaptive-core/state/receipts/types"
 import { readPreferences } from "../preferences.js"
 import { attachReceiptOutcome, recordReceipt } from "../receipts.js"
-import { effectiveMode } from "../session.js"
+import { effectiveMode, requestedTier } from "../session.js"
 import type { JsonFile, JsonTransactionFile } from "../store.js"
 import { decisionNote, pausedNote, shouldWriteNote, type AdaptiveNote } from "../ui/notes.js"
 import { observeOutcome, withHealth, type SharedHealth } from "../health.js"
@@ -30,6 +30,7 @@ import { escalationTool, selectedVirtual, tierTool } from "./tools.js"
 import { physical, virtualModels, type RouteContext } from "./routing.js"
 import { parkingHandlers } from "./parking.js"
 import { adaptiveSurface, type HostSources } from "./adaptive.js"
+import { createStatusChip } from "./status-chip.js"
 
 export interface AdaptiveSources {
   readonly settings: () => Promise<SettingsV1>
@@ -65,6 +66,26 @@ export interface SettleContext extends Omit<RouteContext, "ui"> {
 
 export function registerAdaptive(pi: Host, sources: AdaptiveSources, host: HostSources): void {
   const capacity = dispatchCapacity(sources.capacity)
+  const status = createStatusChip()
+  const refreshStatus = (ctx: ExtensionContext) => {
+    const feedback = status.connect(ctx)
+    return async (): Promise<void> => {
+      if (!ctx.hasUI) return
+      try {
+        const current = await sources.settings()
+        const branch = ctx.sessionManager.getBranch()
+        const id = selectedVirtual(ctx.model)
+        const mode = effectiveMode(ctx.model, current.mode, branch)
+        const tier = id === undefined || id === "auto" ? (requestedTier(branch) ?? "standard") : id
+        if (ctx.model === undefined || mode === "off") feedback.clear()
+        else if (id === undefined && mode === "observe") feedback.show({ kind: "observing", tier })
+        else if (current.tiers[tier].length === 0) feedback.show({ kind: "setup" })
+      } catch (error) {
+        feedback.show({ kind: "degraded" })
+        logFailOpen("status", error)
+      }
+    }
+  }
   const tracker: NoteTracker = { last: undefined }
   const dispatched: DispatchTracker = { last: undefined }
   /** Every routed turn writes its decision and keeps the outcome attached (ADP-030). */
@@ -115,37 +136,60 @@ export function registerAdaptive(pi: Host, sources: AdaptiveSources, host: HostS
     }
   }
   const parking = parkingHandlers(pi, sources, tracker)
-  const surface = adaptiveSurface(pi, sources, host, parking)
+  const surface = adaptiveSurface(
+    pi,
+    sources,
+    host,
+    {
+      resume: (ctx) => parking.resume(status.connect(ctx).context),
+      cancel: (ctx) => parking.cancel(status.connect(ctx).context),
+    },
+    refreshStatus,
+  )
   pi.on("input", async (event, ctx) => {
-    const parked = await parking.input(event, ctx)
+    const feedback = status.connect(ctx)
+    const parked = await parking.input(event, feedback.context)
     if (parked.action === "handled") return parked
-    return observeInput(pi, sources, tracker)(event, ctx)
+    return observeInput(pi, sources, tracker, () => feedback.show)(event, ctx)
   })
   pi.on("model_select", async (event, ctx) => {
+    status.reset()
+    const feedback = status.connect(ctx)
+    const refresh = refreshStatus(ctx)
     if (selectedVirtual(event.model) === undefined) {
       capacity.clear()
       // Only leaving Adaptive is news; startup and restored sessions are not.
       if (selectedVirtual(event.previousModel) !== undefined) await pausedAt(event.model)
     }
-    return parking.modelSelect(event.model, ctx)
+    await parking.modelSelect(event.model, feedback.context)
+    await refresh()
   })
   pi.on("session_start", async (_event, ctx) => {
+    status.reset()
+    const feedback = status.connect(ctx)
+    const refresh = refreshStatus(ctx)
     capacity.clear()
     tracker.last = undefined
-    await parking.sessionStart(ctx)
+    await refresh()
+    await parking.sessionStart(feedback.context)
     try {
       await surface.onboard(ctx)
     } catch (error) {
       logFailOpen("onboarding", error)
     }
   })
+  pi.on("session_tree", async (_event, ctx) => {
+    status.reset()
+    await refreshStatus(ctx)()
+  })
   // Receipt writes run beside the turn; settling them before the outcome is
   // attached and before the session goes away keeps both ordered and never
   // touches a replaced session context.
   let pending: Promise<void> = Promise.resolve()
   pi.on("session_shutdown", async () => {
-    await pending
+    status.reset()
     parking.shutdown()
+    await pending
   })
   for (const definition of virtualModels(
     sources,
@@ -159,10 +203,16 @@ export function registerAdaptive(pi: Host, sources: AdaptiveSources, host: HostS
         }),
       )
     },
+    (ctx) => status.connect(ctx),
   ))
     pi.registerVirtualModel(definition)
   pi.registerTool(tierTool(sources.settings))
-  pi.registerTool(escalationTool(sources.settings))
+  pi.registerTool(
+    escalationTool(
+      sources.settings,
+      async () => (await readPreferences(sources.preferences)).escalateFromPinned,
+    ),
+  )
   pi.on("message_end", async (event, ctx) => {
     if (event.message.role === "assistant") capacity.clear()
     await pending
@@ -171,6 +221,7 @@ export function registerAdaptive(pi: Host, sources: AdaptiveSources, host: HostS
   pi.on("after_provider_response", (event) => capacity.response(event.headers))
   pi.on("agent_settled", (event, ctx) => {
     capacity.clear()
+    const feedback = status.connect(ctx)
     return afterRun(
       event,
       ctx,
@@ -178,7 +229,7 @@ export function registerAdaptive(pi: Host, sources: AdaptiveSources, host: HostS
       (message) => {
         pi.sendMessage(message, { triggerTurn: true })
       },
-      (recovery) => parking.recover(recovery, ctx),
+      (recovery) => parking.recover(recovery, feedback.context),
     )
   })
 }
@@ -278,10 +329,13 @@ export async function afterRun(
   const id = selectedVirtual(ctx.model)
   if (event.aborted || id === undefined) return
   try {
+    const settings = await sources.settings()
+    const branch = ctx.sessionManager.getBranch()
     const input = {
       id,
-      settings: await sources.settings(),
-      branch: ctx.sessionManager.getBranch(),
+      escalateFromPinned: (await readPreferences(sources.preferences)).escalateFromPinned,
+      settings: { ...settings, mode: effectiveMode(ctx.model, settings.mode, branch) },
+      branch,
       available: physical(ctx.modelRegistry).map((model) => ({
         providerID: model.provider,
         id: model.id,

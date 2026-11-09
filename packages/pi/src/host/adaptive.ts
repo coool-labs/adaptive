@@ -40,15 +40,22 @@ export function adaptiveSurface(
   sources: AdaptiveSources,
   host: HostSources,
   parking: Pick<ReturnType<typeof parkingHandlers>, "resume" | "cancel">,
+  feedback: (ctx: ExtensionContext) => () => Promise<void>,
 ): { onboard(ctx: ExtensionContext): Promise<void> } {
   const select = async (ctx: ExtensionContext, ref: ModelRef): Promise<boolean> => {
     const model = ctx.modelRegistry.find(ref.providerID, ref.id)
     return model !== undefined && (await pi.setModel(model))
   }
   const environment = (ctx: ExtensionContext): Promise<AdaptiveEnv> => {
+    const session = ctx.sessionManager.getSessionId()
+    const refresh = async (): Promise<void> => {
+      // A successful mode change may select a model and invalidate the old
+      // footer binding. Rebind to the resulting model, but never a new session.
+      if (ctx.sessionManager.getSessionId() === session) await feedback(ctx)()
+    }
     const view = piView(ctx)
     const branch = () => ctx.sessionManager.getBranch()
-    const api = controlApi({
+    const control = controlApi({
       settings: host.settings,
       receipts: sources.receipts,
       sessionID: ctx.sessionManager.getSessionId(),
@@ -78,6 +85,19 @@ export function adaptiveSurface(
           effectiveMode: (global) => effectiveMode(ctx.model, global, branch()),
         }),
     })
+    const api = {
+      ...control,
+      async setSettings(patch: Parameters<typeof control.setSettings>[0]) {
+        const result = await control.setSettings(patch)
+        if (result.ok) await refresh()
+        return result
+      },
+      async setSessionMode(...args: Parameters<typeof control.setSessionMode>) {
+        const result = await control.setSessionMode(...args)
+        if (result.ok) await refresh()
+        return result
+      },
+    }
     const configured = async () => {
       const settings = await readSettings(host.settings)
       return TIERS.flatMap((tier) => [...settings.tiers[tier]])

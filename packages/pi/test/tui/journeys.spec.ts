@@ -5,6 +5,7 @@ import { dispatchedModels, object, traceEvents, waitForTrace } from "../matrix/t
 import {
   adaptiveFile,
   launchPi,
+  limitStandard,
   resetState,
   selectModel,
   settings,
@@ -58,6 +59,30 @@ async function back(terminal: PiTerminal, revealed: string | RegExp): Promise<vo
   await settle(terminal, revealed)
 }
 
+/** Status must be the actual persistent footer, not matching transcript copy. */
+async function routingStatus(
+  terminal: PiTerminal,
+  size: ScreenSize,
+  text: string,
+  label: string,
+): Promise<void> {
+  await settle(terminal, text)
+  assertFits(terminal, size, label)
+  assert.equal(
+    lines(terminal).at(-1)?.trim(),
+    text,
+    `${label}: routing footer missing or truncated`,
+  )
+}
+
+function noRoutingStatus(terminal: PiTerminal, label: string): void {
+  assert.doesNotMatch(
+    lines(terminal).slice(-3).join("\n"),
+    /(?:quick|standard|advanced) \||Observing \||Adaptive degraded \||Adaptive: set up tiers/,
+    `${label}: stale routing status survived`,
+  )
+}
+
 async function firstRun(options: PiTerminalOptions, size: ScreenSize): Promise<void> {
   const trace = options.env["PI_MATRIX_TRACE"] ?? ""
   resetState(options)
@@ -93,6 +118,7 @@ async function firstRun(options: PiTerminalOptions, size: ScreenSize): Promise<v
     await turn(terminal, trace, "First routed turn")
     assert.deepEqual(dispatchedModels(trace), [standard])
     await settle(terminal, `Adaptive · standard → adaptive-faux/${standard}`)
+    await routingStatus(terminal, size, `standard | ${standard}`, `${label} routed status`)
     assertFits(terminal, size, `${label} note`)
     capture(terminal, options, size, "routed-note")
   } finally {
@@ -121,6 +147,7 @@ async function screens(options: PiTerminalOptions, size: ScreenSize): Promise<vo
     })
     await submit(terminal, "Park this")
     await settle(terminal, "Send a message or pick a model to cancel.")
+    await settle(terminal, /standard parked · resumes \d\d:\d\d/)
     assertFits(terminal, size, `parked ${label}`)
     assertFooter(terminal, "/adaptive resume tries now", `parked ${label}`)
     assert.ok(
@@ -131,6 +158,8 @@ async function screens(options: PiTerminalOptions, size: ScreenSize): Promise<vo
       lines(terminal).some((line) => /standard parked · resumes \d\d:\d\d/.test(line)),
       `parked ${label}: status chip missing`,
     )
+    assert.match(lines(terminal).at(-1)?.trim() ?? "", /^standard parked · resumes /)
+    noRoutingStatus(terminal, `park overrides routing ${label}`)
     capture(terminal, options, size, "parked-card")
     writeJson(adaptiveFile(options, "health.json"), health)
 
@@ -158,8 +187,33 @@ async function screens(options: PiTerminalOptions, size: ScreenSize): Promise<vo
 
     await turn(terminal, trace, "Routed after the park")
     await settle(terminal, "Adaptive · standard → adaptive-faux/standard")
+    await routingStatus(terminal, size, "standard | standard", `after park ${label}`)
+    assert.doesNotMatch(lines(terminal).slice(-3).join("\n"), /parked|Waiting for a model/)
     assertFits(terminal, size, `note ${label}`)
     capture(terminal, options, size, "routed-note-after-park")
+
+    limitStandard(options, Date.now() + 60_000)
+    await submit(terminal, "Wait instead of dispatching")
+    await settle(terminal, "Esc cancels")
+    assertFits(terminal, size, `wait ${label}`)
+    assert.match(
+      lines(terminal).at(-1)?.trim() ?? "",
+      /^Waiting for a model · \d+:\d{2} · Esc cancels$/,
+      `wait ${label}: countdown must own the footer`,
+    )
+    noRoutingStatus(terminal, `wait overrides routing ${label}`)
+    capture(terminal, options, size, "waiting-status")
+    await terminal.press("Escape")
+    await waitForTrace(trace, (events) =>
+      events.some((event) => event["kind"] === "settled" && event["aborted"] === true),
+    )
+    writeJson(adaptiveFile(options, "health.json"), health)
+    await turn(terminal, trace, "Routed after cancelling the wait")
+    await routingStatus(terminal, size, "standard | standard", `after wait ${label}`)
+    assert.doesNotMatch(lines(terminal).slice(-3).join("\n"), /parked|Waiting for a model/)
+  } catch (error) {
+    capture(terminal, options, size, "failed-status-screen")
+    throw error
   } finally {
     await terminal.close()
   }
@@ -179,6 +233,12 @@ async function recovery(options: PiTerminalOptions): Promise<void> {
     assert.deepEqual(dispatchedModels(trace), ["standard", "standard-b"])
     await settle(terminal, "MATRIX_OK standard-b")
     await settle(terminal, "Adaptive · standard → adaptive-faux/standard-b · retry")
+    await routingStatus(
+      terminal,
+      { columns: 80, rows: 40 },
+      "Recovering standard | standard-b",
+      "429 recovery",
+    )
     assert.ok(
       readFileSync(adaptiveFile(options, "health.json"), "utf8").includes("rate_limited"),
       "the 429 was not shared as health",
@@ -193,15 +253,67 @@ async function recovery(options: PiTerminalOptions): Promise<void> {
 async function manualPick(options: PiTerminalOptions): Promise<void> {
   const trace = options.env["PI_MATRIX_TRACE"] ?? ""
   resetState(options)
+  settings(options, { mode: "off" })
   const terminal = await launchPi(options)
   try {
     await settle(terminal, "(adaptive) auto")
     await turn(terminal, trace, "Routed first")
+    await routingStatus(
+      terminal,
+      { columns: 80, rows: 40 },
+      "standard | standard",
+      "before manual pick",
+    )
     await selectModel(terminal, "adaptive-faux/manual-physical")
     await settle(terminal, "Adaptive · Paused · you picked adaptive-faux/manual-physical")
+    noRoutingStatus(terminal, "manual pick")
     await turn(terminal, trace, "Manual now")
     assert.deepEqual(dispatchedModels(trace), ["standard", "manual-physical"])
+    noRoutingStatus(terminal, "manual turn")
     capture(terminal, options, { columns: 80, rows: 40 }, "paused-note")
+  } finally {
+    await terminal.close()
+  }
+}
+
+/** Quiet suppresses notes, never the footer; observing never replaces the manual model. */
+async function quietStatus(options: PiTerminalOptions, size: ScreenSize): Promise<void> {
+  const trace = options.env["PI_MATRIX_TRACE"] ?? ""
+  const label = `quiet ${String(size.columns)}x${String(size.rows)}`
+  resetState(options)
+  settings(options, { mode: "observe" })
+  writeJson(adaptiveFile(options, "preferences.json"), { version: 1, verbosity: "quiet" })
+  const terminal = await launchPi({ ...options, ...size })
+  try {
+    await settle(terminal, "(adaptive) auto")
+    await turn(terminal, trace, "Quiet routed turn")
+    await routingStatus(terminal, size, "standard | standard", `${label} routing`)
+    assert.ok(!lines(terminal).some((line) => line.includes("Adaptive ·")), "quiet wrote a note")
+    capture(terminal, options, size, "quiet-routing-status")
+
+    await terminal.press("Control+l")
+    // At 60 columns the full host catalog can push its action footer below
+    // the viewport. Wait for the picker itself, then narrow before asserting it.
+    await settle(terminal, "Only showing models from configured providers.")
+    await terminal.type("adaptive-faux/manual-physical")
+    await settle(terminal, "Enter to select")
+    assertFits(terminal, size, `${label} narrowed model picker`)
+    await terminal.press("Enter")
+    await settle(terminal, "(adaptive-faux) manual-physical")
+    await turn(terminal, trace, "Quiet observed manual turn")
+    await routingStatus(terminal, size, "Observing | would use standard", `${label} observing`)
+    assert.deepEqual(dispatchedModels(trace), ["standard", "manual-physical"])
+    assert.ok(!lines(terminal).some((line) => line.includes("Adaptive ·")), "quiet wrote a note")
+    capture(terminal, options, size, "quiet-observing-status")
+
+    await slash(terminal, "observe off", "Observation setting saved")
+    noRoutingStatus(terminal, `${label} observation disabled`)
+    await turn(terminal, trace, "Quiet manual turn with observation off")
+    await settle(terminal, "MATRIX_OK manual-physical")
+    assert.deepEqual(dispatchedModels(trace), ["standard", "manual-physical", "manual-physical"])
+    noRoutingStatus(terminal, `${label} off manual turn`)
+    assertFits(terminal, size, `${label} off`)
+    capture(terminal, options, size, "quiet-manual-off-status")
   } finally {
     await terminal.close()
   }
@@ -344,6 +456,8 @@ export async function exerciseJourneys(options: PiTerminalOptions): Promise<void
       restore()
       await screens(options, size)
       restore()
+      await quietStatus(options, size)
+      restore()
     }
     await recovery(options)
     restore()
@@ -357,7 +471,8 @@ export async function exerciseJourneys(options: PiTerminalOptions): Promise<void
     console.log(
       JSON.stringify({
         surface: "tui",
-        journey: "first-run-recovery-pause-reorder-doctor-shared-health-layouts",
+        journey:
+          "first-run-status-quiet-observe-recovery-pause-reorder-doctor-shared-health-layouts",
         sizes: SIZES.map((size) => `${String(size.columns)}x${String(size.rows)}`),
         result: "PASS",
       }),

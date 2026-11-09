@@ -448,6 +448,15 @@ type-level:
   routed turn writes a receipt.
 - Only after this does work on `packages/pi` beyond the spike start landing on `main`.
 
+**Execution status (2026-11-09):** steps 0–6 have landed and the packed OpenCode
+and Pi gates pass together in the baseline full verification at `dc835fd`
+(`test-artifacts/m8/verify-all-2.log`, no skipped gates). Publication and the
+post-publication install smoke above remain pending explicit approval. The
+handoff authorized continuing Pi implementation before that approval, superseding
+the original sequencing constraint; this does not mark step 7 complete.
+Subsequent shared changes also mean the eventual OpenCode release notes must
+describe the actual diff, not repeat the original “no behaviour change” premise.
+
 ## Risks and how each is caught
 
 | Risk                                                                                  | Caught by                                                                                |

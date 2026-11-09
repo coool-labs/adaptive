@@ -57,8 +57,10 @@ immediately. With observation disabled and a normal model selected, Adaptive is
 off. Off mode does not route or recover work.
 
 Pinned tier entries ignore the agent's tier request and do not automatically
-escalate. A concrete model pin also wins over automatic routing and recovery.
-Use Auto when you want evidence-backed movement between tiers.
+escalate by default. The Preferences dialog can explicitly enable
+`escalateFromPinned`; evidence and task budgets still apply. A concrete model
+pin always wins over automatic routing and recovery. Use Auto for the default
+evidence-backed movement between tiers.
 
 The agent tool `adaptive_tier` takes `quick`, `standard`, or `advanced`. Its
 declaration applies from the next user prompt and stays on the session branch
@@ -95,6 +97,10 @@ Empty tiers do not authorize cross-tier fallback. The interactive tier editor
 and the first-run proposal build tiers from available-model metadata, never
 from prompt classification, and nothing is saved until you confirm.
 
+A tier entry can include a Pi-supported thinking level as `variant`, such as
+`"variant": "high"`. Admission checks that exact variant, and dispatch uses it;
+unsupported variants are not silently replaced with a different thinking level.
+
 Pi's catalogue does not declare model-level tool capability. Explicit
 declarations live in `adaptive/capabilities.json` beside the settings file:
 
@@ -113,10 +119,16 @@ remaining quota, and not every provider exposes usable capacity readings.
 
 ## Status, notes, and commands
 
-Adaptive shows one-line routing notes in the transcript, a status line while
-waiting, and a parked-work card. Notes stay out of model context. The note
-verbosity choices are `changes` (default: model changes or problems), `all`
-(every unit), and `quiet` (no transcript notes; receipts are still kept).
+Adaptive uses one footer item for the current tier and model, recovery,
+task escalation, observation of a manual model, tier setup, or degraded
+operation. Waiting countdowns and parked-work status take priority in that same
+item; parked work also has a card. A manual model pick or session change clears
+stale status, and disabling observation clears its manual-model footer.
+
+One-line transcript notes stay out of model context. The note verbosity choices
+are `changes` (default: model changes or problems), `all` (every unit), and
+`quiet` (no transcript notes). The footer and receipts remain useful with
+`quiet`; neither depends on note verbosity.
 Real-terminal frames at 80 columns are in [docs/screenshots](docs/screenshots/README.md):
 [first-run proposal](docs/screenshots/first-run-proposal-80x24.txt),
 [routed note](docs/screenshots/routed-note-80x24.txt),
@@ -148,10 +160,11 @@ Parking keeps work in the required tier:
 - A known reset within two minutes waits in place with a countdown; Esc cancels.
 - Longer waits persist parked work with its session and a shared local index.
   A cross-process claim permits at most one wake for a parked record.
-- Work parked before dispatch is submitted only when resumed. Pi writes a session
-  file only once it holds a conversation, so a prompt parked before the session's
-  first message does not survive closing Pi. After partial
-  execution, recovery uses one hidden continuation message telling the agent to
+- No provider request is dispatched while parked. An initial prompt is saved as
+  normal Pi conversation history before parking at the routing boundary, so it
+  survives closing and reopening Pi. Cancelling its parked work leaves that
+  message in history. Later intercepted prompts are kept in session-only payloads
+  until resumed. After partial execution, recovery uses one hidden continuation message telling the agent to
   continue from existing session/workspace state, not replay the original prompt
   or redo completed steps. That small continuation **does** enter model context;
   operational notes and receipts do not.
@@ -159,7 +172,8 @@ Parking keeps work in the required tier:
   never trigger failover or restart. A manual choice of another tier is explicit
   user intent, not automatic cross-tier recovery.
 - Reopening a parked interactive session re-arms its wait; already-due work asks
-  for confirmation. Automatic wakes are limited to **three per task**. Terminal
+  for confirmation. An owned wake writes a resumed note unless verbosity is
+  quiet. Automatic wakes are limited to **three per task**. Terminal
   infrastructure failures get at most **two automatic restarts per task**;
   capability escalation is separately bounded. Permanent auth/configuration
   errors do not enter recovery loops.

@@ -10,13 +10,13 @@ const auto = { provider: "adaptive", id: "auto" }
 function context(model: ToolContext["model"], branch: readonly BranchEntry[] = []): ToolContext {
   return { model, sessionManager: { getBranch: () => branch } }
 }
-function taskState(tier: string, escalations: number): BranchEntry {
+function taskState(tier: string, escalations: number, modelId = "auto"): BranchEntry {
   return {
     type: "custom",
     customType: "pi.virtual-model-state",
     data: {
       provider: "adaptive",
-      modelId: "auto",
+      modelId,
       state: { version: 1, task: "t", unit: "u", tier, escalations, restarts: 0, tried: [] },
     },
   }
@@ -63,7 +63,7 @@ it("records valid tier requests only while Adaptive Auto routes", async () => {
     context(auto),
   )
   expect(observing.content[0].text).toBe(
-    "Tier request recorded: quick. It applies from the next user prompt. Adaptive is in observe mode, so it will not change models.",
+    "Tier request recorded: quick. It applies from the next user prompt.",
   )
   expect(observing.details).toEqual({ tier: "quick" })
 })
@@ -96,7 +96,10 @@ it("ignores tier requests when the user chose the model", async () => {
 })
 
 it("explains what a recorded escalation request can and cannot do", async () => {
-  const tool = escalationTool(() => Promise.resolve(active))
+  const tool = escalationTool(
+    () => Promise.resolve(active),
+    () => Promise.resolve(false),
+  )
   expect(tool.name).toBe("adaptive_escalate")
   const fresh = await run(tool, request, context(auto))
   expect(fresh).toEqual({
@@ -122,7 +125,10 @@ it("explains what a recorded escalation request can and cannot do", async () => 
 })
 
 it("rejects malformed escalation requests and declines without Adaptive routing", async () => {
-  const tool = escalationTool(() => Promise.resolve(active))
+  const tool = escalationTool(
+    () => Promise.resolve(active),
+    () => Promise.resolve(false),
+  )
   expect(await run(tool, { reason: "x" }, context(auto))).toEqual({
     content: [
       {
@@ -139,7 +145,10 @@ it("rejects malformed escalation requests and declines without Adaptive routing"
     "The user pinned Adaptive quick. Adaptive will not escalate; tell the user if you need a stronger model.",
   )
   const observing = await run(
-    escalationTool(() => Promise.resolve(defaultSettings())),
+    escalationTool(
+      () => Promise.resolve(defaultSettings()),
+      () => Promise.resolve(false),
+    ),
     request,
     context(auto),
   )
@@ -147,9 +156,49 @@ it("rejects malformed escalation requests and declines without Adaptive routing"
     content: [
       {
         type: "text",
-        text: "Adaptive is in observe mode and will not escalate; tell the user if you need a stronger model.",
+        text: "Recorded. If this run fails on a capability gap, the task continues on advanced (0 of 2 escalations used).",
       },
     ],
-    details: {},
+    details: request,
   })
 })
+
+it.each(["active", "observe", "off"] as const)(
+  "accepts virtual requests under global %s while preserving manual pins",
+  async (mode) => {
+    const settings = { ...active, mode }
+    const tool = escalationTool(
+      () => Promise.resolve(settings),
+      () => Promise.resolve(true),
+    )
+    for (const id of ["quick", "standard", "advanced"] as const) {
+      const selected = { provider: "adaptive", id }
+      const fresh = await run(tool, request, context(selected))
+      expect(fresh.details).toEqual(request)
+      expect(fresh.content[0].text).toContain(id === "quick" ? "standard" : "advanced")
+      const recorded = await run(
+        tool,
+        request,
+        context(selected, [taskState("advanced", 1, id), taskState("quick", 0)]),
+      )
+      expect(recorded.content[0].text).toContain("advanced is already the strongest tier")
+    }
+    expect((await run(tool, request, context({ provider: "local", id: "a" }))).details).toEqual({})
+    const pinned = escalationTool(
+      () => Promise.resolve({ ...settings, pin: { providerID: "local", id: "a" } }),
+      () => Promise.resolve(true),
+    )
+    expect(
+      (await run(pinned, request, context({ provider: "adaptive", id: "quick" }))).details,
+    ).toEqual({})
+    expect(
+      (
+        await run(
+          tierTool(() => Promise.resolve(settings)),
+          { tier: "quick" },
+          context(auto),
+        )
+      ).content[0].text,
+    ).not.toContain("will not change")
+  },
+)

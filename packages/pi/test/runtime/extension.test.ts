@@ -481,8 +481,44 @@ it("restarts a quota failure Pi does not retry on the same tier through a hidden
         },
       ])
     },
-    { settings: twoStandard, retry: true },
+    { settings: { ...twoStandard, mode: "observe" }, retry: true },
   )
+})
+
+it("uses the saved pinned-escalation preference in the real SDK", async () => {
+  await withSession(async (harness) => {
+    const { faux, session, sources } = harness
+    await sources.preferences.update(() => ({
+      next: { escalateFromPinned: true },
+      result: undefined,
+    }))
+    await selectVirtual(harness, "quick")
+    session.setActiveToolsByName(["adaptive_escalate"])
+    faux.setResponses([
+      fauxAssistantMessage([
+        fauxToolCall("adaptive_escalate", { reason: "too large", evidence: "context overflow" }),
+      ]),
+      failing(OVERFLOW),
+      failing(OVERFLOW),
+      fauxAssistantMessage("Recovered"),
+    ])
+    await session.prompt("Pinned task with opt-in")
+    expect(outcomes(session)).toEqual([
+      ["quick", "stop"],
+      ["quick", "error"],
+      ["standard", "error"],
+      ["advanced", "stop"],
+    ])
+    expect(session.model?.id).toBe("quick")
+    expect(
+      session.agent.state.messages.find((message) => message.role === "toolResult"),
+    ).toMatchObject({
+      details: { reason: "too large", evidence: "context overflow" },
+    })
+    faux.setResponses([fauxAssistantMessage("New task")])
+    await session.prompt("Fresh pinned task")
+    expect(outcomes(session).at(-1)).toEqual(["quick", "stop"])
+  })
 })
 
 it("restarts a task at most twice", async () => {
@@ -745,6 +781,56 @@ it("offers the first-run proposal once, saving tiers and Observe only after conf
     },
   )
 })
+
+it("recovers a quota failure with the actual onboarding defaults", async () => {
+  await withSession(
+    async (harness) => {
+      expect(await readSettings(harness.settingsFile)).toMatchObject({
+        mode: "observe",
+        inviteDismissed: true,
+      })
+      await selectVirtual(harness, "auto")
+      harness.faux.setResponses([
+        failing(QUOTA),
+        fauxAssistantMessage("Recovered after onboarding"),
+      ])
+      await harness.session.prompt("First routed task")
+      expect(outcomes(harness.session).map(([, stopReason]) => stopReason)).toEqual([
+        "error",
+        "stop",
+      ])
+      expect(continuations(harness.session)).toHaveLength(1)
+      expect(harness.session.model?.provider).toBe("adaptive")
+    },
+    {
+      settings: unconfigured,
+      dialogs: answering({ "Adaptive is installed": "keep my current model" }),
+    },
+  )
+})
+
+it.each(["observe", "off"] as const)(
+  "never recovers physical-model failures under global %s even with pinned escalation enabled",
+  async (mode) => {
+    await withSession(
+      async (harness) => {
+        await harness.sources.preferences.update(() => ({
+          next: { escalateFromPinned: true },
+          result: undefined,
+        }))
+        for (const error of [QUOTA, OVERFLOW]) {
+          harness.faux.setResponses([failing(error), fauxAssistantMessage("never reached")])
+          await harness.session.prompt("Manual task")
+          expect(outcomes(harness.session).at(-1)).toEqual(["standard", "error"])
+          expect(continuations(harness.session)).toHaveLength(0)
+        }
+        expect(harness.faux.state.callCount).toBe(2)
+        expect(harness.session.model?.provider).toBe("adaptive-faux")
+      },
+      { settings: { ...twoStandard, mode } },
+    )
+  },
+)
 
 it("saves nothing but the dismissal when the user declines the first-run proposal", async () => {
   await withSession(

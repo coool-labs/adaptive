@@ -751,8 +751,9 @@ and `src/ui/*`, with PTY frames at 60x24, 80x24 and 120x40 and screenshots under
 `packages/pi/docs/screenshots/`. Findings from the real terminal: `registerEntries` must
 be called in production or notes are written but never drawn; a dialog as tall as the
 terminal loses its last (footer) row, so dialogs keep one spare row; Pi's argument menu
-consumes the first Enter of a typed `/adaptive <sub>`. No "resumed" note is emitted after
-a wake; the resume is visible through dispatches.
+consumes the first Enter of a typed `/adaptive <sub>`. Successful owned wakes emit a
+context-excluded resumed note unless verbosity is quiet; cancelled, stale, and unclaimed
+wakes do not.
 
 ### M7 — real-host E2E and version matrix (M)
 
@@ -785,13 +786,19 @@ a wake; the resume is visible through dispatches.
   `npm run release -- --pi minor`, which publishes `pi-adaptive@0.1.0` (0.0.0 → 0.1.0;
   the planner treats the never-tagged package as all commits since `packages/pi`
   existed). Install it from npm into a clean Pi and run one routed turn plus doctor.
+  The CLI includes other pending publishable packages unless explicitly skipped:
+  if approval covers Pi only, use `--opencode skip --pi minor` instead. An
+  OpenCode publication needs its own approval; a dry-run is not that approval.
 - Optional, after the release: list it on pi.dev/packages.
 
 Status: README, CHANGELOG and TEST_STRATEGY are written; the AGENTS.md Pi facts are
-recorded. The remaining steps are `private` removal and the release, both of which need
-maintainer approval and npm authentication. Known limit: a park before the session's
-first message does not survive closing Pi, because Pi persists a session file only once
-it holds a conversation (ADP-024 is met for mid-run parks).
+recorded. Final acceptance fixes and unskipped verification precede removing
+`private` in its own commit. Publication and the clean-install smoke then require
+maintainer approval and npm authentication. Initial-prompt parks now let Pi save
+the normal user message before parking at `route()`, with no provider dispatch;
+real SDK and PTY regressions cover restart without prompt replay as well as
+durable mid-run tool effects. Cancelling an initial park leaves its saved user
+message in Pi history.
 
 ## Effort
 

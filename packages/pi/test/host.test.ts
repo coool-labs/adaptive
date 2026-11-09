@@ -360,6 +360,72 @@ const twoStandard = {
 }
 const auto = { provider: "adaptive", id: "auto" }
 
+it.each(["observe", "off"] as const)(
+  "recovers virtual runs under global %s but never physical selections",
+  async (mode) => {
+    for (const errorMessage of [QUOTA, "prompt is too long: 9000 tokens > 8000 maximum"]) {
+      const run = failedRun.map((entry) =>
+        entry.message?.role === "assistant"
+          ? { ...entry, message: { ...entry.message, errorMessage } }
+          : entry,
+      )
+      const read = sources(() => Promise.resolve({ ...settings, mode }))
+      const send = vi.fn()
+      await afterRun({ aborted: false }, settle(auto, false, run).ctx, read, send)
+      expect(send).toHaveBeenCalledOnce()
+      expect(send.mock.calls).toMatchObject([
+        [{ details: { tier: errorMessage === QUOTA ? "standard" : "advanced" } }],
+      ])
+      send.mockClear()
+      await afterRun(
+        { aborted: false },
+        settle({ provider: "local", id: "b" }, false, run).ctx,
+        read,
+        send,
+      )
+      expect(send).not.toHaveBeenCalled()
+    }
+  },
+)
+
+it.each([false, true])(
+  "honors pinned-tier escalation opt-in %s without overriding model pins",
+  async (escalateFromPinned) => {
+    const run = failedRun.map((entry) =>
+      entry.type === "custom"
+        ? {
+            ...entry,
+            data: {
+              provider: "adaptive",
+              modelId: "standard",
+              state: {
+                version: 1,
+                task: "t",
+                unit: "u",
+                tier: "standard",
+                escalations: 0,
+                restarts: 0,
+                tried: [],
+              },
+            },
+          }
+        : entry,
+    )
+    for (const pin of [null, { providerID: "local", id: "b" }]) {
+      const read = sources(() => Promise.resolve({ ...settings, pin }))
+      await read.preferences.update(() => ({ next: { escalateFromPinned }, result: undefined }))
+      const send = vi.fn()
+      await afterRun(
+        { aborted: false },
+        settle({ provider: "adaptive", id: "standard" }, false, run).ctx,
+        read,
+        send,
+      )
+      expect(send).toHaveBeenCalledTimes(escalateFromPinned && pin === null ? 1 : 0)
+    }
+  },
+)
+
 it("steers the next admission away from a model another request just saw limited", async () => {
   const file = memoryFile()
   const shared = sources(() => Promise.resolve(twoStandard), undefined, file)

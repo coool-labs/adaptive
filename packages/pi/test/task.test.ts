@@ -280,6 +280,7 @@ function escalation(
 ) {
   return escalationAfterRun({
     id: "auto",
+    escalateFromPinned: false,
     settings,
     branch,
     available: [quick, standard, advanced],
@@ -343,6 +344,44 @@ it("never escalates without capability evidence, budget, ceiling room or candida
   expect(escalation(failing, { available: [standard] })).toBeUndefined()
 })
 
+it.each([false, true])(
+  "bounds pinned escalation with opt-in %s and capability failures only",
+  (escalateFromPinned) => {
+    for (const id of ["quick", "standard", "advanced"] as const) {
+      const pinned = { ...state, tier: id }
+      for (const message of [
+        failure(overflow),
+        failure("503 Service Unavailable"),
+        failure(undefined, { stopReason: "stop" }),
+      ]) {
+        const recovery = escalation([routerState(id, pinned), user, message], {
+          id,
+          escalateFromPinned,
+        })
+        if (escalateFromPinned && id !== "advanced" && message.message?.errorMessage === overflow) {
+          expect(recovery).toMatchObject({
+            tier: id === "quick" ? "standard" : "advanced",
+            escalations: 1,
+          })
+        } else expect(recovery).toBeUndefined()
+      }
+      expect(
+        escalation([routerState(id, { ...pinned, escalations: 2 }), user, failure(overflow)], {
+          id,
+          escalateFromPinned,
+        }),
+      ).toBeUndefined()
+      expect(
+        escalation([routerState(id, pinned), user, failure(overflow)], {
+          id,
+          escalateFromPinned,
+          settings: { ...settings, pin: standard },
+        }),
+      ).toBeUndefined()
+    }
+  },
+)
+
 const OUTAGE = "503 status code (no body)"
 const QUOTA = "429 You exceeded your current quota, please check your plan and billing details."
 function failedMessage(errorMessage: string) {
@@ -352,6 +391,7 @@ function failedMessage(errorMessage: string) {
 it("carries the automatic-wake budget through both restart and escalation units", () => {
   const input = {
     id: "auto" as const,
+    escalateFromPinned: false,
     settings,
     available: [standard, advanced],
     tool: ESCALATE,
@@ -382,6 +422,7 @@ it("carries the automatic-wake budget through both restart and escalation units"
 it("offers parking, not an immediate restart, after the restart budget is spent", () => {
   const input = {
     id: "auto" as const,
+    escalateFromPinned: false,
     settings,
     available: [standard],
     tool: ESCALATE,
@@ -471,6 +512,7 @@ function restart(
 ) {
   return restartAfterRun({
     id: "standard",
+    escalateFromPinned: false,
     settings,
     branch,
     available: [quick, standard, advanced],

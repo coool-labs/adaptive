@@ -1,4 +1,4 @@
-// covers: ["ADP-024", "ADP-060", "ADP-010", "ADP-023"]
+// covers: ["ADP-024", "ADP-060", "ADP-010", "ADP-023", "ADP-058"]
 import { beforeEach, afterEach, expect, it, vi } from "vitest"
 import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux"
 import { defaultSettings } from "@coool/adaptive-core/state/settings/parse"
@@ -56,6 +56,23 @@ function gateUpdate(file: JsonFile): () => void {
     release?.()
   }
 }
+
+/** Admission previews read health without mutating it; interleave at that read. */
+function gateRead(file: JsonFile): () => void {
+  const original = file.read.bind(file)
+  let release: (() => void) | undefined
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  vi.spyOn(file, "read").mockImplementationOnce(async () => {
+    const result = await original()
+    await gate
+    return result
+  })
+  return () => {
+    release?.()
+  }
+}
 const recovery = {
   task: "t",
   token: "recovery",
@@ -94,7 +111,10 @@ function fixture() {
     model,
     mode: "tui",
     hasUI: true,
-    sessionManager: { getSessionId: () => "session", getBranch: () => branch },
+    sessionManager: {
+      getSessionId: () => "session",
+      getBranch: () => [{ type: "message", message: { role: "user" } }, ...branch],
+    },
     modelRegistry: { getAvailable: () => faux.models },
     ui: {
       setStatus: vi.fn(),
@@ -127,7 +147,38 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it("parks before dispatch, keeps input only in the session, and wakes it once", async () => {
+it("lets Pi persist the first conversation before parking at the route boundary", async () => {
+  for (const branch of [[], [{ type: "custom" }], [{ type: "message" }]]) {
+    const f = fixture()
+    await f.limited()
+    const ctx = { ...f.ctx, sessionManager: { ...f.ctx.sessionManager, getBranch: () => branch } }
+    expect(await f.handlers.input(event, ctx)).toEqual({ action: "continue" })
+    expect(f.host.appendEntry).not.toHaveBeenCalled()
+    expect(await findPark(f.file, "session")).toBeUndefined()
+  }
+  const f = fixture()
+  await f.limited()
+  const ctx = {
+    ...f.ctx,
+    sessionManager: {
+      ...f.ctx.sessionManager,
+      getBranch: () => [{ type: "message", message: { role: "assistant" } }],
+    },
+  }
+  expect(await f.handlers.input(event, ctx)).toEqual({ action: "handled" })
+  f.handlers.shutdown()
+})
+
+it("does not turn an unconfigured tier into an availability wait", async () => {
+  const f = fixture()
+  vi.spyOn(f.sources, "settings").mockResolvedValue(defaultSettings())
+  expect(await f.handlers.input(event, f.ctx)).toEqual({ action: "continue" })
+  expect(await f.handlers.recover(recovery, f.ctx)).toBe(false)
+  expect(await findPark(f.file, "session")).toBeUndefined()
+  expect(f.ctx.ui.setStatus).not.toHaveBeenCalledWith("adaptive", expect.stringContaining("parked"))
+})
+
+it("parks later input before dispatch, keeps it only in the session, and wakes it once", async () => {
   const f = fixture()
   await f.limited()
   expect(await f.handlers.input(event, f.ctx)).toEqual({ action: "handled" })
@@ -266,6 +317,20 @@ it("awaits headless intercepted input and cancels it without dispatching on a ne
   expect(f.host.sendUserMessage).not.toHaveBeenCalled()
 })
 
+it("awaits a later intercepted headless input and dispatches it once when due", async () => {
+  const f = fixture()
+  await f.limited()
+  const pending = f.handlers.input(event, { ...f.ctx, mode: "print", hasUI: false })
+  await vi.advanceTimersByTimeAsync(901_000)
+  expect(await pending).toEqual({ action: "handled" })
+  expect(f.host.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
+    [{ type: "text", text: event.text }],
+    { expandPromptTemplates: false },
+  )
+  expect(await findPark(f.file, "session")).toBeUndefined()
+  expect(vi.getTimerCount()).toBe(0)
+})
+
 it("enforces a per-unit hop budget even if Pi keeps retrying after successes", async () => {
   const f = fixture()
   const [auto] = virtualModels(f.sources, () => [], f.handlers)
@@ -313,6 +378,7 @@ it("claims a shared wake only once when two sessions re-arm the same durable tas
   await second.sessionStart(f.ctx)
   await vi.advanceTimersByTimeAsync(900_000)
   expect(f.host.sendMessage).toHaveBeenCalledTimes(1)
+  expect(resumedNotes(f.branch)).toEqual([resumedNote])
 })
 
 it("fails open on optional parking errors and leaves malformed records for inspection", async () => {
@@ -498,6 +564,7 @@ it("a new manual choice wins even while a wake claim is resolving", async () => 
   release?.()
   await vi.advanceTimersByTimeAsync(0)
   expect(f.host.sendMessage).not.toHaveBeenCalled()
+  expect(resumedNotes(f.branch)).toEqual([])
 })
 
 it("re-reads capacity after its reset and combines capacity and health wake deadlines", async () => {
@@ -590,7 +657,7 @@ it("never dispatches an input whose cancel or admission raced a newer owner", as
   // A stale park decision (the admission raced the owner change inside the scheduler).
   const decided = fixture()
   await decided.limited()
-  const admit = gateUpdate(decided.sources.health.file)
+  const admit = gateRead(decided.sources.health.file)
   const decidePending = decided.handlers.input(event, decided.ctx)
   await vi.advanceTimersByTimeAsync(0)
   decided.handlers.shutdown()
@@ -645,7 +712,7 @@ it("leaves terminal recovery to the newer owner when it raced a shutdown", async
     vi.setSystemTime(1_000)
     const f = fixture()
     await f.limited()
-    const release = gateUpdate(stage === "admission" ? f.sources.health.file : f.file)
+    const release = stage === "admission" ? gateRead(f.sources.health.file) : gateUpdate(f.file)
     const pending = f.handlers.recover(recovery, f.ctx)
     await vi.advanceTimersByTimeAsync(0)
     f.handlers.shutdown()
@@ -661,22 +728,22 @@ it("leaves terminal recovery to the newer owner when it raced a shutdown", async
 
 it("holds after three automatic wakes rather than looping when a tier cannot recover", async () => {
   const f = fixture()
-  const empty = {
-    ...f.sources,
-    settings: () =>
-      Promise.resolve({ ...settings, tiers: { quick: [], standard: [], advanced: [] } }),
-  }
-  const handlers = parkingHandlers(f.host, empty)
-  const [auto] = virtualModels(empty, () => [], handlers)
+  const [auto] = virtualModels(f.sources, () => [], f.handlers)
   await Promise.all([
-    expect(auto?.route(request, { ...f.ctx, mode: "print", hasUI: false })).rejects.toThrow(
-      "no-candidates",
-    ),
+    expect(
+      auto?.route(request, {
+        ...f.ctx,
+        mode: "print",
+        hasUI: false,
+        modelRegistry: { getAvailable: () => [] },
+      }),
+    ).rejects.toThrow("no-compatible-resource"),
     vi.advanceTimersByTimeAsync(900_000),
   ])
   expect(await findPark(f.file, "session")).toMatchObject({ wakes: 3, claimed: false })
   expect(f.host.sendMessage).not.toHaveBeenCalled()
   expect(vi.getTimerCount()).toBe(0)
+  expect(resumedNotes(f.branch)).toEqual([resumedNote, resumedNote, resumedNote])
 })
 
 it("receipts a park without a transcript note when quiet, and still parks if the receipt fails", async () => {
@@ -723,4 +790,105 @@ it("cancels a parked task on request without waking it", async () => {
   expect(await findPark(f.file, "session")).toBeUndefined()
   await vi.advanceTimersByTimeAsync(1_000_000)
   expect(f.host.sendMessage).not.toHaveBeenCalled()
+  expect(resumedNotes(f.branch)).toEqual([])
+})
+
+const resumedNote = { version: 1, text: "standard resumed · retrying parked work" }
+
+function resumedNotes(branch: readonly BranchEntry[]): unknown[] {
+  return branch
+    .filter((entry) => entry.customType === NOTE_ENTRY)
+    .map((entry) => entry.data)
+    .filter(
+      (data) =>
+        typeof data === "object" &&
+        data !== null &&
+        "text" in data &&
+        typeof data.text === "string" &&
+        data.text.includes("resumed"),
+    )
+}
+
+it.each(["input", "recovery", "route", "headless-input", "headless-route"])(
+  "notes exactly one successful owned %s wake after the reset, never while parked",
+  async (flow) => {
+    const f = fixture()
+    await f.limited()
+    const ctx = flow.startsWith("headless") ? { ...f.ctx, mode: "print", hasUI: false } : f.ctx
+    let pending: Promise<unknown>
+    if (flow === "input" || flow === "headless-input") pending = f.handlers.input(event, ctx)
+    else if (flow === "recovery") pending = f.handlers.recover(recovery, ctx)
+    else pending = f.handlers.blocked(plan, admission, request, ctx)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resumedNotes(f.branch)).toEqual([])
+    await vi.advanceTimersByTimeAsync(901_000)
+    await pending
+    expect(resumedNotes(f.branch)).toEqual([resumedNote])
+    await vi.runAllTimersAsync()
+    expect(resumedNotes(f.branch)).toEqual([resumedNote])
+  },
+)
+
+it("keeps owned wakes quiet when the saved verbosity is quiet", async () => {
+  const f = fixture()
+  await f.blocked()
+  await f.sources.preferences.update(() => ({
+    next: { version: 1, verbosity: "quiet", escalateFromPinned: false },
+    result: undefined,
+  }))
+  await vi.advanceTimersByTimeAsync(900_000)
+  expect(f.host.sendMessage).toHaveBeenCalledTimes(1)
+  expect(resumedNotes(f.branch)).toEqual([])
+})
+
+it.each(["preferences", "append"])(
+  "fails open when the resumed note's %s fails",
+  async (failure) => {
+    const f = fixture()
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    await f.blocked()
+    if (failure === "preferences") {
+      vi.spyOn(f.sources.preferences, "read").mockRejectedValueOnce(
+        new Error("note preference failed"),
+      )
+    } else {
+      f.host.appendEntry.mockImplementationOnce(() => {
+        throw new Error("note append failed")
+      })
+    }
+    await vi.advanceTimersByTimeAsync(900_000)
+    expect(f.host.sendMessage).toHaveBeenCalledTimes(1)
+    expect(resumedNotes(f.branch)).toEqual([])
+    expect(await findPark(f.file, "session")).toBeUndefined()
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining("[coool.adaptive] notes:"))
+  },
+)
+
+it.each(["route", "headless-route"])(
+  "suppresses a %s resumed note if cancellation races the preference read",
+  async (flow) => {
+    const f = fixture()
+    const ctx = flow === "headless-route" ? { ...f.ctx, mode: "print", hasUI: false } : f.ctx
+    const pending = f.handlers.blocked(plan, admission, request, ctx)
+    await vi.advanceTimersByTimeAsync(0)
+    const release = gateRead(f.sources.preferences)
+    await vi.advanceTimersByTimeAsync(900_000)
+    await f.handlers.cancel(f.ctx)
+    release()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await pending).toBeUndefined()
+    expect(resumedNotes(f.branch)).toEqual([])
+  },
+)
+
+it("does not note a continuation the host rejected", async () => {
+  const f = fixture()
+  const logged = vi.spyOn(console, "error").mockImplementation(() => undefined)
+  await f.blocked()
+  f.host.sendMessage.mockImplementationOnce(() => {
+    throw new Error("continuation rejected")
+  })
+  await vi.advanceTimersByTimeAsync(900_000)
+  expect(resumedNotes(f.branch)).toEqual([])
+  expect(logged).toHaveBeenCalledWith(expect.stringContaining("continuation rejected"))
 })

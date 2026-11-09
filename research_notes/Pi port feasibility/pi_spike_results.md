@@ -103,8 +103,10 @@ exercises Pi 1.5.0 and resolved `latest` over SDK, JSON CLI and real PTY surface
 Paths above are relative to `packages/pi/`. The completed baseline command
 `npm run verify -- --all` passed at `dc835fd` with no skipped gates; the log is
 `test-artifacts/m8/verify-all-2.log`. That baseline does not certify later fixes:
-final acceptance is still addressing first-prompt park persistence, effective-mode
-recovery, pinned-tier escalation, thinking variants and full-context observation.
+regression fixes for first-prompt park persistence, effective-mode recovery,
+pinned-tier escalation, thinking variants and full-context observation have since
+been implemented and require final integrated verification. The observation proof
+also exercises 150 seeded cases through the real registered routing paths.
 
 Live-provider error capture is optional, paid and opt-in. It has not been run and
 is not silently counted as passed. The mandatory versioned, source-attributed

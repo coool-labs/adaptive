@@ -1,11 +1,13 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
-import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate"
 import type { ExtensionContext, ModelRouteRequest } from "@earendil-works/pi-coding-agent"
+import { ResourceHealthRegistry } from "@coool/adaptive-core/health/index"
+import { parseHealthPayload } from "@coool/adaptive-core/state/health/parse"
 import { planWake, resourceUsableAt } from "@coool/adaptive-core/execution/parking/wake"
 import { resourceChain } from "@coool/adaptive-core/health/resource-health/key"
 import { checkCompatibility } from "@coool/adaptive-core/routing/compatibility/gate"
 import { logFailOpen } from "@coool/adaptive-core/log"
 import type { TierName } from "@coool/adaptive-core/routing/tier-policy/types"
+import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 import type {
   AdmissionDecision,
   SchedulerInput,
@@ -24,10 +26,21 @@ import {
 } from "../task.js"
 import { WaitCancelled } from "../parking.js"
 import type { AdaptiveSources } from "./extension.js"
+import type { RoutingFeedback } from "./status-chip.js"
+import {
+  availablePhysicalModels,
+  modelInventory,
+  requestDemand,
+  thinkingLevelFor,
+} from "./inventory.js"
 
 export interface RouteContext {
   readonly modelRegistry: { getAvailable(): Model<Api>[] }
-  readonly sessionManager: { getBranch(): readonly BranchEntry[]; getSessionId?(): string }
+  readonly sessionManager: {
+    getBranch(): readonly BranchEntry[]
+    getSessionId?(): string
+    buildSessionProjection?: ExtensionContext["sessionManager"]["buildSessionProjection"]
+  }
   readonly hasUI?: boolean
   readonly mode?: string
   readonly signal?: AbortSignal | undefined
@@ -38,7 +51,7 @@ export interface RouteContext {
 }
 
 export function physical(registry: RouteContext["modelRegistry"]): Model<Api>[] {
-  return registry.getAvailable().filter((model) => model.provider !== "adaptive")
+  return availablePhysicalModels(registry)
 }
 
 export interface Admission {
@@ -55,6 +68,7 @@ export async function prepareAdmission(
   activeTools: () => readonly string[],
   preview = false,
   resumedInput?: TaskState,
+  degraded?: () => void,
 ) {
   const current = await sources.settings()
   const declarations = await sources.capabilities()
@@ -85,37 +99,17 @@ export async function prepareAdmission(
     sticky: plan.sticky,
     settings: current,
     previous:
-      previous === undefined ? undefined : { providerID: previous.provider, id: previous.id },
-    inventory: models.map((model) => {
-      const declared = declarations.find(
-        (entry) => entry.providerID === model.provider && entry.id === model.id,
-      )
-      return {
-        providerID: model.provider,
-        modelID: model.id,
-        enabled: true,
-        providerEnabled: true,
-        variantAvailable: true,
-        capabilities: {
-          input: model.input,
-          output: ["text"],
-          ...(declared === undefined ? {} : { tools: declared.tools }),
-        },
-        limit: { context: model.contextWindow },
-      }
-    }),
-    demand: {
-      tools: activeTools().length > 0,
-      contextTokens: estimateContextTokens(request.messages).tokens,
-      input: request.messages.some(
-        (message) =>
-          message.role === "user" &&
-          typeof message.content !== "string" &&
-          message.content.some((part) => part.type === "image"),
-      )
-        ? ["text", "image"]
-        : ["text"],
-    },
+      previous === undefined
+        ? undefined
+        : {
+            providerID: previous.provider,
+            id: previous.id,
+            ...(request.previous?.thinkingLevel === undefined
+              ? {}
+              : { variant: request.previous.thinkingLevel }),
+          },
+    inventory: modelInventory(models, declarations),
+    demand: requestDemand(request.messages, activeTools()),
   }
   const decide = (
     health: SchedulerInput["health"],
@@ -125,19 +119,16 @@ export async function prepareAdmission(
    * ADP-003: a defer (an unusable pin) keeps ordinary behaviour — the tier's
    * first resource that passes the compatibility gates, ignoring the pin.
    */
-  const deferFallback = (): Model<Api> | undefined =>
-    current.tiers[plan.tier]
-      .flatMap((ref) =>
-        models.filter((model) => model.provider === ref.providerID && model.id === ref.id),
-      )
-      .find((model) =>
-        input.inventory.some(
-          (entry) =>
-            entry.providerID === model.provider &&
-            entry.modelID === model.id &&
-            checkCompatibility(entry, input.demand).compatible,
-        ),
-      )
+  const deferFallback = () =>
+    current.tiers[plan.tier].find((ref) =>
+      input.inventory.some(
+        (entry) =>
+          entry.providerID === ref.providerID &&
+          entry.modelID === ref.id &&
+          entry.variant === ref.variant &&
+          checkCompatibility(entry, input.demand).compatible,
+      ),
+    )
   const choose = async (ignoreHealth = false): Promise<Admission> => {
     const now = sources.health.clock()
     const fallback = () => ({ decision: decide({}, {}), due: now })
@@ -153,7 +144,7 @@ export async function prepareAdmission(
       }),
     )
     try {
-      return await withHealth(sources.health, (registry) => {
+      const assess = (registry: ResourceHealthRegistry) => {
         const { health, tickets } = assessCandidates(registry, candidates)
         const decision = decide(health, capacity)
         releaseUnselected(
@@ -163,7 +154,10 @@ export async function prepareAdmission(
         )
         const targets = candidates.flatMap((ref) => {
           const entry = input.inventory.find(
-            (candidate) => candidate.providerID === ref.providerID && candidate.modelID === ref.id,
+            (candidate) =>
+              candidate.providerID === ref.providerID &&
+              candidate.modelID === ref.id &&
+              candidate.variant === ref.variant,
           )
           if (entry === undefined || !checkCompatibility(entry, input.demand).compatible) return []
           const chain = resourceChain({
@@ -175,8 +169,16 @@ export async function prepareAdmission(
         })
         const wake = planWake(targets, now, 0)
         return { decision, due: wake?.dueAt ?? now + 300_000 }
-      })
+      }
+      if (preview) {
+        // Preview may simulate a due probe, but never leases or mutates shared health.
+        const registry = new ResourceHealthRegistry(sources.health.clock)
+        registry.restore(parseHealthPayload(await sources.health.file.read()))
+        return assess(registry)
+      }
+      return await withHealth(sources.health, assess)
     } catch (error) {
+      degraded?.()
       logFailOpen("health", error)
       return fallback()
     }
@@ -206,14 +208,17 @@ export function virtualModels(
       tier: TierName
       session: string | undefined
       retry: boolean
+      state: TaskState | undefined
     },
   ) => void,
+  feedback?: (ctx: RouteContext) => RoutingFeedback & { readonly context: RouteContext },
 ) {
   return VIRTUAL_IDS.map((id) => ({
     provider: "adaptive",
     id,
     name: `Adaptive ${id === "auto" ? "Auto" : id}`,
     async route(request: ModelRouteRequest, ctx: RouteContext) {
+      const report = feedback?.(ctx)
       const prepared = await prepareAdmission(
         id,
         request,
@@ -222,7 +227,11 @@ export function virtualModels(
         activeTools,
         false,
         request.reason === "user" ? parking?.takeInput() : undefined,
-      )
+        () => report?.show({ kind: "degraded" }),
+      ).catch((error: unknown) => {
+        report?.show({ kind: "degraded" })
+        throw error
+      })
       let plan = prepared.plan
       let admission: Admission =
         (plan.state?.hops ?? 0) >= 3 && request.reason === "retry"
@@ -231,49 +240,67 @@ export function virtualModels(
               due: sources.health.clock() + 300_000,
             }
           : await prepared.choose()
+      if (admission.decision.kind === "park" && admission.decision.reason === "no-candidates") {
+        report?.show({ kind: "setup" })
+        throw new Error("Adaptive unavailable: no-candidates. Check your tier settings.")
+      }
       for (
         let attempt = 0;
         admission.decision.kind === "park" && parking !== undefined && attempt < 4;
         attempt += 1
       ) {
         try {
-          const resumed = await parking.blocked(plan, admission, request, ctx)
+          const resumed = await parking.blocked(plan, admission, request, report?.context ?? ctx)
           if (resumed === undefined) break
           plan = resumed
           admission = await prepared.choose()
         } catch (error) {
           if (error instanceof WaitCancelled) throw error
+          report?.show({ kind: "degraded" })
           logFailOpen("parking", error)
           admission = await prepared.choose(true)
           break
         }
       }
       const { decision } = admission
-      let selected: Model<Api> | undefined
+      let selectedRef: ModelRef
       if (decision.kind === "defer") {
-        selected = prepared.deferFallback()
-        if (selected === undefined)
+        const fallback = prepared.deferFallback()
+        if (fallback === undefined) {
+          report?.show({ kind: "setup" })
           throw new Error(
             `Adaptive is not set up: ${decision.reason}. Run /adaptive to set up tiers.`,
           )
+        }
+        selectedRef = fallback
       } else {
         if (decision.kind !== "apply")
           throw new Error(`Adaptive unavailable: ${decision.reason}. Check your tier settings.`)
-        selected = prepared.models.find(
-          (model) => model.provider === decision.model.providerID && model.id === decision.model.id,
-        )
-        if (selected === undefined) throw new Error("Adaptive inventory changed. Try again.")
+        selectedRef = decision.model
       }
+      const selected = prepared.models.find(
+        (model) => model.provider === selectedRef.providerID && model.id === selectedRef.id,
+      )
+      if (selected === undefined) {
+        report?.show({ kind: "degraded" })
+        throw new Error("Adaptive inventory changed. Try again.")
+      }
+      report?.dispatched(selected, {
+        tier: plan.tier,
+        retry: request.reason === "retry",
+        state: plan.state,
+      })
       dispatched?.(selected, {
         decision,
         unit: plan.state?.unit,
         tier: plan.tier,
         session: ctx.sessionManager.getSessionId?.(),
         retry: request.reason === "retry",
+        state: plan.state,
       })
       return {
         model: selected,
-        thinkingLevel: request.thinkingLevel,
+        thinkingLevel: thinkingLevelFor(selected, selectedRef, request.thinkingLevel),
         state: plan.state === prepared.state ? request.state : plan.state,
       }
     },

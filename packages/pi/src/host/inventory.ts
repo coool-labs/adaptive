@@ -77,7 +77,6 @@ export function requestDemand(messages: readonly Message[], tools: readonly stri
     contextTokens: estimateContextTokens(messages).tokens,
     input: messages.some(
       (message) =>
-        message.role === "user" &&
         typeof message.content !== "string" &&
         message.content.some((part) => part.type === "image"),
     )

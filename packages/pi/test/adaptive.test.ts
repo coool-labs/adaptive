@@ -59,11 +59,13 @@ function setup(
     setModel: vi.fn(() => Promise.resolve(true)),
   }
   const parking = { resume: vi.fn(() => Promise.resolve()), cancel: vi.fn(() => Promise.resolve()) }
+  const refresh = vi.fn(() => Promise.resolve())
   const surface = adaptiveSurface(
     pi,
     sources,
     { settings, version: "1.5.0", minimum: "1.5.0", testedUpTo: "1.5.0" },
     parking,
+    () => refresh,
   )
   const shown: string[] = []
   const choose = vi.fn((_title: string, choices: string[]): string | undefined => choices[0])
@@ -100,8 +102,29 @@ function setup(
     if (commands.options === undefined) throw new Error("commands missing")
     return commands.options.env(ctx)
   }
-  return { sources, settings, pi, parking, surface, shown, choose, confirm, ctx, env }
+  return { sources, settings, pi, parking, surface, shown, choose, confirm, ctx, env, refresh }
 }
+
+it("refreshes feedback after successful mode/settings changes, never rejected patches", async () => {
+  const f = setup()
+  const { api } = await f.env()
+  await api.setSettings({ mode: "off" })
+  expect(f.refresh).toHaveBeenCalledTimes(1)
+  await api.setSettings({ pin: { providerID: "", id: "" } })
+  expect(f.refresh).toHaveBeenCalledTimes(1)
+  await api.setSessionMode("s", "active")
+  expect(f.refresh).toHaveBeenCalledTimes(2)
+  await api.setSessionMode("wrong", "off")
+  expect(f.refresh).toHaveBeenCalledTimes(2)
+})
+
+it("does not refresh a replaced session when an old command finishes", async () => {
+  const f = setup()
+  const { api } = await f.env()
+  vi.spyOn(f.ctx.sessionManager, "getSessionId").mockReturnValue("new-session")
+  await api.setSettings({ mode: "off" })
+  expect(f.refresh).not.toHaveBeenCalled()
+})
 
 it("lists only physical models for the tier editor", async () => {
   const f = setup()

@@ -333,6 +333,8 @@ export function unitEvidence(branch: readonly BranchEntry[], tool: string): Esca
 
 export interface AfterRunInput {
   readonly id: VirtualID
+  readonly escalateFromPinned: boolean
+  /** The host resolves virtual selection and branch overrides before settling. */
   readonly settings: SettingsV1
   readonly branch: readonly BranchEntry[]
   /** Physical models Pi can dispatch right now. */
@@ -372,13 +374,13 @@ function failedRun(input: AfterRunInput): FailedRun | undefined {
 
 /**
  * Decide, after a run settles, whether the task continues one tier up
- * (ADP-015..017). Only Adaptive Auto escalates, only on a capability-class
+ * (ADP-015..017). Pinned tiers require explicit user opt-in. Only a capability-class
  * failure of the run's last request, only to a configured, dispatchable
  * next-tier model, within the per-task budget. A successful run never
  * escalates, whatever the agent requested.
  */
 export function escalationAfterRun(input: AfterRunInput): Recovery | undefined {
-  const run = input.id === "auto" ? failedRun(input) : undefined
+  const run = input.id === "auto" || input.escalateFromPinned ? failedRun(input) : undefined
   if (run === undefined || !CAPABILITY_FAILURE_CATEGORIES.includes(run.classification.category))
     return undefined
   const { state } = run

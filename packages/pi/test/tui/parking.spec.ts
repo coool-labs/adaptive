@@ -1,4 +1,4 @@
-// covers: ["ADP-010", "ADP-018", "ADP-023", "ADP-024", "ADP-060"]
+// covers: ["ADP-010", "ADP-018", "ADP-023", "ADP-024", "ADP-058", "ADP-060"]
 import assert from "node:assert/strict"
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -52,10 +52,30 @@ function userCopies(file: string, prompt: string): number {
   ).length
 }
 
-/**
- * Mid-run parks are the restart-durable ones: Pi writes a session file only once it holds a
- * conversation, so a park before any message cannot survive closing the process.
- */
+/** Close with a pending first prompt and no provider dispatch or tool effects. */
+async function initialPark(
+  options: PiTerminalOptions,
+  trace: string,
+  prompt: string,
+): Promise<string> {
+  limitStandard(options, Date.now() + 300_000)
+  const terminal = await launchPi(options)
+  try {
+    await terminal.waitForText("(adaptive) auto", { timeout: 20_000 })
+    await submit(terminal, prompt)
+    await terminal.waitForText("Parked: no available standard model", { timeout: 10_000 })
+    assert.deepEqual(dispatchedModels(trace), [])
+    assert.equal(rows(index(options)).length, 1)
+    assert.ok(!readFileSync(index(options), "utf8").includes(prompt))
+    const file = sessionFile(trace)
+    assert.equal(userCopies(file, prompt), 1, "Pi did not persist the first parked user prompt")
+    return file
+  } finally {
+    await terminal.close()
+  }
+}
+
+/** Existing tool effects must survive restart without repeating the original prompt. */
 async function durablePark(
   options: PiTerminalOptions,
   trace: string,
@@ -146,6 +166,72 @@ export async function exerciseParking(options: PiTerminalOptions): Promise<void>
     }
     settings(options, exhausted)
     clean()
+    const initialPrompt = "MATRIX_INITIAL_PARK_REOPEN"
+    const initialFile = await initialPark(saved, trace, initialPrompt)
+    terminal = await launchPi({ ...saved, session: initialFile })
+    try {
+      await terminal.waitForText("Parked: no available standard model", { timeout: 20_000 })
+      assert.deepEqual(dispatchedModels(trace), [], "future initial park dispatched on reopen")
+    } finally {
+      await terminal.close()
+    }
+    const initialSettles = traceEvents(trace).filter((event) => event["kind"] === "settled").length
+    resetSoon(saved, Date.now() + 1_500)
+    terminal = await launchPi({ ...saved, session: initialFile })
+    try {
+      await waitForTrace(
+        trace,
+        (events) => events.filter((event) => event["kind"] === "settled").length > initialSettles,
+      )
+      assert.deepEqual(dispatchedModels(trace), ["standard"])
+      await terminal.waitForText("Adaptive · standard resumed · retrying parked work", {
+        timeout: 10_000,
+      })
+      assert.equal(userCopies(initialFile, initialPrompt), 1)
+      assert.equal(
+        traceEvents(initialFile).filter(
+          (entry) =>
+            entry["type"] === "custom_message" && entry["customType"] === "adaptive.continuation",
+        ).length,
+        1,
+        "initial park wake did not create exactly one continuation",
+      )
+    } finally {
+      await terminal.close()
+    }
+
+    for (const accept of [true, false]) {
+      clean()
+      const prompt = `MATRIX_INITIAL_OVERDUE_${String(accept)}`
+      const file = await initialPark(saved, trace, prompt)
+      const settles = traceEvents(trace).filter((event) => event["kind"] === "settled").length
+      resetSoon(saved, Date.now() - 1_000)
+      terminal = await launchPi({ ...saved, session: file })
+      try {
+        await terminal.waitForText("Resume the parked task now?", { timeout: 20_000 })
+        assert.deepEqual(
+          dispatchedModels(trace),
+          [],
+          "overdue initial park resumed without consent",
+        )
+        await terminal.press(accept ? "Enter" : "Escape")
+        if (accept) {
+          await waitForTrace(
+            trace,
+            (events) => events.filter((event) => event["kind"] === "settled").length > settles,
+          )
+        } else {
+          await terminal.waitForQuiet({ quietMs: 100, timeout: 10_000 })
+        }
+        assert.deepEqual(dispatchedModels(trace), accept ? ["standard"] : [])
+        assert.equal(userCopies(file, prompt), 1)
+        assert.ok(rows(index(options)).every((record) => record["claimed"] === true))
+      } finally {
+        await terminal.close()
+      }
+    }
+
+    clean()
     const prompt = "MATRIX_MID_RUN_PARK_ONCE"
     const parked = await durablePark(saved, trace, prompt)
     terminal = await launchPi({ ...saved, tools: "matrix_probe", session: parked.file })
@@ -210,7 +296,9 @@ export async function exerciseParking(options: PiTerminalOptions): Promise<void>
       assert.deepEqual(rows(index(options)), [], "manual takeover left a wake armed")
       assert.deepEqual(dispatchedModels(trace), ["manual-physical"])
       const cancellationFile = sessionFile(trace)
-      assert.equal(userCopies(cancellationFile, "MATRIX_DROPPED_INPUT"), 0)
+      // The first prompt is ordinary host history; cancellation prevents a wake,
+      // not history deletion. Later intercepted input never enters conversation.
+      assert.equal(userCopies(cancellationFile, "MATRIX_DROPPED_INPUT"), 1)
       assert.equal(userCopies(cancellationFile, "MATRIX_REPLACEMENT_INPUT"), 0)
     } finally {
       await terminal.close()
@@ -254,6 +342,9 @@ export async function exerciseParking(options: PiTerminalOptions): Promise<void>
         (events) => events.filter((event) => event["kind"] === "settled").length > previousSettles,
       )
       assert.deepEqual(dispatchedModels(trace), ["standard", "standard", "standard"])
+      await terminal.waitForText("Adaptive · standard resumed · retrying parked work", {
+        timeout: 10_000,
+      })
       assert.equal(
         traceEvents(trace).filter((event) => event["kind"] === "probe").length,
         1,

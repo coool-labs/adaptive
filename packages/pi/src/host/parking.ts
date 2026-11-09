@@ -87,6 +87,15 @@ export function parkingHandlers(
     )
       await cancelPark(sources.parking.file, session)
   }
+  const noteResume = async (owned: number, tier: RoutePlan["tier"]): Promise<void> => {
+    try {
+      const { verbosity } = await readPreferences(sources.preferences)
+      if (owned !== generation || verbosity === "quiet") return
+      appendNote(pi, { version: 1, text: `${tier} resumed · retrying parked work` })
+    } catch (error) {
+      logFailOpen("notes", error)
+    }
+  }
   const wake = async (
     ctx: RouteContext,
     record: Parked,
@@ -126,6 +135,7 @@ export function parkingHandlers(
         { triggerTurn: true },
       )
     }
+    await noteResume(owned, record.tier)
   }
   const arm = (ctx: RouteContext, record: Parked, saved: Payload) => {
     card(ctx, record)
@@ -247,7 +257,20 @@ export function parkingHandlers(
       if (owned !== generation) return { action: "handled" }
       if (
         admission.decision.kind !== "park" ||
+        admission.decision.reason === "no-candidates" ||
         admission.due - sources.parking.clock() <= SHORT_WAIT_MS
+      )
+        return { action: "continue" }
+      // Pi buffers extension entries until its first conversation message. Let the
+      // host persist that message; route() can park before any provider dispatch.
+      if (
+        !ctx.sessionManager
+          .getBranch()
+          .some(
+            (entry) =>
+              entry.type === "message" &&
+              (entry.message?.role === "user" || entry.message?.role === "assistant"),
+          )
       )
         return { action: "continue" }
       const state = startTask(prepared.plan.tier, sources.newId)
@@ -350,6 +373,7 @@ export function parkingHandlers(
         if (owned !== generation) return true
         if (
           admission.decision.kind !== "park" ||
+          admission.decision.reason === "no-candidates" ||
           admission.due - sources.parking.clock() <= SHORT_WAIT_MS
         )
           return false
@@ -401,6 +425,8 @@ export function parkingHandlers(
         await wait(ctx, record.due, request.signal)
         if (!(await claimPark(sources.parking.file, record, sources.parking.clock())))
           return undefined
+        await noteResume(owned, record.tier)
+        if (owned !== generation) return undefined
         return {
           ...plan,
           state: { ...state, unit: sources.newId(), wakes: record.wakes + 1, hops: 0, tried: [] },

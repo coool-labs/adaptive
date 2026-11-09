@@ -46,8 +46,10 @@ across a restart, doctor with a missing credential, two live processes sharing o
 all-down parked card, reset, Esc during a short wait, and durable mid-run park/wake. The
 first-run, parked card, picker, status, doctor and note screens are checked at 60×24, 80×24
 and 120×40 with the action footer whole; every checked frame is kept under `screens/` in the
-run directory. A park before a session's first message is not restart-durable (Pi writes a
-session file only once it holds a conversation), so restart journeys use mid-run parks.
+run directory. Initial-prompt restart journeys let Pi persist the user message
+normally, then park at the routing boundary before provider dispatch. They check
+reopen before/after reset, cancellation, and a single continuation without
+replaying the prompt. Mid-run journeys also preserve completed tool effects.
 Traceability remains a separate mandatory gate and reports missing requirements;
 passing this matrix does not make unfinished milestones release-ready. Paid,
 opt-in error capture is deliberately excluded, not treated as a bypass for the
