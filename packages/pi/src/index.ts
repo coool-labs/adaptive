@@ -7,6 +7,8 @@ import { registerAdaptive } from "./host/extension.js"
 import { loadToolCapabilities } from "./capabilities.js"
 import { jsonFile } from "./store.js"
 import { timer } from "./host/timer.js"
+import baseline from "../pi-host-baseline.json" with { type: "json" }
+import matrix from "../pi-host-matrix.json" with { type: "json" }
 
 export default function adaptive(pi: Parameters<typeof registerAdaptive>[0]): void {
   const path = join(getAgentDir(), "adaptive", "settings.json")
@@ -57,9 +59,9 @@ export default function adaptive(pi: Parameters<typeof registerAdaptive>[0]): vo
     {
       settings: jsonFile(path),
       version: VERSION,
-      minimum: "1.5.0",
-      // No build-time constant records the matrix result yet, so doctor says so.
-      testedUpTo: undefined,
+      minimum: matrix.minimum,
+      // The last recorded packed-host matrix; a release records its own after verification.
+      testedUpTo: baseline.testedUpTo,
     },
   )
 }

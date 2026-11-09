@@ -4,11 +4,17 @@ import type { AdaptiveSources } from "../src/host/extension.js"
 const bindings: {
   read: ReturnType<typeof vi.fn<() => Promise<string>>>
   sources: AdaptiveSources | undefined
-} = vi.hoisted(() => ({ read: vi.fn<() => Promise<string>>(), sources: undefined }))
+  host: unknown
+} = vi.hoisted(() => ({
+  read: vi.fn<() => Promise<string>>(),
+  sources: undefined,
+  host: undefined,
+}))
 vi.mock("node:fs/promises", () => ({ readFile: bindings.read }))
 vi.mock("../src/host/extension.js", () => ({
-  registerAdaptive: (_pi: unknown, sources: AdaptiveSources) => {
+  registerAdaptive: (_pi: unknown, sources: AdaptiveSources, host: unknown) => {
     bindings.sources = sources
+    bindings.host = host
   },
 }))
 import adaptive from "../src/index.js"
@@ -28,6 +34,10 @@ it("loads defaults only for a missing file and rejects malformed settings with f
   })
   const sources = bindings.sources
   if (sources === undefined) throw new Error("binding missing")
+  expect(bindings.host).toMatchObject({
+    minimum: "1.5.0",
+    testedUpTo: expect.stringMatching(/^\d+\.\d+\.\d+/) as unknown,
+  })
   expect(sources.newId()).toMatch(/^[0-9a-f-]{36}$/)
   expect(sources.newId()).not.toBe(sources.newId())
   expect(sources.health.clock).toBe(Date.now)
