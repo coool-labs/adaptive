@@ -200,8 +200,9 @@ clean — not merely when it compiles.
   dialog-driven; its one JSX exception is the footer status chip in
   `src/tui.tsx` (host UI slots via `@opentui/solid`, mirroring the host's own
   slot pattern — the file-level `@jsxImportSource` pragma is required).
-- Release only with `npm run release`. It verifies bumped artifacts before the
-  release commit and stops there (commit + push). Publication and tagging are
+- Release only with `npm run release`. It commits the bumped artifacts first and
+  verifies the committed state (a failed verification restores the files and
+  discards the still-local commit), then pushes. Publication and tagging are
   separate: `npm run publish:opencode` / `npm run publish:pi` publish and then
   certify with post-publish tags (`opencode-vX.Y.Z`, `pi-vX.Y.Z`, from the
   just-published package.json). Historical `vX.Y.Z` tags belong to OpenCode

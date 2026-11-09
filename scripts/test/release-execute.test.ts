@@ -33,14 +33,17 @@ function fixture(failure?: string): { calls: string[]; effects: ReleaseEffects }
       prepare: () => {
         call("prepare")
       },
+      commit: () => {
+        call("commit")
+      },
       verify: (ids) => {
         call(`verify:${ids.join(",")}`)
       },
+      discardCommit: () => {
+        call("discardCommit")
+      },
       restore: () => {
         call("restore")
-      },
-      commit: () => {
-        call("commit")
       },
       push: () => {
         call("push")
@@ -49,30 +52,37 @@ function fixture(failure?: string): { calls: string[]; effects: ReleaseEffects }
   }
 }
 
-it("verifies bumped files before committing and pushing; publication is a separate leg", () => {
+it("commits the bumps before verifying so the stage stays clean; publication is a separate leg", () => {
   const { calls, effects } = fixture()
   executeRelease(plan, effects)
-  expect(calls).toEqual(["prepare", "verify:opencode,pi", "commit", "push"])
+  expect(calls).toEqual(["prepare", "commit", "verify:opencode,pi", "push"])
 })
 
-it("restores uncommitted files when preparation or verification fails", () => {
-  for (const failure of ["prepare", "verify:opencode,pi"]) {
+it("restores and discards the local commit when verification fails", () => {
+  const { calls, effects } = fixture("verify:opencode,pi")
+  expect(() => {
+    executeRelease(plan, effects)
+  }).toThrow("verify:opencode,pi")
+  expect(calls).toEqual(["prepare", "commit", "verify:opencode,pi", "restore", "discardCommit"])
+})
+
+it("restores uncommitted bumps when preparation or the commit fails", () => {
+  for (const failure of ["prepare", "commit"]) {
     const { calls, effects } = fixture(failure)
     expect(() => {
       executeRelease(plan, effects)
     }).toThrow(failure)
     expect(calls.at(-1)).toBe("restore")
-    expect(calls).not.toContain("commit")
+    expect(calls).not.toContain("discardCommit")
   }
 })
 
-it("never rolls back a commit after a durable failure", () => {
-  for (const failure of ["commit", "push"]) {
-    const { calls, effects } = fixture(failure)
-    expect(() => {
-      executeRelease(plan, effects)
-    }).toThrow(failure)
-    expect(calls.at(-1)).toBe(failure)
-    expect(calls).not.toContain("restore")
-  }
+it("keeps the verified commit when the push fails", () => {
+  const { calls, effects } = fixture("push")
+  expect(() => {
+    executeRelease(plan, effects)
+  }).toThrow("push")
+  expect(calls.at(-1)).toBe("push")
+  expect(calls).not.toContain("restore")
+  expect(calls).not.toContain("discardCommit")
 })

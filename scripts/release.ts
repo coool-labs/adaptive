@@ -248,6 +248,12 @@ async function main(): Promise<void> {
       run("git", ["add", "--", ...generated.keys()])
       run("git", ["commit", "-m", releaseCommitMessage(plan)])
     },
+    discardCommit() {
+      const subject = capture("git", ["log", "-1", "--format=%s"])
+      if (subject !== releaseCommitMessage(plan))
+        throw new Error("release: HEAD is not the release commit; refusing to discard")
+      run("git", ["reset", "--hard", "HEAD~1"])
+    },
     push() {
       run("git", ["push"])
     },

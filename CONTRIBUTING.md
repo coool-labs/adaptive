@@ -110,9 +110,11 @@ Notes files must be committed or outside the working tree; the real release
 requires a clean `main` branch. Without `--notes`, set
 `EDITOR`; drafts survive failed verification in `test-artifacts/release/`.
 
-The CLI bumps manifests and the lockfile, updates changelogs, and runs full scoped
-verification **on the bumped artifacts**. A failed preparation or verification
-restores its file edits. It then commits and pushes. Publication and certification
+The CLI bumps manifests and the lockfile, updates changelogs, commits, and then
+runs full scoped verification **on the committed artifacts** — the git stage
+stays clean during the battery. A failed preparation or commit restores its file
+edits; a failed verification additionally discards the still-local commit. On
+success it pushes. Publication and certification
 are separate steps: `npm run publish:opencode` / `npm run publish:pi` publish the
 bumped package and, only after the registry accepts it, certify it with its
 annotated tag (`opencode-vX.Y.Z` / `pi-vX.Y.Z`, read from the just-published
