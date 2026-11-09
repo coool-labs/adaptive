@@ -800,9 +800,16 @@ testkit, opencode, pi; skipped: none)`); `private` was removed in its own commit
 Initial-prompt parks let Pi save the normal user message before parking at
 `route()`, with no provider dispatch; real SDK and PTY regressions cover restart
 without prompt replay as well as durable mid-run tool effects. Cancelling an
-initial park leaves its saved user message in Pi history. Publication
-(`npm run release -- --pi minor`, 0.0.0 → 0.1.0) and the clean-install smoke now
-require maintainer approval and npm authentication.
+initial park leaves its saved user message in Pi history. The maintainer published
+`@coool/pi-adaptive@1.0.0` (tag `pi-v1.0.0`) instead of the planned 0.1.0. The
+clean-install smoke passed on 2026-11-09:
+
+- `pi install npm:@coool/pi-adaptive@1.0.0` into an isolated Pi 1.5.0 home
+  installed no duplicate host packages.
+- A faux-provider print turn routed `auto` → standard with empty stderr and
+  wrote a `succeeded` receipt.
+- `/adaptive doctor` over RPC showed nothing to fix and 7 checks OK. Its one
+  item to check is the faux test provider's own request handler.
 
 ## Effort
 

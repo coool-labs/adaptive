@@ -454,14 +454,25 @@ and Pi gates pass together in the baseline full verification at `dc835fd`
 audit gaps found afterwards were fixed and verified end to end at `a64acc9`
 (`test-artifacts/m8/verify-all-acceptance.log`, `verify: ok (core, testkit,
 opencode, pi; skipped: none)`). Pi's `private` flag was removed in its own
-commit. Publication of `@coool/pi-adaptive` (step 7 / Pi M8) and this
-OpenCode release both remain pending explicit maintainer approval, npm
-authentication, and the post-publication install smoke above. The
-handoff authorized continuing Pi implementation before that approval,
-superseding the original sequencing constraint; this does not mark step 7
-complete. Subsequent shared changes also mean the eventual OpenCode release
-notes must describe the actual diff, not repeat the original "no behaviour
-change" premise.
+commit. The handoff authorized continuing Pi implementation before the
+pipeline proof, superseding the original sequencing constraint.
+
+The maintainer released `opencode-v1.6.0` and `pi-v1.0.0` together
+(`f65f24c`). Shared behaviour had changed since 1.5.0, so the OpenCode
+version is 1.6.0 rather than the planned "no behaviour change" 1.5.1. Both
+post-publication smokes passed on 2026-11-09:
+
+- **OpenCode:** `@coool/opencode-adaptive@1.6.0` was installed from npm and
+  loaded by a real OpenCode 2.2.6 host through the runtime E2E harness, with
+  the fake provider. The RPC surface answered, and one routed turn wrote an
+  `apply` receipt for the standard tier, outcome `succeeded`.
+- **Pi:** `pi install npm:@coool/pi-adaptive@1.0.0` into an isolated Pi 1.5.0
+  home installed no duplicate host packages. A faux-provider turn routed
+  `auto` → standard with empty stderr and wrote a `succeeded` receipt.
+  `/adaptive doctor` reported nothing to fix; its one item to check was the
+  faux test provider's own request handler.
+
+Step 7 is complete.
 
 ## Risks and how each is caught
 
