@@ -107,25 +107,27 @@ never published. Explicit choices work without prompts:
 `npm run release -- --opencode patch --pi minor --notes opencode=notes/opencode.md --notes pi=notes/pi.md --yes`.
 Omit a nonexistent package or use `--pi skip` to leave an existing package unchanged.
 Notes files must be committed or outside the working tree; the real release
-requires a clean `main` branch, and npm authentication unless `--no-publish`
-hands publication to a human. Without `--notes`, set
+requires a clean `main` branch. Without `--notes`, set
 `EDITOR`; drafts survive failed verification in `test-artifacts/release/`.
 
 The CLI bumps manifests and the lockfile, updates changelogs, and runs full scoped
 verification **on the bumped artifacts**. A failed preparation or verification
-restores its file edits. It then commits, tags each package, publishes, and pushes.
-Tags are `opencode-adaptive@X.Y.Z` and `pi-adaptive@X.Y.Z`; historical `vX.Y.Z`
-tags are OpenCode releases. If tagging or publication fails after the commit,
-run `npm run release -- --resume` on that exact release commit. It rebuilds and
-verifies, repairs missing tags, queries npm, and publishes only missing versions.
+restores its file edits. It then commits and pushes. Publication and certification
+are separate steps: `npm run publish:opencode` / `npm run publish:pi` publish the
+bumped package and, only after the registry accepts it, certify it with its
+annotated tag (`opencode-vX.Y.Z` / `pi-vX.Y.Z`, read from the just-published
+manifest) and push the tag. Historical `vX.Y.Z` tags are pre-monorepo OpenCode
+releases.
+
+`npm run release -- --resume` on the release commit recovers a partial
+publication: it rebuilds and verifies, ensures each release has its tag at HEAD,
+queries npm, and publishes only the versions still missing from the registry.
 Registry errors other than a confirmed E404 stop recovery.
 
 Dry-run only previews: it does not write files, verify artifacts, authenticate,
 create tags, publish, or push. Use `npm run verify -- --all` for release evidence.
 
-Agents can drive the whole release without prompts: explicit bumps, `--notes`,
-and `--yes` cover every interactive step. Add `--no-publish` for the supervised
-split — the CLI then stops after commit, tags and push and prints the exact
-`npm publish` commands for a human to run (e.g. when 2FA requires an interactive
-OTP). A later `npm run release -- --resume` publishes only versions still
-missing from the registry, so it completes — or harmlessly confirms — that split.
+Agents can drive the whole flow without prompts: explicit bumps, `--notes`, and
+`--yes` cover every interactive release step; `publish:<pkg>` scripts run
+non-interactively too and refuse an unclean tree, a non-`main` branch, or missing
+npm authentication — so a feature branch or dirty tree cannot reach the registry.

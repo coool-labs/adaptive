@@ -318,6 +318,56 @@ it("continues a capability failure on the next tier with a hidden owned message"
   }
 })
 
+it("clears a served wake lineage when the resumed run succeeds", async () => {
+  const woken: BranchEntry = {
+    type: "custom",
+    customType: "pi.virtual-model-state",
+    data: {
+      provider: "adaptive",
+      modelId: "auto",
+      state: {
+        version: 1,
+        task: "t",
+        unit: "u9",
+        tier: "standard",
+        escalations: 0,
+        restarts: 0,
+        tried: [],
+        wakeToken: "p1",
+      },
+    },
+  }
+  const success: readonly BranchEntry[] = [
+    woken,
+    { type: "message", message: { role: "user" } },
+    {
+      type: "message",
+      message: { role: "assistant", provider: "local", model: "a", stopReason: "stop" },
+    },
+  ]
+  const cleared: string[] = []
+  await afterRun(
+    { aborted: false },
+    settle({ provider: "adaptive", id: "auto" }, true, success).ctx,
+    sources(() => Promise.resolve(settings)),
+    () => undefined,
+    undefined,
+    (task) => {
+      cleared.push(task)
+      return Promise.resolve()
+    },
+  )
+  expect(cleared).toEqual(["t"])
+  // Without a clear callback the same success simply stays uncleared.
+  await afterRun(
+    { aborted: false },
+    settle({ provider: "adaptive", id: "auto" }, true, success).ctx,
+    sources(() => Promise.resolve(settings)),
+    () => undefined,
+  )
+  expect(cleared).toEqual(["t"])
+})
+
 it("never continues aborted, manual or unjustified runs, and fails open", async () => {
   const sent: unknown[] = []
   const send = (message: unknown) => sent.push(message)

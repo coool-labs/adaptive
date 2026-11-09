@@ -9,6 +9,7 @@ import {
   planRoute,
   restartAfterRun,
   parkingAfterRun,
+  servedTask,
   tierRequest,
   unitEvidence,
   type BranchEntry,
@@ -490,6 +491,41 @@ it("burns a wake only when the resumed state carries a wake token", () => {
       newId: ids(),
     }).state,
   ).toMatchObject({ wakes: 1, wakeToken: "p1" })
+})
+
+it("serves a task only when a successful settle concludes its wake lineage", () => {
+  const input = {
+    id: "auto" as const,
+    escalateFromPinned: false,
+    settings,
+    available: [standard],
+    tool: ESCALATE,
+    newId: ids(),
+  }
+  const done: BranchEntry = {
+    type: "message",
+    message: { role: "assistant", provider: "local", model: "s", stopReason: "stop" },
+  }
+  // A woken lineage that finished is served by task id.
+  expect(
+    servedTask({
+      ...input,
+      branch: [routerState("auto", { ...state, wakeToken: "p1" }), user, done],
+    }),
+  ).toBe("t1")
+  // A failed settle never serves — the recovery chain owns the lineage then.
+  expect(
+    servedTask({
+      ...input,
+      branch: [
+        routerState("auto", { ...state, wakeToken: "p1" }),
+        user,
+        failure("429 Too Many Requests"),
+      ],
+    }),
+  ).toBeUndefined()
+  // A success without recorded router state carries no lineage to serve.
+  expect(servedTask({ ...input, branch: [user, done] })).toBeUndefined()
 })
 
 it("redirects a native retry after an infra failure within the tier, avoiding tried models", () => {

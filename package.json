@@ -40,7 +40,9 @@
     "typecheck:tooling": "tsc -p scripts/tsconfig.json --noEmit && tsc -p tsconfig.json --noEmit",
     "verify:release": "npm run verify -- --all",
     "release": "vite-node scripts/release.ts",
-    "release:status": "vite-node scripts/release.ts --status"
+    "release:status": "vite-node scripts/release.ts --status",
+    "publish:opencode": "vite-node scripts/publish.ts opencode",
+    "publish:pi": "vite-node scripts/publish.ts pi"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",

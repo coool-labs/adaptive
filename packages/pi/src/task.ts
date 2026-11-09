@@ -466,3 +466,15 @@ export function parkingAfterRun(input: AfterRunInput): Recovery | undefined {
     tried: [],
   }
 }
+
+/**
+ * The task whose wake lineage a successful settle concludes. A provider success
+ * is the only outcome that closes a park: the record it parked stands for work
+ * that just finished, and keeping it would promise work that no longer exists.
+ * A failed settle never serves — the recovery chain owns the lineage then.
+ */
+export function servedTask(input: AfterRunInput): string | undefined {
+  const last = currentUnit(input.branch).findLast((entry) => entry.message?.role === "assistant")
+  if (last?.message?.stopReason !== "stop") return undefined
+  return branchState(input.branch, input.id)?.task
+}

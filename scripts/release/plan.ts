@@ -48,8 +48,6 @@ export interface ReleaseOptions {
   skip: readonly Plugin[]
   notes: Partial<Record<Plugin, string>>
   yes: boolean
-  /** False stops after commit+tag+push so a human runs `npm publish` (OTP flows). */
-  publish: boolean
 }
 
 function isPlugin(value: string): value is Plugin {
@@ -67,7 +65,6 @@ export function parseReleaseArgs(args: readonly string[]): ReleaseOptions {
     skip: [],
     notes: {},
     yes: false,
-    publish: true,
   }
   const skip = new Set<Plugin>()
   const modes = new Set<ReleaseMode>()
@@ -78,8 +75,6 @@ export function parseReleaseArgs(args: readonly string[]): ReleaseOptions {
     const plugin = arg.startsWith("--") ? arg.slice(2) : ""
     if (arg === "--yes") {
       options.yes = true
-    } else if (arg === "--no-publish") {
-      options.publish = false
     } else if (mode !== undefined) {
       modes.add(mode)
     } else if (arg === "--notes") {
@@ -106,8 +101,6 @@ export function parseReleaseArgs(args: readonly string[]): ReleaseOptions {
   if (modes.size > 1) throw new Error("Use only one of --dry-run, --resume, --status")
   const [selected] = modes
   if (selected !== undefined) options.mode = selected
-  if (!options.publish && options.mode === "resume")
-    throw new Error("--no-publish: resume always publishes the missing versions")
   options.skip = [...skip]
   for (const plugin of skip) {
     if (options.bumps[plugin] !== undefined)
@@ -191,12 +184,15 @@ export function parseBumpAnswer(answer: string): Bump | "skip" {
 }
 
 export function releaseTagPatterns(id: Plugin): readonly string[] {
-  // Releases before the monorepo were tagged vX.Y.Z and were all OpenCode.
-  return id === "opencode" ? ["opencode-adaptive@*", "v*"] : ["pi-adaptive@*"]
+  // Publish tags (`opencode-vX.Y.Z`, `pi-vX.Y.Z`) are created by the publish
+  // scripts after npm publish succeeds. The unprefixed v* tags are the
+  // pre-monorepo OpenCode releases and still anchor older history.
+  return id === "opencode" ? ["opencode-v*", "v*"] : ["pi-v*"]
 }
 
-function tagName(name: string, version: string): string {
-  return `${name.slice(name.lastIndexOf("/") + 1)}@${version}`
+/** Post-publication tag: `<package-id>-v<version>`, full semver from the manifest. */
+export function tagName(id: Plugin, version: string): string {
+  return `${id}-v${version}`
 }
 
 export function planReleases(
@@ -221,7 +217,7 @@ export function planReleases(
         name: pkg.name,
         previous: pkg.version,
         version,
-        tag: tagName(pkg.name, version),
+        tag: tagName(pkg.id, version),
         commits: pkg.commits,
       },
     ]
@@ -315,15 +311,24 @@ export function releaseCommitMessage(plan: readonly PlannedRelease[]): string {
   return `release: ${plan.map((release) => release.tag).join(" ")}`
 }
 
-/** Maps the tags on a release commit back to the packages they publish. */
+/** Maps the tags named on a release commit back to the packages they publish. */
 export function taggedReleases(
   tags: readonly string[],
   packages: readonly Pick<ReleasePackage, "id" | "name">[],
 ): { id: Plugin; name: string; version: string; tag: string }[] {
   return tags.flatMap((tag) => {
-    const pkg = packages.find((candidate) => tag.startsWith(tagName(candidate.name, "")))
+    // Subjects written before post-publication tagging used <name>@<version>;
+    // both families name the same release, so resume understands either.
+    const pkg = packages.find((candidate) => {
+      const legacy = `${candidate.name.slice(candidate.name.lastIndexOf("/") + 1)}@`
+      return tag.startsWith(tagName(candidate.id, "")) || tag.startsWith(legacy)
+    })
     if (pkg === undefined) return []
-    return [{ id: pkg.id, name: pkg.name, version: tag.slice(tag.lastIndexOf("@") + 1), tag }]
+    const prefix = tagName(pkg.id, "")
+    const version = tag.startsWith(prefix)
+      ? tag.slice(prefix.length)
+      : tag.slice(tag.lastIndexOf("@") + 1)
+    return [{ id: pkg.id, name: pkg.name, version, tag }]
   })
 }
 

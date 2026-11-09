@@ -995,3 +995,69 @@ it("fails open when the give-up note cannot be written", async () => {
   expect(await findPark(f.file, "session")).toMatchObject({ wakes: MAX_WAKES })
   expect(logged).toHaveBeenCalledWith(expect.stringContaining("note failed"))
 })
+
+it("drops the parked record when the woken lineage finishes, and only that record", async () => {
+  const f = fixture()
+  const record: Parked = {
+    session: "session",
+    token: "7",
+    tier: "standard",
+    due: Date.now() + 60_000,
+    wakes: 1,
+    claimed: false,
+  }
+  await savePark(f.file, record)
+  f.branch.push({
+    type: "custom",
+    customType: PARK_ENTRY,
+    data: { token: record.token, state: { ...state, wakeToken: "p1" } },
+  })
+  // A different task's park is left parked.
+  await f.handlers.clearServed("t-other", f.ctx)
+  expect(await findPark(f.file, "session")).toEqual(record)
+  // The served lineage's record is dropped.
+  await f.handlers.clearServed("t", f.ctx)
+  expect(await findPark(f.file, "session")).toBeUndefined()
+})
+
+it("serving without a parked record or session identity is a safe no-op", async () => {
+  const f = fixture()
+  await f.handlers.clearServed("t", f.ctx)
+  expect(await findPark(f.file, "session")).toBeUndefined()
+  await f.handlers.clearServed("t", {
+    ...f.ctx,
+    sessionManager: { getBranch: f.ctx.sessionManager.getBranch },
+  })
+})
+
+it("keeps a park whose payload is missing instead of guessing", async () => {
+  const f = fixture()
+  await savePark(f.file, {
+    session: "session",
+    token: "7",
+    tier: "standard",
+    due: Date.now() + 60_000,
+    wakes: 0,
+    claimed: false,
+  })
+  // No PARK_ENTRY payload for that token: serve nothing.
+  await f.handlers.clearServed("t", f.ctx)
+  expect(await findPark(f.file, "session")).toMatchObject({ token: "7" })
+})
+
+it("fails open when reading a served park's payload throws", async () => {
+  const f = fixture()
+  const logged = vi.spyOn(console, "error").mockImplementation(() => undefined)
+  await savePark(f.file, {
+    session: "session",
+    token: "7",
+    tier: "standard",
+    due: Date.now() + 60_000,
+    wakes: 0,
+    claimed: false,
+  })
+  f.branch.push({ type: "custom", customType: PARK_ENTRY, data: { token: "7" } })
+  await f.handlers.clearServed("t", f.ctx)
+  expect(await findPark(f.file, "session")).toMatchObject({ token: "7" })
+  expect(logged).toHaveBeenCalledWith(expect.stringContaining("state missing"))
+})

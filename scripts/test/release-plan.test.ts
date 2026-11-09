@@ -42,7 +42,7 @@ const RELEASE: PlannedRelease = {
   name: "@coool/opencode-adaptive",
   previous: "1.5.0",
   version: "1.5.1",
-  tag: "opencode-adaptive@1.5.1",
+  tag: "opencode-v1.5.1",
   commits: [OWN, SHARED],
 }
 
@@ -53,7 +53,6 @@ it("parses release modes, bumps, skips, notes and confirmation", () => {
     skip: [],
     notes: {},
     yes: false,
-    publish: true,
   })
   expect(
     parseReleaseArgs([
@@ -72,11 +71,9 @@ it("parses release modes, bumps, skips, notes and confirmation", () => {
     skip: ["pi"],
     notes: { opencode: "notes.md" },
     yes: true,
-    publish: true,
   })
   expect(parseReleaseArgs(["--resume"]).mode).toBe("resume")
   expect(parseReleaseArgs(["--status"]).mode).toBe("status")
-  expect(parseReleaseArgs(["--no-publish"]).publish).toBe(false)
 })
 
 it("rejects malformed release arguments with the offending flag named", () => {
@@ -95,9 +92,6 @@ it("rejects malformed release arguments with the offending flag named", () => {
   expect(() => parseReleaseArgs(["publish"])).toThrow("Unknown argument: publish")
   expect(() => parseReleaseArgs(["--pi", "skip", "--pi", "patch"])).toThrow(
     "--pi: given both a bump and skip",
-  )
-  expect(() => parseReleaseArgs(["--resume", "--no-publish"])).toThrow(
-    "--no-publish: resume always publishes the missing versions",
   )
 })
 
@@ -186,9 +180,9 @@ it("reads interactive bump answers, defaulting to patch", () => {
   expect(() => parseBumpAnswer("yes")).toThrow("received yes")
 })
 
-it("finds legacy vX.Y.Z tags only for the OpenCode plugin", () => {
-  expect(releaseTagPatterns("opencode")).toEqual(["opencode-adaptive@*", "v*"])
-  expect(releaseTagPatterns("pi")).toEqual(["pi-adaptive@*"])
+it("finds publish tags, with the legacy v* family anchoring OpenCode history", () => {
+  expect(releaseTagPatterns("opencode")).toEqual(["opencode-v*", "v*"])
+  expect(releaseTagPatterns("pi")).toEqual(["pi-v*"])
 })
 
 it("plans releases only for selected publishable packages with changes", () => {
@@ -203,7 +197,7 @@ it("plans releases only for selected publishable packages with changes", () => {
       name: "@coool/pi-adaptive",
       previous: "0.0.0",
       version: "0.1.0",
-      tag: "pi-adaptive@0.1.0",
+      tag: "pi-v0.1.0",
       commits: [SHARED],
     },
   ])
@@ -227,7 +221,7 @@ it("summarises each package for the release table", () => {
 
 it("offers a notes template whose guidance is stripped before use", () => {
   const template = notesTemplate(RELEASE)
-  expect(template).toContain("opencode-adaptive@1.5.1")
+  expect(template).toContain("opencode-v1.5.1")
   expect(template).toContain("  aaaaaaa supervisor: fix")
   expect(template.endsWith("-->\n")).toBe(true)
   expect(stripNotes(template)).toBe("")
@@ -245,13 +239,12 @@ it("writes a changelog entry listing shared core changes", () => {
   )
   expect(() => changelogEntry(RELEASE, "8 Nov", "Notes")).toThrow("date: expected YYYY-MM-DD")
   expect(() => changelogEntry(RELEASE, "2026-11-08", "  \n")).toThrow(
-    "notes: summary required for opencode-adaptive@1.5.1",
+    "notes: summary required for opencode-v1.5.1",
   )
 })
 
 it("inserts the entry under a fresh Unreleased heading and links the tag", () => {
-  const link =
-    "[1.5.1]: https://github.com/coool-labs/adaptive/releases/tag/opencode-adaptive@1.5.1"
+  const link = "[1.5.1]: https://github.com/coool-labs/adaptive/releases/tag/opencode-v1.5.1"
   const existing = [
     "# Changelog",
     "",
@@ -317,13 +310,24 @@ it("rewrites manifest and lockfile versions without touching other fields", () =
 })
 
 it("names the release commit after its tags and maps tags back to packages", () => {
-  expect(releaseCommitMessage([RELEASE, { ...RELEASE, tag: "pi-adaptive@0.1.0" }])).toBe(
-    "release: opencode-adaptive@1.5.1 pi-adaptive@0.1.0",
+  expect(releaseCommitMessage([RELEASE, { ...RELEASE, tag: "pi-v0.1.0" }])).toBe(
+    "release: opencode-v1.5.1 pi-v0.1.0",
   )
   const packages = [pkg(), pkg({ id: "pi", name: "@coool/pi-adaptive" })]
-  expect(
-    taggedReleases(["v1.5.0", "opencode-adaptive@1.5.1", "pi-adaptive@0.1.0"], packages),
-  ).toEqual([
+  expect(taggedReleases(["v1.5.0", "opencode-v1.5.1", "pi-v0.1.0"], packages)).toEqual([
+    {
+      id: "opencode",
+      name: "@coool/opencode-adaptive",
+      version: "1.5.1",
+      tag: "opencode-v1.5.1",
+    },
+    { id: "pi", name: "@coool/pi-adaptive", version: "0.1.0", tag: "pi-v0.1.0" },
+  ])
+})
+
+it("maps legacy name-at-version tags back to packages during the transition", () => {
+  const packages = [pkg(), pkg({ id: "pi", name: "@coool/pi-adaptive" })]
+  expect(taggedReleases(["opencode-adaptive@1.5.1", "pi-adaptive@0.1.0"], packages)).toEqual([
     {
       id: "opencode",
       name: "@coool/opencode-adaptive",
@@ -332,6 +336,10 @@ it("names the release commit after its tags and maps tags back to packages", () 
     },
     { id: "pi", name: "@coool/pi-adaptive", version: "0.1.0", tag: "pi-adaptive@0.1.0" },
   ])
+})
+
+it("leaves tokens that belong to no package unmapped", () => {
+  expect(taggedReleases(["v1.5.0", "chore"], [pkg()])).toEqual([])
 })
 
 it("distinguishes published, missing and failed npm lookups", () => {

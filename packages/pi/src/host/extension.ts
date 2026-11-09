@@ -23,6 +23,7 @@ import {
   escalationAfterRun,
   restartAfterRun,
   parkingAfterRun,
+  servedTask,
   type BranchEntry,
   type Recovery,
 } from "../task.js"
@@ -230,6 +231,7 @@ export function registerAdaptive(pi: Host, sources: AdaptiveSources, host: HostS
         pi.sendMessage(message, { triggerTurn: true })
       },
       (recovery) => parking.recover(recovery, feedback.context),
+      (task) => parking.clearServed(task, feedback.context),
     )
   })
 }
@@ -325,6 +327,8 @@ export async function afterRun(
   sources: AdaptiveSources,
   send: (message: ContinuationMessage) => void,
   park?: (recovery: Recovery) => Promise<boolean>,
+  /** Called for a wake lineage whose run just finished successfully. */
+  clear?: (task: string) => Promise<void>,
 ): Promise<void> {
   const id = selectedVirtual(ctx.model)
   if (event.aborted || id === undefined) return
@@ -347,7 +351,16 @@ export async function afterRun(
     const recovery = escalation ?? restartAfterRun(input)
     if (recovery === undefined) {
       const waiting = parkingAfterRun(input)
-      if (waiting !== undefined) await park?.(waiting)
+      if (waiting !== undefined) {
+        await park?.(waiting)
+        return
+      }
+      // A resumed lineage that finished leaves a stale park behind when its
+      // re-dispatch had to park through a still-blocked window before the
+      // follow-up turn succeeded. Drop it so the chip does not promise work
+      // that no longer exists.
+      const task = servedTask(input)
+      if (task !== undefined) await clear?.(task)
       return
     }
     if (await park?.(recovery)) return

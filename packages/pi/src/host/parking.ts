@@ -51,6 +51,14 @@ interface ParkingHandlers extends RouteParking {
   sessionStart(ctx: ParkingContext): Promise<void>
   /** `/adaptive resume`: wake this session's parked task now. */
   resume(ctx: RouteContext): Promise<void>
+  /**
+   * Drop the parked record of a wake lineage whose run just finished. Task-id
+   * scoped: a park from another task in the same session is left alone.
+   */
+  clearServed(
+    task: string,
+    ctx: SettleContext & Pick<RouteContext, "mode" | "signal" | "ui">,
+  ): Promise<void>
   /** `/adaptive cancel`: drop this session's wait and parked record. */
   cancel(ctx: RouteContext): Promise<void>
   readonly shutdown: () => void
@@ -329,9 +337,11 @@ export function parkingHandlers(
       const saved = payload(ctx, record.token)
       if (saved === undefined) return
       if (record.due <= sources.parking.clock() && record.wakes < MAX_WAKES) {
-        if (await ctx.ui?.confirm("Parked task", "Resume the parked task now?"))
-          await wake(ctx, record, saved)
-        else await cancel(ctx)
+        if (await ctx.ui?.confirm("Parked task", "Resume the parked task now?")) {
+          // A person pressing Enter is a manual resume: it bypasses the give-up
+          // budget just like /adaptive resume does.
+          await wake(ctx, record, saved, record.due, true)
+        } else await cancel(ctx)
       } else arm(ctx, record, saved)
     } catch (error) {
       logFailOpen("parking", error)
@@ -350,11 +360,31 @@ export function parkingHandlers(
     // blocked. Manual resume bypasses the automatic give-up budget — the person decided.
     await wake(ctx, record, saved, record.due, true)
   }
+  const clearServed = async (
+    task: string,
+    ctx: SettleContext & Pick<RouteContext, "mode" | "signal" | "ui">,
+  ): Promise<void> => {
+    try {
+      const session = ctx.sessionManager.getSessionId?.()
+      if (session === undefined) return
+      const record = await findPark(sources.parking.file, session)
+      if (record === undefined) return
+      const saved = payload(ctx, record.token)
+      // Another task's park stays parked; only the served lineage is stale now.
+      if (saved?.state.task !== task) return
+      stop()
+      clear(ctx)
+      await cancelPark(sources.parking.file, session)
+    } catch (error) {
+      logFailOpen("parking", error)
+    }
+  }
   return {
     input,
     modelSelect,
     sessionStart,
     resume,
+    clearServed,
     cancel,
     shutdown: stop,
     async recover(recovery, ctx) {

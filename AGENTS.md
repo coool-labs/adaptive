@@ -201,9 +201,10 @@ clean — not merely when it compiles.
   `src/tui.tsx` (host UI slots via `@opentui/solid`, mirroring the host's own
   slot pattern — the file-level `@jsxImportSource` pragma is required).
 - Release only with `npm run release`. It verifies bumped artifacts before the
-  release commit and uses per-package tags (`opencode-adaptive@X.Y.Z` and
-  `pi-adaptive@X.Y.Z`). Historical `vX.Y.Z` tags belong to OpenCode only.
-  Agents release non-interactively: explicit bumps (`--opencode patch`),
-  `--notes <pkg>=<file>`, `--yes`; add `--no-publish` when the human runs
-  `npm publish`. Partial publication recovers with `npm run release -- --resume`.
-  See the Releases section of CONTRIBUTING.md.
+  release commit and stops there (commit + push). Publication and tagging are
+  separate: `npm run publish:opencode` / `npm run publish:pi` publish and then
+  certify with post-publish tags (`opencode-vX.Y.Z`, `pi-vX.Y.Z`, from the
+  just-published package.json). Historical `vX.Y.Z` tags belong to OpenCode
+  pre-monorepo only. Agents drive the flow non-interactively (explicit bumps,
+  `--notes <pkg>=<file>`, `--yes`); partial publication recovers with
+  `npm run release -- --resume`. See the Releases section of CONTRIBUTING.md.

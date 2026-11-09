@@ -19,6 +19,7 @@ import {
   releaseCommits,
   releaseSummary,
   releaseTagPatterns,
+  tagName,
   setLockVersion,
   setManifestVersion,
   stripNotes,
@@ -100,8 +101,9 @@ function requireReleaseEnvironment(publish: boolean): void {
     throw new Error("release: working tree must be clean")
   if (capture("git", ["branch", "--show-current"]) !== "main")
     throw new Error("release: switch to main first")
-  // Registry auth is only needed by the publish step itself; --no-publish hands
-  // publication to a human, so an agent shell without npm credentials still works.
+  // Registry auth is only needed by the publication leg (resume, publish
+  // scripts); the release itself stops before the registry, so an agent shell
+  // without npm credentials still works.
   if (publish) {
     capture("npm", ["whoami"])
   }
@@ -111,10 +113,9 @@ function verify(ids: readonly Plugin[]): void {
   run("npm", ["run", "verify", "--", ...ids.flatMap((id) => ["--pkg", id])])
 }
 
-function publish(ids: readonly Plugin[]): void {
+function publishPackages(ids: readonly Plugin[]): void {
   for (const id of ids)
     run("npm", ["publish", "--workspace", `packages/${id}`, "--access", "public"])
-  run("git", ["push", "--follow-tags"])
 }
 
 async function main(): Promise<void> {
@@ -136,20 +137,11 @@ async function main(): Promise<void> {
     for (const release of tagged) {
       const pkg = inventory.find((pkg) => pkg.id === release.id)
       if (pkg?.version !== release.version || pkg.private)
-        throw new Error(`release: tag ${release.tag} does not match a publishable manifest`)
+        throw new Error(
+          `release: ${release.name}@${release.version} does not match a publishable manifest`,
+        )
     }
-    const existingTags = capture("git", ["tag", "--list"]).split("\n")
-    for (const release of tagged) {
-      if (existingTags.includes(release.tag)) {
-        if (
-          capture("git", ["rev-parse", `${release.tag}^{commit}`]) !==
-          capture("git", ["rev-parse", "HEAD"])
-        ) {
-          throw new Error(`release: ${release.tag} points to a different commit`)
-        }
-      } else run("git", ["tag", "-a", release.tag, "-m", release.tag])
-    }
-    // Rebuild and certify the exact tagged tree, never publish stale local dist files.
+    // Rebuild and certify the exact release tree, never publish stale local dist files.
     verify(tagged.map((release) => release.id))
     const missing = tagged.filter((release) => {
       const result = spawnSync("npm", ["view", `${release.name}@${release.version}`, "version"], {
@@ -158,12 +150,25 @@ async function main(): Promise<void> {
       if (result.error !== undefined) throw result.error
       return publishState(result) === "missing"
     })
-    publish(missing.map((release) => release.id))
+    publishPackages(missing.map((release) => release.id))
+    // Certify each release with its post-publication tag, then push it.
+    for (const release of tagged) {
+      const tag = tagName(release.id, release.version)
+      const existingTags = capture("git", ["tag", "--list"]).split("\n")
+      if (existingTags.includes(tag)) {
+        if (
+          capture("git", ["rev-parse", `${tag}^{commit}`]) !== capture("git", ["rev-parse", "HEAD"])
+        ) {
+          throw new Error(`release: ${tag} points to a different commit`)
+        }
+      } else run("git", ["tag", "-a", tag, "-m", tag])
+      run("git", ["push", "origin", tag])
+    }
     return
   }
 
   const dry = options.mode === "dry-run"
-  if (!dry) requireReleaseEnvironment(options.publish)
+  if (!dry) requireReleaseEnvironment(false)
   const bumps: Partial<Record<Plugin, Bump>> = { ...options.bumps }
   const pending = pendingBumps(inventory, { ...options, yes: dry || options.yes })
   for (const [id, bump] of pending) {
@@ -229,39 +234,26 @@ async function main(): Promise<void> {
   }
   generated.set("package-lock.json", lock)
   const originals = new Map([...generated.keys()].map((file) => [file, readFileSync(file, "utf8")]))
-  requireReleaseEnvironment(options.publish)
-  executeRelease(
-    plan,
-    {
-      prepare() {
-        for (const [file, text] of generated) writeFileSync(file, text)
-        run("npm", ["exec", "--", "prettier", "--write", ...generated.keys()])
-      },
-      verify,
-      restore() {
-        for (const [file, text] of originals) writeFileSync(file, text)
-      },
-      commit() {
-        run("git", ["add", "--", ...generated.keys()])
-        run("git", ["commit", "-m", releaseCommitMessage(plan)])
-      },
-      tag(release) {
-        run("git", ["tag", "-a", release.tag, "-m", release.tag])
-      },
-      publish(id) {
-        run("npm", ["publish", "--workspace", `packages/${id}`, "--access", "public"])
-      },
-      push() {
-        run("git", ["push", "--follow-tags"])
-      },
+  requireReleaseEnvironment(false)
+  executeRelease(plan, {
+    prepare() {
+      for (const [file, text] of generated) writeFileSync(file, text)
+      run("npm", ["exec", "--", "prettier", "--write", ...generated.keys()])
     },
-    { publish: options.publish },
-  )
-  if (!options.publish) {
-    console.log("release: committed and pushed; publish manually with:")
-    for (const release of plan)
-      console.log(`  npm publish --workspace packages/${release.id} --access public`)
-  }
+    verify,
+    restore() {
+      for (const [file, text] of originals) writeFileSync(file, text)
+    },
+    commit() {
+      run("git", ["add", "--", ...generated.keys()])
+      run("git", ["commit", "-m", releaseCommitMessage(plan)])
+    },
+    push() {
+      run("git", ["push"])
+    },
+  })
+  console.log("release: committed and pushed; publish and tag with:")
+  for (const release of plan) console.log(`  npm run publish:${release.id}`)
 }
 
 try {

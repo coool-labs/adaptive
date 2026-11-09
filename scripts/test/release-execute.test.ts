@@ -7,16 +7,16 @@ const plan: readonly PlannedRelease[] = [
     id: "opencode",
     name: "@coool/opencode-adaptive",
     previous: "1.5.0",
-    version: "1.5.1",
-    tag: "opencode-adaptive@1.5.1",
+    version: "1.6.0",
+    tag: "opencode-v1.6.0",
     commits: [],
   },
   {
     id: "pi",
     name: "@coool/pi-adaptive",
-    previous: "0.1.0",
-    version: "0.1.1",
-    tag: "pi-adaptive@0.1.1",
+    previous: "0.0.0",
+    version: "1.0.0",
+    tag: "pi-v1.0.0",
     commits: [],
   },
 ]
@@ -42,12 +42,6 @@ function fixture(failure?: string): { calls: string[]; effects: ReleaseEffects }
       commit: () => {
         call("commit")
       },
-      tag: (release) => {
-        call(`tag:${release.id}`)
-      },
-      publish: (id) => {
-        call(`publish:${id}`)
-      },
       push: () => {
         call("push")
       },
@@ -55,32 +49,10 @@ function fixture(failure?: string): { calls: string[]; effects: ReleaseEffects }
   }
 }
 
-it("verifies bumped files before committing, tags both packages before publishing either", () => {
+it("verifies bumped files before committing and pushing; publication is a separate leg", () => {
   const { calls, effects } = fixture()
   executeRelease(plan, effects)
-  expect(calls).toEqual([
-    "prepare",
-    "verify:opencode,pi",
-    "commit",
-    "tag:opencode",
-    "tag:pi",
-    "publish:opencode",
-    "publish:pi",
-    "push",
-  ])
-})
-
-it("leaves publication to the human when asked, keeping commit, tags and push", () => {
-  const { calls, effects } = fixture()
-  executeRelease(plan, effects, { publish: false })
-  expect(calls).toEqual([
-    "prepare",
-    "verify:opencode,pi",
-    "commit",
-    "tag:opencode",
-    "tag:pi",
-    "push",
-  ])
+  expect(calls).toEqual(["prepare", "verify:opencode,pi", "commit", "push"])
 })
 
 it("restores uncommitted files when preparation or verification fails", () => {
@@ -91,18 +63,16 @@ it("restores uncommitted files when preparation or verification fails", () => {
     }).toThrow(failure)
     expect(calls.at(-1)).toBe("restore")
     expect(calls).not.toContain("commit")
-    expect(calls).not.toContain("publish:opencode")
   }
 })
 
-it("never rolls back a commit or repeats publication after a durable failure", () => {
-  for (const failure of ["commit", "tag:pi", "publish:pi", "push"]) {
+it("never rolls back a commit after a durable failure", () => {
+  for (const failure of ["commit", "push"]) {
     const { calls, effects } = fixture(failure)
     expect(() => {
       executeRelease(plan, effects)
     }).toThrow(failure)
     expect(calls.at(-1)).toBe(failure)
     expect(calls).not.toContain("restore")
-    expect(calls.filter((step) => step === "publish:opencode").length).toBeLessThanOrEqual(1)
   }
 })
