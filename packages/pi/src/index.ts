@@ -6,16 +6,25 @@ import { applyPatch, defaultSettings } from "@coool/adaptive-core/state/settings
 import { registerAdaptive } from "./host/extension.js"
 import { loadToolCapabilities } from "./capabilities.js"
 import { jsonFile } from "./store.js"
+import { timer } from "./host/timer.js"
 
 export default function adaptive(pi: Parameters<typeof registerAdaptive>[0]): void {
   const path = join(getAgentDir(), "adaptive", "settings.json")
   registerAdaptive(pi, {
     newId: randomUUID,
+    capacity: { file: jsonFile(join(getAgentDir(), "adaptive", "capacity.json")), clock: Date.now },
+    parking: {
+      file: jsonFile(join(getAgentDir(), "adaptive", "parked.json")),
+      clock: Date.now,
+      timer,
+    },
     health: {
       file: jsonFile(join(getAgentDir(), "adaptive", "health.json")),
       clock: Date.now,
       newId: randomUUID,
     },
+    receipts: jsonFile(join(getAgentDir(), "adaptive", "receipts.json")),
+    preferences: jsonFile(join(getAgentDir(), "adaptive", "preferences.json")),
     settings: async () => {
       let text: string
       try {

@@ -20,6 +20,7 @@ export interface RouteInput {
   readonly inventory: SchedulerInput["inventory"]
   readonly demand: SchedulerInput["demand"]
   readonly health: SchedulerInput["health"]
+  readonly capacity: SchedulerInput["capacity"]
   /** Models this unit already failed over from (same-tier recovery). */
   readonly exclude: readonly ModelRef[]
 }
@@ -52,7 +53,7 @@ export function routeAdmission(input: RouteInput): AdmissionDecision {
       demand: input.demand,
       tierCandidates: input.settings.tiers[input.tier].filter((ref) => !excluded(exclude, ref)),
       health: input.health,
-      capacity: {},
+      capacity: input.capacity,
     })
   const decision = decide(input.exclude)
   return decision.kind === "apply" || input.exclude.length === 0 ? decision : decide([])

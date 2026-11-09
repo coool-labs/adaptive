@@ -18,7 +18,7 @@ import type { SessionModeSetResult } from "../state/session-modes/index.js"
 import type { TierRequestSetResult } from "../state/tier-requests/types.js"
 import type { Receipt } from "../state/receipts/types.js"
 import type { StatusSnapshot } from "../status.js"
-import { STATUS_EMPTY_MESSAGE, statusTable } from "./status.js"
+import { STATUS_EMPTY_MESSAGE, statusTable, compactStatus } from "./status.js"
 import {
   mainMenuOptions,
   modeOptions,
@@ -58,7 +58,7 @@ export interface AdaptiveView {
   confirm(options: { title: string; message: string }): Promise<boolean | undefined>
   alert(options: { title: string; message: string }): Promise<void>
   /** A column-aligned text table (header row first); Escape closes it. */
-  table(spec: { title: string; lines: string[] }): Promise<void>
+  table(spec: { title: string; lines: string[]; compactLines?: string[] }): Promise<void>
   toast(message: string, variant: "success" | "error"): void
 }
 
@@ -88,6 +88,14 @@ export interface AdaptiveEnv {
    * that session's override instead of the global mode.
    */
   sessionID?: string | undefined
+  /** Pi exposes these local operations; hosts without them keep the original menu. */
+  actions?: {
+    health(): Promise<void>
+    parked(): Promise<void>
+    doctor(): Promise<void>
+    preferences(): Promise<void>
+    defaults(): Promise<void>
+  }
 }
 
 export const INVITE_MESSAGE =
@@ -181,7 +189,7 @@ async function applyTierRequest(
   return result
 }
 
-export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
+export async function runAdaptive(env: AdaptiveEnv, initial?: MainMenuChoice): Promise<void> {
   const loaded = await tryApi(env, () => env.api.settings())
   if (loaded === undefined) return
   let settings = loaded
@@ -206,6 +214,7 @@ export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
     if (dismissed !== undefined) settings = dismissed
     if (pick !== true) return
   }
+  let next = initial
   for (;;) {
     // Fresh status and settings on every pass: the menu rows pair the two,
     // and the server is the single source of truth (ADP-036). A failed read
@@ -224,11 +233,59 @@ export async function runAdaptive(env: AdaptiveEnv): Promise<void> {
       sessionID === undefined
         ? undefined
         : await env.api.tierRequest(sessionID).catch(() => undefined)
-    const choice = await env.view.select({
-      title: `Adaptive (${override ?? settings.mode})`,
-      options: mainMenuOptions(settings, status, tierPinned, override ?? settings.mode),
-    })
+    const choice =
+      next ??
+      (await env.view.select<
+        MainMenuChoice | "health" | "parked" | "doctor" | "preferences" | "defaults"
+      >({
+        title: `Adaptive (${override ?? settings.mode})`,
+        options: [
+          ...mainMenuOptions(settings, status, tierPinned, override ?? settings.mode),
+          ...(env.actions === undefined
+            ? []
+            : [
+                {
+                  title: "Health",
+                  value: "health" as const,
+                  description: "inspect or reset resource health",
+                },
+                {
+                  title: "Parked work",
+                  value: "parked" as const,
+                  description: "resume or cancel waiting work",
+                },
+                {
+                  title: "Doctor",
+                  value: "doctor" as const,
+                  description: "check setup and compatibility",
+                },
+                {
+                  title: "Preferences",
+                  value: "preferences" as const,
+                  description: "transcript notes and pinned-tier escalation",
+                },
+                {
+                  title: "Use Adaptive for new sessions",
+                  value: "defaults" as const,
+                  description: "Pi settings to copy",
+                },
+              ]),
+        ],
+      }))
+    next = undefined
     if (choice === undefined) return
+    if (
+      choice === "health" ||
+      choice === "parked" ||
+      choice === "doctor" ||
+      choice === "preferences" ||
+      choice === "defaults"
+    ) {
+      await tryApi(env, async () => {
+        await env.actions?.[choice]()
+      })
+      continue
+    }
     if (choice === "status") {
       await runStatusView(env)
       continue
@@ -362,7 +419,11 @@ async function runStatusView(env: AdaptiveEnv): Promise<void> {
     await env.view.alert({ title: "Status", message: STATUS_EMPTY_MESSAGE })
     return
   }
-  await env.view.table({ title: "Status", lines: statusTable(snapshot) })
+  await env.view.table({
+    title: "Status",
+    lines: statusTable(snapshot),
+    compactLines: compactStatus(snapshot),
+  })
 }
 
 type TierEditorOutcome = SettingsV1 | undefined

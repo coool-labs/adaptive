@@ -57,6 +57,8 @@ export interface TaskState {
   readonly tier: TierName
   readonly escalations: number
   readonly restarts: number
+  readonly hops?: number
+  readonly wakes?: number
   /** Models this unit failed over from; new admissions in the unit avoid them. */
   readonly tried: readonly ModelRef[]
   /** Token of the last owned continuation already turned into a unit. */
@@ -70,6 +72,7 @@ export interface Recovery {
   readonly tier: TierName
   readonly escalations: number
   readonly restarts: number
+  readonly wakes?: number
   /** Models the new unit starts out avoiding (the one that just failed). */
   readonly tried: readonly ModelRef[]
 }
@@ -110,6 +113,16 @@ function count(value: unknown, key: string, label: string): number {
   return found
 }
 
+function parkingCounts(
+  value: unknown,
+  label: string,
+): { readonly wakes?: number; readonly hops?: number } {
+  return {
+    ...(field(value, "wakes") === undefined ? {} : { wakes: count(value, "wakes", label) }),
+    ...(field(value, "hops") === undefined ? {} : { hops: count(value, "hops", label) }),
+  }
+}
+
 function refs(value: unknown, label: string): ModelRef[] {
   const found = field(value, "tried")
   if (!Array.isArray(found)) throw new Error(`${label}: tried must be an array`)
@@ -138,6 +151,7 @@ export function parseTaskState(value: unknown): TaskState | undefined {
     tier: tier(value, label),
     escalations: count(value, "escalations", label),
     restarts: count(value, "restarts", label),
+    ...parkingCounts(value, label),
     tried: refs(value, label),
     ...(consumed === undefined ? {} : { consumed }),
   }
@@ -151,6 +165,7 @@ function parseRecovery(value: unknown): Recovery {
     tier: tier(value, label),
     escalations: count(value, "escalations", label),
     restarts: count(value, "restarts", label),
+    ...parkingCounts(value, label),
     tried: refs(value, label),
   }
 }
@@ -229,8 +244,14 @@ export interface PlanRouteInput {
   readonly reason: "user" | "continuation" | "retry" | "direct"
   readonly state: TaskState | undefined
   readonly branch: readonly BranchEntry[]
+  /** ADP-055: sticky session-tier requests rank under a user pin, above the default. */
+  readonly requestedTier?: TierName | null | undefined
   readonly failed?: FailedRequest | undefined
   readonly newId: () => string
+}
+
+export function startTask(tier: TierName, newId: () => string): TaskState {
+  return { version: 1, task: newId(), unit: newId(), tier, escalations: 0, restarts: 0, tried: [] }
 }
 
 /** Infra failures that another resource of the same tier may absorb. */
@@ -253,20 +274,15 @@ export function planRoute(input: PlanRouteInput): RoutePlan {
   if (input.reason === "direct")
     return { tier: "quick", sticky: false, exclude: [], state: input.state }
   if (input.reason === "user") {
-    const base = input.id === "auto" ? (tierRequest(input.branch) ?? selected) : selected
+    const base =
+      input.id === "auto"
+        ? (input.requestedTier ?? tierRequest(input.branch) ?? selected)
+        : selected
     return {
       tier: base,
       sticky: false,
       exclude: [],
-      state: {
-        version: 1,
-        task: input.newId(),
-        unit: input.newId(),
-        tier: base,
-        escalations: 0,
-        restarts: 0,
-        tried: [],
-      },
+      state: startTask(base, input.newId),
     }
   }
   if (input.reason === "retry" && state !== undefined && input.failed !== undefined) {
@@ -275,7 +291,12 @@ export function planRoute(input: PlanRouteInput): RoutePlan {
       const tried = state.tried.some((ref) => sameRef(ref, failed.model))
         ? state.tried
         : [...state.tried, failed.model]
-      return { tier: state.tier, sticky: false, exclude: tried, state: { ...state, tried } }
+      return {
+        tier: state.tier,
+        sticky: false,
+        exclude: tried,
+        state: { ...state, tried, hops: (state.hops ?? 0) + 1 },
+      }
     }
   }
   const recovery =
@@ -293,6 +314,7 @@ export function planRoute(input: PlanRouteInput): RoutePlan {
       tier: recovery.tier,
       escalations: recovery.escalations,
       restarts: recovery.restarts,
+      ...(recovery.wakes === undefined ? {} : { wakes: recovery.wakes }),
       tried: recovery.tried,
       consumed: recovery.token,
     },
@@ -380,6 +402,7 @@ export function escalationAfterRun(input: AfterRunInput): Recovery | undefined {
     tier: plan.tier,
     escalations: state.escalations + 1,
     restarts: state.restarts,
+    ...(state.wakes === undefined ? {} : { wakes: state.wakes }),
     tried: [],
   }
 }
@@ -401,8 +424,25 @@ export function restartAfterRun(input: AfterRunInput): Recovery | undefined {
     tier: state.tier,
     escalations: state.escalations,
     restarts: state.restarts + 1,
+    ...(state.wakes === undefined ? {} : { wakes: state.wakes }),
     // A failure without provider metadata names no model to avoid; an empty
     // reference would make the continuation unparseable.
     tried: [run.model].filter((ref) => ref.providerID !== "" && ref.id !== ""),
+  }
+}
+
+/** A spent immediate-restart budget may still wait for an actual tier reset. */
+export function parkingAfterRun(input: AfterRunInput): Recovery | undefined {
+  const run = failedRun(input)
+  if (!run?.classification.failoverEligible || run.state.restarts < MAX_RESTARTS_PER_TASK)
+    return undefined
+  return {
+    task: run.state.task,
+    token: input.newId(),
+    tier: run.state.tier,
+    escalations: run.state.escalations,
+    restarts: run.state.restarts,
+    wakes: run.state.wakes ?? 0,
+    tried: [],
   }
 }

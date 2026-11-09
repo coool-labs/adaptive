@@ -41,6 +41,7 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.5.0",
     "@earendil-works/pi-ai": "1.5.0",
+    "@termwright/driver": "0.7.7",
     "tsdown": "0.23.7"
   },
   "scripts": {
@@ -49,6 +50,8 @@
     "test": "vitest run",
     "coverage": "vitest run --coverage",
     "e2e:runtime": "vitest run --config vitest.e2e.config.ts",
+    "e2e:tui": "vite-node ../../scripts/pi-host.ts",
+    "traceability": "vite-node ../../scripts/traceability.ts --pkg pi",
     "pack:check": "vite-node ../../scripts/pack-check.ts --pkg pi"
   }
 }

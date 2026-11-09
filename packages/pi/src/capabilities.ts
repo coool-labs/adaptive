@@ -25,6 +25,10 @@ export async function loadToolCapabilities(
   } catch {
     throw new Error("Adaptive capabilities: invalid JSON")
   }
+  return parseToolCapabilities(raw)
+}
+
+export function parseToolCapabilities(raw: unknown): readonly ToolCapability[] {
   if (
     !(object(raw) && Array.isArray(raw["models"])) ||
     Object.keys(raw).some((key) => key !== "models")
@@ -50,3 +54,18 @@ export async function loadToolCapabilities(
     return { providerID, id, tools }
   })
 }
+
+export function updateToolCapability(file: JsonFile, ref: ModelRef, tools: boolean): Promise<void> {
+  return file.update((current) => {
+    const entries = current === undefined ? [] : parseToolCapabilities(current)
+    const entry = { providerID: ref.providerID, id: ref.id, tools }
+    const models = [
+      ...entries.filter((model) => model.providerID !== ref.providerID || model.id !== ref.id),
+      entry,
+    ]
+    parseToolCapabilities({ models })
+    return { next: { models }, result: undefined }
+  })
+}
+import type { JsonFile } from "./store.js"
+import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"

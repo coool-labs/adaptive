@@ -32,6 +32,14 @@ export interface JsonFile {
   ): Promise<R>
 }
 
+/** Async core stores must finish their read/modify/write before releasing the lock. */
+export interface JsonTransactionFile {
+  read(): Promise<unknown>
+  transaction<R>(
+    change: (current: unknown) => Promise<{ readonly next: unknown; readonly result: R }>,
+  ): Promise<R>
+}
+
 function errorCode(error: unknown): unknown {
   return Reflect.get(Object(error), "code")
 }
@@ -81,15 +89,21 @@ async function acquire(lock: string, clock: () => number): Promise<void> {
   }
 }
 
-export function jsonFile(path: string, clock: () => number = Date.now): JsonFile {
+export function jsonFile(
+  path: string,
+  clock: () => number = Date.now,
+): JsonFile & JsonTransactionFile {
   const lock = `${path}.lock`
   return {
     read: () => parse(path),
-    async update(change) {
+    update(change) {
+      return this.transaction((current) => Promise.resolve(change(current)))
+    },
+    async transaction(change) {
       await mkdir(dirname(path), { recursive: true })
       await acquire(lock, clock)
       try {
-        const { next, result } = change(await parse(path))
+        const { next, result } = await change(await parse(path))
         if (next !== undefined) {
           const temporary = `${path}.${randomUUID()}.tmp`
           await writeFile(temporary, `${JSON.stringify(next)}\n`, { mode: 0o600 })

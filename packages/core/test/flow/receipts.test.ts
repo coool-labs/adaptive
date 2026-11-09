@@ -19,6 +19,14 @@ const receiptDetail = (value: Receipt, now?: number): string =>
   formatReceiptDetail(value, OPENCODE_COPY, now)
 const whatHappened = (value: Receipt): string => explainReceipt(value, OPENCODE_COPY)
 
+it("lets durable-parking hosts explain waits without changing legacy host copy", () => {
+  const value = receipt({ decision: { kind: "park", reason: "all-blocked" } })
+  expect(
+    explainReceipt(value, { ...OPENCODE_COPY, parkExplanation: (reason) => `Waiting: ${reason}` }),
+  ).toBe("Waiting: all-blocked")
+  expect(explainReceipt(value, OPENCODE_COPY)).toContain("ran without Adaptive routing")
+})
+
 it("uses host-specific defer semantics rather than substituting a product name", () => {
   const copy = {
     ...OPENCODE_COPY,

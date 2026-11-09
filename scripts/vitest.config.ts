@@ -17,6 +17,7 @@ export default defineConfig({
         "release/plan.ts",
         "release/execute.ts",
         "requirements.ts",
+        "pi-matrix-policy.ts",
       ],
       thresholds: { statements: 100, branches: 100, functions: 100, lines: 100 },
     },

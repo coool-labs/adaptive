@@ -20,6 +20,8 @@ it("loads defaults only for a missing file and rejects malformed settings with f
     registerTool: vi.fn(),
     on: vi.fn(),
     sendMessage: vi.fn(),
+    sendUserMessage: vi.fn(),
+    appendEntry: vi.fn(),
   })
   const sources = bindings.sources
   if (sources === undefined) throw new Error("binding missing")
@@ -27,6 +29,20 @@ it("loads defaults only for a missing file and rejects malformed settings with f
   expect(sources.newId()).not.toBe(sources.newId())
   expect(sources.health.clock).toBe(Date.now)
   expect(sources.health.newId()).toMatch(/^[0-9a-f-]{36}$/)
+  expect(sources.parking.clock).toBe(Date.now)
+  expect(sources.capacity.clock).toBe(Date.now)
+  bindings.read.mockResolvedValueOnce('{"version":1,"records":[]}')
+  await sources.parking.file.read()
+  expect(bindings.read).toHaveBeenLastCalledWith(
+    expect.stringMatching(/[/\\]adaptive[/\\]parked\.json$/),
+    "utf8",
+  )
+  bindings.read.mockResolvedValueOnce('{"version":1,"readings":[]}')
+  await sources.capacity.file.read()
+  expect(bindings.read).toHaveBeenLastCalledWith(
+    expect.stringMatching(/[/\\]adaptive[/\\]capacity\.json$/),
+    "utf8",
+  )
   bindings.read.mockResolvedValueOnce('{"version":1,"records":[]}')
   expect(await sources.health.file.read()).toEqual({ version: 1, records: [] })
   expect(bindings.read).toHaveBeenLastCalledWith(

@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { packageContext } from "./package-context.js"
-import { requirementCatalogue } from "./requirements.js"
+import { requirementCatalogue, requirementE2ESource } from "./requirements.js"
 
 const context = packageContext(process.argv.slice(2), process.cwd(), existsSync)
 process.chdir(context.directory)
@@ -62,14 +62,11 @@ const NOT_E2E_APPLICABLE: Readonly<Record<string, string>> = {
   "ADP-053": "performance measurement — unit-level timing bound",
 }
 
-/** Path prefixes whose files count as E2E coverage sources. */
-const E2E_PREFIXES = [
-  "test/runtime-e2e/",
-  "test/e2e-web/",
-  "test/e2e-gui/",
-  "test/e2e-tui/",
-  "test/plugin-test/",
-] as const
+function e2eApplicable(id: string): boolean {
+  // These exemptions describe missing OpenCode host surfaces, not Pi limitations.
+  if (context.workspace === "pi" && ["ADP-021", "ADP-027", "ADP-032"].includes(id)) return true
+  return !Object.hasOwn(NOT_E2E_APPLICABLE, id)
+}
 
 const COVERS_LITERAL = /covers:\s*\[[^\]]*\]/g
 const ADP_ID = /ADP-\d{3}/g
@@ -88,8 +85,7 @@ function walkFiles(dir: string): string[] {
 }
 
 function isE2EFile(file: string): boolean {
-  const normalized = file.split("\\").join("/")
-  return E2E_PREFIXES.some((prefix) => normalized.startsWith(prefix))
+  return requirementE2ESource(context.workspace, file)
 }
 
 function declaredIds(text: string): Set<string> {
@@ -155,10 +151,10 @@ for (const id of requirementIdsAll) {
     errors.push(`${id} has no declaring files`)
     continue
   }
-  const applicable = !Object.hasOwn(NOT_E2E_APPLICABLE, id)
+  const applicable = e2eApplicable(id)
   if (applicable && entry.e2eFiles.length === 0) {
     errors.push(
-      `${id} is E2E-applicable but is only declared by non-E2E files (E2E: ${E2E_PREFIXES.join(", ")})`,
+      `${id} is E2E-applicable but is only declared by non-E2E files for ${context.workspace}`,
     )
   }
 }
@@ -174,7 +170,7 @@ const report = {
         id,
         files: entry === undefined ? [] : entry.files.slice().sort(),
         e2eFiles: entry === undefined ? [] : entry.e2eFiles.slice().sort(),
-        e2eApplicable: !Object.hasOwn(NOT_E2E_APPLICABLE, id),
+        e2eApplicable: e2eApplicable(id),
       }
     }),
 }

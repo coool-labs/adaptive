@@ -4,14 +4,11 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/provid
 import { defaultSettings } from "@coool/adaptive-core/state/settings/parse"
 import type { SettingsV1 } from "@coool/adaptive-core/state/settings/types"
 import type { ToolCapability } from "../src/capabilities.js"
-import {
-  afterRun,
-  recordOutcome,
-  virtualModels,
-  type AdaptiveSources,
-} from "../src/host/extension.js"
+import { afterRun, recordOutcome, type AdaptiveSources } from "../src/host/extension.js"
+import { virtualModels } from "../src/host/routing.js"
 import type { JsonFile } from "../src/store.js"
 import type { BranchEntry } from "../src/task.js"
+import { memoryFile } from "./memory-file.js"
 
 const faux = fauxProvider({ provider: "local", models: [{ id: "a" }, { id: "b" }] })
 const [a, b] = faux.models
@@ -28,18 +25,6 @@ const settings = {
 const branch = { getBranch: () => [] }
 const ctx = { modelRegistry: { getAvailable: () => faux.models }, sessionManager: branch }
 /** The shared health file of one machine, in memory. */
-function memoryFile(): JsonFile & { value: () => unknown } {
-  let stored: unknown
-  return {
-    value: () => stored,
-    read: () => Promise.resolve(stored),
-    update(change) {
-      const { next, result } = change(stored)
-      if (next !== undefined) stored = next
-      return Promise.resolve(result)
-    },
-  }
-}
 const lockedFile: JsonFile = {
   read: () => Promise.reject(new Error("health locked")),
   update: () => Promise.reject(new Error("health locked")),
@@ -58,7 +43,11 @@ function sources(
     settings: read,
     capabilities,
     newId,
+    capacity: { file: memoryFile(), clock: () => 1_000 },
+    parking: { file: memoryFile(), clock: () => 1_000, timer: () => () => undefined },
     health: { file, clock: () => 1_000, newId },
+    receipts: memoryFile(),
+    preferences: memoryFile(),
   }
 }
 const request = { model: a, reason: "user" as const, thinkingLevel: "off" as const, messages: [] }
@@ -91,15 +80,12 @@ it("preserves previous physical choices and excludes virtual catalogue entries",
   expect(result.model.id).toBe("a")
 })
 
-it("does not apply routing changes in observe/off and requires a compatible baseline", async () => {
+it("routes identically under observe and off, and defers to setup when no tier exists", async () => {
   for (const mode of ["observe", "off"] as const) {
     for (const definition of virtualModels(
       sources(() => Promise.resolve({ ...settings, mode })),
       () => [],
     )) {
-      expect((await definition.route({ ...request, previous: { model: a } }, ctx)).model.id).toBe(
-        "a",
-      )
       expect((await definition.route(request, ctx)).model.id).toBe(
         definition.id === "auto" || definition.id === "standard" ? "b" : "a",
       )
@@ -109,7 +95,28 @@ it("does not apply routing changes in observe/off and requires a compatible base
     sources(() => Promise.resolve(defaultSettings())),
     () => [],
   )
-  await expect(empty?.route(request, ctx)).rejects.toThrow("no-candidates")
+  await expect(empty?.route(request, ctx)).rejects.toThrow("Adaptive unavailable: no-candidates")
+  // ADP-003: a defer keeps the host's ordinary behaviour — the tier's own
+  // compatible model, even when the configured pin cannot be verified.
+  const [ghost] = virtualModels(
+    sources(() => Promise.resolve({ ...settings, pin: { providerID: "local", id: "ghost" } })),
+    () => [],
+  )
+  const routed = await ghost?.route(
+    { ...request, previous: { model: b } },
+    { ...ctx, sessionManager: { getBranch: () => [], getSessionId: () => "session" } },
+  )
+  expect(routed?.model.id).toBe("b")
+  const [unset] = virtualModels(
+    sources(() =>
+      Promise.resolve({
+        ...defaultSettings(),
+        pin: { providerID: "local", id: "ghost" },
+      }),
+    ),
+    () => [],
+  )
+  await expect(unset?.route(request, ctx)).rejects.toThrow("Adaptive is not set up")
   const [pin] = virtualModels(
     sources(() =>
       Promise.resolve({ ...settings, mode: "observe", pin: { providerID: "local", id: "a" } }),
@@ -367,7 +374,7 @@ it("steers the next admission away from a model another request just saw limited
       stopReason: "error",
       errorMessage: RATE_LIMITED,
     },
-    { model: auto },
+    { model: auto, sessionManager: { getBranch: () => [] } },
     shared,
   )
   expect(file.value()).toMatchObject({
@@ -376,36 +383,61 @@ it("steers the next admission away from a model another request just saw limited
   expect((await definition.route(request, ctx)).model.id).toBe("a")
   await recordOutcome(
     { role: "assistant", provider: "local", model: "b", stopReason: "stop" },
-    { model: auto },
+    { model: auto, sessionManager: { getBranch: () => [] } },
     shared,
   )
   expect((await definition.route(request, ctx)).model.id).toBe("b")
 })
 
-it("records only routed assistant outcomes outside OFF", async () => {
-  const file = memoryFile()
+it("records routed assistant outcomes unless the effective mode is off", async () => {
   const outage = { role: "assistant", provider: "local", model: "b", stopReason: "error" }
   const record = (
-    message: Parameters<typeof recordOutcome>[0],
+    file: JsonFile,
     model: { provider: string; id: string } | undefined,
     mode: SettingsV1["mode"] = "active",
   ) =>
     recordOutcome(
-      message,
-      { model },
+      outage,
+      { model, sessionManager: { getBranch: () => [] } },
       sources(() => Promise.resolve({ ...settings, mode }), undefined, file),
     )
-  await record({ ...outage, role: "user" }, auto)
-  await record(outage, { provider: "local", id: "b" })
-  await record(outage, undefined)
-  await record({ role: "assistant", model: "b", stopReason: "error" }, auto)
-  await record({ ...outage, provider: "adaptive" }, auto)
-  await record({ role: "assistant", provider: "local", stopReason: "error" }, auto)
-  await record({ role: "assistant", provider: "local", model: "b" }, auto)
-  await record(outage, auto, "off")
-  expect(file.value()).toBeUndefined()
-  await record(outage, auto, "observe")
-  expect(file.value()).toMatchObject({ records: [{ key: { modelID: "b" } }] })
+  const skipped = memoryFile()
+  await record(skipped, { provider: "local", id: "b" }, "off")
+  await recordOutcome(
+    { ...outage, role: "user" },
+    { model: auto, sessionManager: { getBranch: () => [] } },
+    sources(() => Promise.resolve(settings), undefined, skipped),
+  )
+  await recordOutcome(
+    { role: "assistant", model: "b", stopReason: "error" },
+    { model: auto, sessionManager: { getBranch: () => [] } },
+    sources(() => Promise.resolve(settings), undefined, skipped),
+  )
+  await recordOutcome(
+    { ...outage, provider: "adaptive" },
+    { model: auto, sessionManager: { getBranch: () => [] } },
+    sources(() => Promise.resolve(settings), undefined, skipped),
+  )
+  await recordOutcome(
+    { role: "assistant", provider: "local", stopReason: "error" },
+    { model: auto, sessionManager: { getBranch: () => [] } },
+    sources(() => Promise.resolve(settings), undefined, skipped),
+  )
+  await recordOutcome(
+    { role: "assistant", provider: "local", model: "b" },
+    { model: auto, sessionManager: { getBranch: () => [] } },
+    sources(() => Promise.resolve(settings), undefined, skipped),
+  )
+  expect(skipped.value()).toBeUndefined()
+  const unknown = memoryFile()
+  await record(unknown, undefined)
+  expect(unknown.value()).toMatchObject({ records: [{ key: { modelID: "b" } }] })
+  const observe = memoryFile()
+  await record(observe, { provider: "local", id: "b" })
+  expect(observe.value()).toMatchObject({ records: [{ key: { modelID: "b" } }] })
+  const off = memoryFile()
+  await record(off, auto, "off")
+  expect(off.value()).toMatchObject({ records: [{ key: { modelID: "b" } }] })
 })
 
 it("fails open when the shared health file cannot be used", async () => {
@@ -416,7 +448,7 @@ it("fails open when the shared health file cannot be used", async () => {
     expect((await definition?.route(request, ctx))?.model.id).toBe("b")
     await recordOutcome(
       { role: "assistant", provider: "local", model: "b", stopReason: "stop" },
-      { model: auto },
+      { model: auto, sessionManager: { getBranch: () => [] } },
       locked,
     )
     expect(logged).toHaveBeenCalledTimes(2)
@@ -534,4 +566,23 @@ it("restarts a run that ended on a non-retried infra failure on the same tier, w
   )
   expect(spent).toMatchObject([{ details: { restarts: 1, tried: [] } }])
   expect(unnamed.notices).toEqual(["Adaptive: the request failed; continuing on standard."])
+})
+
+it("parks exhausted terminal recovery without adding an early continuation", async () => {
+  const send = vi.fn()
+  const park = vi.fn(() => Promise.resolve(true))
+  const read = sources(() => Promise.resolve(twoStandard))
+  const ctx = settle({ provider: "adaptive", id: "standard" }, true, quotaRun(0)).ctx
+  await afterRun({ aborted: false }, ctx, read, send, park)
+  expect(park).toHaveBeenCalledWith(expect.objectContaining({ restarts: 1 }))
+  expect(send).not.toHaveBeenCalled()
+  await afterRun(
+    { aborted: false },
+    settle({ provider: "adaptive", id: "standard" }, true, quotaRun(2)).ctx,
+    read,
+    send,
+    park,
+  )
+  expect(park).toHaveBeenLastCalledWith(expect.objectContaining({ restarts: 2 }))
+  expect(send).not.toHaveBeenCalled()
 })

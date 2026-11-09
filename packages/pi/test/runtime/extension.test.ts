@@ -1,4 +1,4 @@
-// covers: ["ADP-010", "ADP-011", "ADP-013", "ADP-014", "ADP-022", "ADP-057", "ADP-059", "ADP-061", "ADP-064"]
+// covers: ["ADP-010", "ADP-011", "ADP-013", "ADP-014", "ADP-022", "ADP-024", "ADP-057", "ADP-059", "ADP-060", "ADP-061", "ADP-064"]
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -19,6 +19,8 @@ import {
 import { defaultSettings } from "@coool/adaptive-core/state/settings/parse"
 import { registerAdaptive } from "../../src/host/extension.js"
 import { jsonFile } from "../../src/store.js"
+import { withHealth } from "../../src/health.js"
+import type { AdaptiveSources } from "../../src/host/extension.js"
 
 interface Harness {
   readonly cwd: string
@@ -27,6 +29,9 @@ interface Harness {
   readonly session: AgentSession
   readonly settingsReads: () => number
   readonly probeCalls: readonly string[]
+  readonly sources: AdaptiveSources
+  readonly waits: readonly number[]
+  setOnWait(callback: (() => void) | undefined): void
 }
 
 const settings = {
@@ -69,6 +74,10 @@ async function withSession(
     let settingsReads = 0
     let ids = 0
     const probeCalls: string[] = []
+    const waits: number[] = []
+    let now = 1_000
+    let onWait: (() => void) | undefined
+    let sources: AdaptiveSources | undefined
     const loader = new DefaultResourceLoader({
       cwd,
       agentDir: cwd,
@@ -78,7 +87,8 @@ async function withSession(
       noThemes: true,
       extensionFactories: [
         (pi) => {
-          registerAdaptive(pi, {
+          const resolved: AdaptiveSources = {
+            capacity: { file: jsonFile(join(cwd, "adaptive", "capacity.json")), clock: () => now },
             settings: () => {
               settingsReads += 1
               return Promise.resolve(routed)
@@ -97,13 +107,35 @@ async function withSession(
             },
             health: {
               file: jsonFile(join(cwd, "adaptive", "health.json")),
-              clock: Date.now,
+              clock: () => now,
               newId: () => {
                 ids += 1
                 return `probe-${String(ids)}`
               },
             },
-          })
+            receipts: jsonFile(join(cwd, "adaptive", "receipts.json")),
+            preferences: jsonFile(join(cwd, "adaptive", "preferences.json")),
+            parking: {
+              file: jsonFile(join(cwd, "adaptive", "parked.json")),
+              clock: () => now,
+              timer: (callback, delay) => {
+                waits.push(delay)
+                let cancelled = false
+                queueMicrotask(() => {
+                  onWait?.()
+                  if (!cancelled) {
+                    now += delay
+                    callback()
+                  }
+                })
+                return () => {
+                  cancelled = true
+                }
+              },
+            },
+          }
+          sources = resolved
+          registerAdaptive(pi, resolved)
           pi.registerTool({
             name: "adaptive_test_probe",
             label: "Probe",
@@ -135,7 +167,20 @@ async function withSession(
     try {
       await session.bindExtensions({})
       session.setActiveToolsByName([])
-      await run({ cwd, runtime, faux, session, settingsReads: () => settingsReads, probeCalls })
+      if (sources === undefined) throw new Error("sources missing")
+      await run({
+        cwd,
+        runtime,
+        faux,
+        session,
+        settingsReads: () => settingsReads,
+        probeCalls,
+        sources,
+        waits,
+        setOnWait: (callback) => {
+          onWait = callback
+        },
+      })
     } finally {
       session.dispose()
     }
@@ -174,9 +219,8 @@ it("loads the real extension binding and dispatches every virtual entry through 
     await session.prompt("Manual model")
     expect(assistants(session).at(-1)?.model).toBe("standard")
     expect(faux.state.callCount).toBe(5)
-    // One read per route, per routed response and per settled Adaptive run; the
-    // manual run reads none.
-    expect(harness.settingsReads()).toBe(12)
+    // Preview and routing share the scheduler; physical-model runs read none.
+    expect(harness.settingsReads()).toBe(19)
     await selectVirtual(harness, "auto")
     session.setActiveToolsByName(["adaptive_test_probe"])
     faux.setResponses([
@@ -186,7 +230,7 @@ it("loads the real extension binding and dispatches every virtual entry through 
     await session.prompt("Call the local probe")
     expect(harness.probeCalls).toEqual(["probe"])
     expect(faux.state.callCount).toBe(7)
-    expect(harness.settingsReads()).toBe(17)
+    expect(harness.settingsReads()).toBe(25)
     const toolRun = assistants(session).slice(-2)
     expect(toolRun.map((message) => message.model)).toEqual(["standard", "standard"])
     expect(toolRun.at(-1)?.stopReason).toBe("stop")
@@ -418,7 +462,7 @@ it("restarts a task at most twice", async () => {
   )
 })
 
-it("ends with a clear error and no loop when every model of the tier is down", async () => {
+it("waits in the owned route when every model is briefly limited, then dispatches once", async () => {
   await withSession(
     async (harness) => {
       const { faux, session } = harness
@@ -426,19 +470,16 @@ it("ends with a clear error and no loop when every model of the tier is down", a
       faux.setResponses([
         failing(RATE_LIMITED),
         failing(RATE_LIMITED),
-        fauxAssistantMessage("never reached"),
+        fauxAssistantMessage("Recovered after reset"),
       ])
       await session.prompt("Everything limited")
-      expect(faux.state.callCount).toBe(2)
+      expect(faux.state.callCount).toBe(3)
       expect(outcomes(session)).toEqual([
         ["standard", "error"],
         ["standard-b", "error"],
-        ["auto", "error"],
+        ["standard", "stop"],
       ])
-      expect(assistants(session).at(-1)).toMatchObject({
-        provider: "adaptive",
-        errorMessage: "Adaptive unavailable: all-blocked. Check your tier settings.",
-      })
+      expect(harness.waits.reduce((sum, delay) => sum + delay, 0)).toBe(31_000)
       expect(continuations(session)).toEqual([])
     },
     { settings: twoStandard, retry: true },
@@ -487,4 +528,114 @@ it("never restarts a run the user aborted", async () => {
     },
     { settings: twoStandard, retry: true },
   )
+})
+
+it("parks before dispatch in an owned headless input handler and submits the input exactly once", async () => {
+  await withSession(async (harness) => {
+    const { session, faux, sources } = harness
+    await selectVirtual(harness, "auto")
+    await withHealth(sources.health, (registry) => {
+      registry.observe({
+        kind: "failure",
+        key: { providerID: "adaptive-faux", modelID: "standard" },
+        category: "quota_exhausted",
+        definitive: true,
+        retryAfterMs: 180_000,
+      })
+    })
+    faux.setResponses([fauxAssistantMessage("Woke safely")])
+    await session.prompt("Never dispatched before the reset")
+    await session.waitForIdle()
+    expect(faux.state.callCount).toBe(1)
+    expect(session.agent.state.messages.filter((message) => message.role === "user")).toHaveLength(
+      1,
+    )
+    expect(assistants(session).at(-1)?.stopReason).toBe("stop")
+    expect(harness.waits.reduce((sum, delay) => sum + delay, 0)).toBe(181_000)
+    expect(
+      JSON.parse(await readFile(join(harness.cwd, "adaptive", "parked.json"), "utf8")),
+    ).toMatchObject({ records: [{ claimed: true, wakes: 1 }] })
+    expect(continuations(session)).toHaveLength(0)
+  })
+})
+
+it("parks after durable tool work and resumes through one hidden continuation, not the original input", async () => {
+  await withSession(async (harness) => {
+    const { session, faux } = harness
+    await selectVirtual(harness, "auto")
+    session.setActiveToolsByName(["adaptive_test_probe"])
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("adaptive_test_probe", {})]),
+      failing(QUOTA),
+      fauxAssistantMessage("Continued after the reset"),
+    ])
+    await session.prompt("Use the durable local probe once")
+    expect(harness.probeCalls).toEqual(["probe"])
+    expect(faux.state.callCount).toBe(3)
+    expect(session.agent.state.messages.filter((message) => message.role === "user")).toHaveLength(
+      1,
+    )
+    expect(continuations(session)).toHaveLength(1)
+    expect(continuations(session)[0]).toMatchObject({ display: false })
+    expect(assistants(session).at(-1)?.stopReason).toBe("stop")
+    expect(harness.waits.reduce((sum, delay) => sum + delay, 0)).toBe(901_000)
+    expect(
+      JSON.parse(await readFile(join(harness.cwd, "adaptive", "parked.json"), "utf8")),
+    ).toMatchObject({ records: [{ claimed: true, wakes: 1 }] })
+  })
+})
+
+it("aborts an owned route countdown without dispatching or restarting", async () => {
+  await withSession(async (harness) => {
+    const { session, faux, sources } = harness
+    await selectVirtual(harness, "auto")
+    await withHealth(sources.health, (registry) => {
+      registry.observe({
+        kind: "failure",
+        key: { providerID: "adaptive-faux", modelID: "standard" },
+        category: "rate_limited",
+        definitive: true,
+        retryAfterMs: 10_000,
+      })
+    })
+    harness.setOnWait(() => {
+      void session.abort()
+    })
+    faux.setResponses([fauxAssistantMessage("never dispatched")])
+    await session.prompt("Cancel the countdown")
+    await session.waitForIdle()
+    expect(faux.state.callCount).toBe(0)
+    expect(continuations(session)).toEqual([])
+    expect(assistants(session).at(-1)?.stopReason).toBe("aborted")
+  })
+})
+
+it("attributes passive Codex headers to the dispatched physical provider, never adaptive", async () => {
+  await withSession(async (harness) => {
+    const { session, faux, runtime } = harness
+    await selectVirtual(harness, "auto")
+    const physical = runtime.getModel("adaptive-faux", "standard")
+    if (physical === undefined) throw new Error("model missing")
+    faux.setResponses([
+      async (_context, options) => {
+        await options?.onResponse?.(
+          {
+            status: 200,
+            headers: {
+              "x-codex-primary-used-percent": "45",
+              "x-codex-primary-reset-after-seconds": "60",
+            },
+          },
+          physical,
+        )
+        return fauxAssistantMessage("Observed")
+      },
+    ])
+    await session.prompt("Capture passive capacity")
+    expect(
+      JSON.parse(await readFile(join(harness.cwd, "adaptive", "capacity.json"), "utf8")),
+    ).toMatchObject({
+      readings: [{ key: { providerID: "adaptive-faux" }, reading: { usedRatio: 0.45 } }],
+    })
+  })
 })

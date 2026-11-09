@@ -1,0 +1,6 @@
+{
+  "minimum": "1.5.0",
+  "versions": ["1.5.0", "latest"],
+  "surfaces": ["sdk", "json", "tui"],
+  "nodeMajor": 24
+}

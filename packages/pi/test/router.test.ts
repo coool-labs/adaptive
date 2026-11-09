@@ -24,6 +24,7 @@ const input: RouteInput = {
   })),
   demand: {},
   health: {},
+  capacity: {},
   exclude: [],
 }
 

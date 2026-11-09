@@ -204,6 +204,38 @@ function env(
 
 const EXIT = [undefined]
 
+it("opens a requested shared screen before the main menu", async () => {
+  const e = env()
+  await runAdaptive(e, "models")
+  expect(e.view.selects).toEqual(["Tier", "Adaptive (observe)"])
+})
+
+it("offers concrete host operations without changing the original menu for other hosts", async () => {
+  const called: string[] = []
+  const e = env()
+  e.view.selectQueue.push("health", "parked", "doctor", "preferences", "defaults", undefined)
+  const action = (name: string) => () => {
+    called.push(name)
+    return Promise.resolve()
+  }
+  await runAdaptive({
+    ...e,
+    actions: {
+      health: action("health"),
+      parked: action("parked"),
+      doctor: action("doctor"),
+      preferences: action("preferences"),
+      defaults: action("defaults"),
+    },
+  })
+  expect(called).toEqual(["health", "parked", "doctor", "preferences", "defaults"])
+  expect(e.view.selectOptions[0]?.map((option) => option.title)).toContain("Doctor")
+  const unavailable = env()
+  unavailable.view.selectQueue.push("doctor", undefined)
+  await runAdaptive(unavailable)
+  expect(unavailable.view.toasts).toEqual([])
+})
+
 describe("controller: admission failures", () => {
   it("toasts a string failure via String()", async () => {
     const e = env({

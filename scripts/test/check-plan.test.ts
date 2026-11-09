@@ -72,4 +72,42 @@ describe("check planning", () => {
       "e2e:runtime",
     ])
   })
+
+  it("runs the Pi SDK, full packed host matrix, and traceability gates in verify only", () => {
+    const piScripts = {
+      ...scripts,
+      pi: [
+        "typecheck",
+        "coverage",
+        "build",
+        "pack:check",
+        "e2e:runtime",
+        "e2e:tui",
+        "traceability",
+      ],
+    }
+    const verify = planChecks(
+      parseCheckOptions(["verify", "--pkg", "pi"], available),
+      ["pi"],
+      piScripts,
+    )
+    expect(verify.filter((step) => step.workspace === "pi").map((step) => step.script)).toEqual([
+      "typecheck",
+      "coverage",
+      "build",
+      "pack:check",
+      "e2e:runtime",
+      "e2e:tui",
+      "traceability",
+    ])
+    const check = planChecks(
+      parseCheckOptions(["check", "--pkg", "pi"], available),
+      ["pi"],
+      piScripts,
+    )
+    expect(check.filter((step) => step.workspace === "pi").map((step) => step.script)).toEqual([
+      "typecheck",
+      "coverage",
+    ])
+  })
 })

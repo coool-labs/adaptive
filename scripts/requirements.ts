@@ -1,5 +1,21 @@
 export type RequirementHost = "opencode" | "pi"
 
+/** Only real host journeys count as E2E; unit declarations cannot satisfy the gate. */
+export function requirementE2ESource(host: RequirementHost, file: string): boolean {
+  const prefixes =
+    host === "pi"
+      ? ["test/runtime/", "test/packed/", "test/tui/", "test/matrix/"]
+      : [
+          "test/runtime-e2e/",
+          "test/e2e-web/",
+          "test/e2e-gui/",
+          "test/e2e-tui/",
+          "test/plugin-test/",
+        ]
+  const normalized = file.replaceAll("\\", "/")
+  return prefixes.some((prefix) => normalized.startsWith(prefix))
+}
+
 /** Every live ID has exactly one scope; missing scopes fail closed. */
 export function requirementCatalogue(
   doc: string,

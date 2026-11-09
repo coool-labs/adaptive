@@ -8,6 +8,7 @@ import {
   pendingRecovery,
   planRoute,
   restartAfterRun,
+  parkingAfterRun,
   tierRequest,
   unitEvidence,
   type BranchEntry,
@@ -100,6 +101,9 @@ it("parses persisted task state and names the malformed field", () => {
     "tried[1]: providerID must be a non-empty string",
   )
   expect(parseTaskState({ ...state, tried: [standard] })).toEqual({ ...state, tried: [standard] })
+  expect(parseTaskState({ ...state, hops: 2, wakes: 1 })).toMatchObject({ hops: 2, wakes: 1 })
+  expect(() => parseTaskState({ ...state, hops: -1 })).toThrow("hops")
+  expect(() => parseTaskState({ ...state, wakes: "1" })).toThrow("wakes")
 })
 
 it("reads the latest router state of the matching virtual model only", () => {
@@ -345,6 +349,62 @@ function failedMessage(errorMessage: string) {
   return { stopReason: "error", errorMessage }
 }
 
+it("carries the automatic-wake budget through both restart and escalation units", () => {
+  const input = {
+    id: "auto" as const,
+    settings,
+    available: [standard, advanced],
+    tool: ESCALATE,
+    newId: ids(),
+  }
+  const parked = { ...state, wakes: 2 }
+  const escalated = escalationAfterRun({
+    ...input,
+    branch: [routerState("auto", parked), user, failure(overflow)],
+  })
+  const restarted = restartAfterRun({
+    ...input,
+    branch: [routerState("auto", parked), user, failure(QUOTA)],
+  })
+  expect(escalated?.wakes).toBe(2)
+  expect(restarted?.wakes).toBe(2)
+  expect(
+    planRoute({
+      id: "auto",
+      reason: "continuation",
+      state: parked,
+      branch: [continuation(restarted)],
+      newId: ids(),
+    }).state,
+  ).toMatchObject({ wakes: 2 })
+})
+
+it("offers parking, not an immediate restart, after the restart budget is spent", () => {
+  const input = {
+    id: "auto" as const,
+    settings,
+    available: [standard],
+    tool: ESCALATE,
+    newId: ids(),
+  }
+  expect(parkingAfterRun({ ...input, branch: [] })).toBeUndefined()
+  expect(
+    parkingAfterRun({ ...input, branch: [routerState("auto", state), user, failure(QUOTA)] }),
+  ).toBeUndefined()
+  expect(
+    parkingAfterRun({
+      ...input,
+      branch: [routerState("auto", { ...state, restarts: 2 }), user, failure(QUOTA)],
+    }),
+  ).toMatchObject({ tier: "standard", restarts: 2, wakes: 0 })
+  expect(
+    parkingAfterRun({
+      ...input,
+      branch: [routerState("auto", { ...state, restarts: 2, wakes: 3 }), user, failure(QUOTA)],
+    }),
+  ).toMatchObject({ wakes: 3 })
+})
+
 it("redirects a native retry after an infra failure within the tier, avoiding tried models", () => {
   const first = planRoute({
     id: "auto",
@@ -358,7 +418,7 @@ it("redirects a native retry after an infra failure within the tier, avoiding tr
     tier: "standard",
     sticky: false,
     exclude: [standard],
-    state: { ...state, tried: [standard] },
+    state: { ...state, tried: [standard], hops: 1 },
   })
   // The same model failing again in this unit is recorded once.
   const again = planRoute({

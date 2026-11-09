@@ -91,7 +91,7 @@ export function whatHappened(receipt: Receipt, copy: HostCopy): string {
         return copy.receiptExplanation(decision.reason)
       return deferExplanation[decision.reason]
     case "park":
-      return parkExplanation[decision.reason]
+      return copy.parkExplanation?.(decision.reason) ?? parkExplanation[decision.reason]
     case "escalate":
       return `This turn needed stronger capability, so Adaptive moved it to ${resourceLabel(decision.target)}.`
     case "observe-only":

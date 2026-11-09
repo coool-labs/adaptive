@@ -161,11 +161,11 @@ silently or they show a red error. Pi Adaptive does three things depending on th
    waits in place. The spinner says `Waiting for openai quota · 0:42 · esc to cancel`,
    and Esc aborts through the `signal` route receives. Nothing is added to the context.
 2. **Long wait before any work happened** (admission found nothing available). The
-   user's message is intercepted at `input` **[I]** and stored as parked work, so it is
+   user's message is intercepted at `input` **[V]** and stored as parked work, so it is
    never dispatched. A parked card appears (below). On wake, the original message is
    submitted with `sendUserMessage`. That is not a replay, because the message was never
-   sent. If `input` interception is not possible, the fallback is a `route()` throw with a
-   friendly message plus the card.
+   sent. The shared index contains metadata only; intercepted text and images live in
+   Pi's own session entry, never in the machine-wide index.
 3. **Long wait mid-run** (recovery in the tier exhausted after tool side effects). The
    run ends. On wake, Adaptive sends one hidden continuation message
    (`sendMessage({customType: "adaptive.resume", display: false}, {triggerTurn: true})`)
@@ -198,6 +198,12 @@ The parked card is a widget (`ctx.ui.setWidget("adaptive", …)`) above the edit
 - **Bounded.** Each task gets at most 3 automatic wakes (per task, because every wake
   starts a new unit). After that, the card asks the
   user instead of trying again.
+
+M4 implements the card and cancellation through a new prompt or physical model pick.
+The `/adaptive resume` and `/adaptive cancel` command bindings are M6 work. Native
+retry redirects are bounded separately: the third infrastructure failure in one unit
+parks instead of redirecting, even if Pi's native retry counter has reset after a
+successful tool response. Short waits re-admit using fresh shared health and capacity.
 
 ### 6. `/adaptive` command
 
@@ -251,12 +257,12 @@ In `print`/`json` modes:
 
 - no dialogs; status and notes are skipped where `ctx.hasUI` is false;
 - short waits still happen in place;
-- long parks end the run with a clear non-zero error ("Adaptive: all standard models are
-  out of quota until 18:42"), because nothing would be around to resume it;
-- a restart or escalation after the run ended (both use the hidden continuation) happens
-  only if Pi keeps a print/json process alive for a run triggered by `sendMessage` from
-  `agent_settled` (M0 item 4). If it does not, the run ends with the same kind of clear
-  error, naming the failure and the same-tier model that would have been used.
+- long parks are awaited inside the owned input, route, or settle handler, keeping
+  print/JSON alive until the reset. No detached timer calls a stale Pi context;
+- exhausted automatic-wake budgets leave a durable record and end routing with the
+  clear `Adaptive unavailable` error. A subsequent user prompt starts a fresh task;
+- terminal quota recovery waits before adding its one hidden continuation. Native
+  retries continue through their owned route without replaying a user instruction.
 
 The RPC mode forwards status and dialogs to the client as `extension_ui_request` **[V]**.
 
@@ -386,7 +392,7 @@ invalidates the token. Persist token consumption with the wake claim before disp
    every successful response, so a long run can see many retry chains, and users can raise
    it. Once the hop budget is spent, `route()` parks instead of redirecting.
 
-**As implemented in M3** (steps 2–3 above arrive with M4):
+**As implemented through M4:**
 
 - `message_end` handlers are awaited before Pi decides to retry, so every routed
   response is first recorded in the shared health file (`recordOutcome`). The retry's
@@ -395,13 +401,13 @@ invalidates the token. Persist token consumption with the wake claim before disp
   the router state, deduplicated) and re-admits within the same tier, excluding `tried`.
   A non-infra retry (for example a context overflow Pi still retries) stays sticky.
 - When the exclusion leaves nothing admissible, admission runs again without it, so the
-  failed model takes Pi's own backoff retry unless health blocks it. When health blocks
-  every tier model, `route()` throws `Adaptive unavailable: all-blocked…`. Pi ends the
-  run with that error under the virtual model (provider `adaptive`), never retries it,
-  and Adaptive never restarts from it.
-- There is no separate hop counter yet. A retry chain is bounded by Pi's `maxRetries`
-  and the tier size, and every hop is recorded in health, so a model that keeps failing
-  is soon blocked for the whole machine.
+  failed model takes Pi's own backoff retry unless health or capacity blocks it. A
+  known reset within two minutes waits in the owned route; longer waits persist a
+  park. The third infrastructure failure in a unit parks regardless of Pi's retry
+  budget. Tool-response successes do not reset this unit-level bound.
+- A TUI route that parks ends with `Adaptive unavailable` and a visible parked card;
+  its claimed wake starts one clean continuation. Headless routes await their wake
+  before re-admitting. All re-admissions use the shared scheduler, same-tier only.
 
 **Restart after a non-retried failure.** Pi never retries quota or billing errors.
 
@@ -424,8 +430,11 @@ escalations, restarts + 1, tried: [the failed model]}`.
 2. The next owned `route(reason:"continuation")` consumes the token once, starts a new
    unit of the **same task**, and admits on the same tier, avoiding `tried` while the tier
    has another admissible model.
-3. If health blocks every model of the tier, the route throws `Adaptive unavailable`
-   (parking replaces this in M4).
+3. Before sending a terminal recovery, admission previews shared health and capacity
+   without retaining probe tickets. A long wait parks first, then sends exactly one
+   hidden continuation on its claimed wake. A short wait stays inside the subsequent
+   route. If the two immediate restarts are spent, a blocked tier may still park within
+   its separate three-wake budget; an available tier never gets an extra immediate retry.
 
 The UI notice reads "Adaptive: <model ids> failed; continuing on another <tier> model."
 
@@ -475,7 +484,7 @@ Every write is lock + read + merge + atomic rename.
   transaction.
 - **Wake at most once across processes (ADP-024):** two Pi processes can have the same
   session open, and both arm a wake timer. A wake first claims the parked record in
-  `parked.json` under the lock (`{claimedBy, claimedAt}`). Only the claimer resumes;
+  `parked.json` under the lock (`{claimed: true, wakes: previous + 1}`). Only the claimer resumes;
   the other sees the claim and just clears its card.
 - **No read cache.** A cache keyed on file metadata was planned and dropped: the health
   file is small (≤ 512 records), and every read that matters happens under the lock as
@@ -487,6 +496,13 @@ Every write is lock + read + merge + atomic rename.
   rewrites a file it cannot parse.
 - **Privacy (ADP-051):** no message content, no keys, no headers beyond rate-limit
   numbers.
+
+The Pi session entry is the sole exception for an intercepted, never-dispatched
+prompt: it stores that prompt and its images in the host's ordinary user-content
+store so the input can survive restart. `parked.json` retains only session/token/tier,
+due time, wake count, and claim state (bounded at 512 sessions). A claim is durable
+before dispatch and is never automatically released after a crash: at-most-once
+dispatch takes precedence over replaying an ambiguous wake.
 
 ### Error evidence for Pi
 
@@ -687,6 +703,15 @@ example, if item 5 fails, pre-dispatch parks use the throw fallback).
   (resume prompt) and before it (card re-armed).
 - **Exit:** ADP-024 and 060 are covered; nothing is ever dispatched twice
   (state-machine property test over park → wake → cancel → new-message interleavings).
+
+Implemented in `src/parking.ts` (bounded locked metadata/claims and abortable waits),
+`src/host/parking.ts` (session lifecycle), `src/host/parked-view.ts` (host payload and
+card), and `src/host/routing.ts` (one admission path for previews and dispatch).
+Deterministic tests cover re-arm before reset, overdue confirmation, cancellation,
+stale timer/claim races, three-wake exhaustion, and optional-store failures. Real SDK
+faux-provider tests cover short wait/abort, owned headless interception, and a quota
+park after durable tool work with exactly one hidden continuation. Independent worker
+processes compete for the same `parked.json` wake; exactly one claims it.
 
 ### M5 — escalation and observe (S)
 

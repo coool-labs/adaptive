@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "claim": "historical-host-compatibility",
+  "minimum": "1.5.0",
+  "testedUpTo": "1.5.0",
+  "verifiedAt": "2026-11-09T09:12:02.863Z",
+  "artifact": {
+    "name": "@coool/pi-adaptive",
+    "version": "0.0.0",
+    "filename": "coool-pi-adaptive-0.0.0.tgz",
+    "integrity": "sha512-KCNRzoxokyBIe4+TumQTfA/o2suaq+IyQuenYn9TEfppJsmc1m9XmO2Jgs34xB06iZd+9M1inLaDbDFlcazdvg=="
+  },
+  "hosts": [
+    { "requested": "1.5.0", "version": "1.5.0", "surfaces": ["sdk", "json", "tui"] },
+    { "requested": "latest", "version": "1.5.0", "surfaces": ["sdk", "json", "tui"] }
+  ]
+}

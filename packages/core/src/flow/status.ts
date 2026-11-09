@@ -88,5 +88,17 @@ export function statusTable(snapshot: StatusSnapshot): string[] {
   return [render(header), ...rows.map(render)]
 }
 
+/** Narrow hosts keep health and capacity visible instead of clipping wide model columns. */
+export function compactStatus(snapshot: StatusSnapshot): string[] {
+  return healthEntries(snapshot).flatMap(({ tier, status }) => [
+    resourceLabel(status.ref),
+    `${tier} · ${status.health}`,
+    ...stateCell(status, snapshot.pin)
+      .split(", ")
+      .map((part) => `  ${part}`),
+    "",
+  ])
+}
+
 /** Empty-state copy for the status view when nothing is configured. */
 export const STATUS_EMPTY_MESSAGE = "No models configured yet — open Models to add some."

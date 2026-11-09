@@ -7,6 +7,7 @@
  * breaker admits one probe across all of them (ADP-059). No Pi imports.
  */
 import { classifyFailure } from "@coool/adaptive-core/health/classifier/classify"
+import type { FailureClassification } from "@coool/adaptive-core/health/classifier/types"
 import {
   DEFAULT_HEALTH_CONFIG,
   failureEvent,
@@ -86,18 +87,19 @@ export function releaseUnselected(
  * Record how one dispatched request ended. User cancellations are not
  * provider evidence. Only the dispatching process sees the outcome of a
  * half-open record, so a failure there is that probe's outcome; a success
- * closes the breaker from any state.
+ * closes the breaker from any state. Returns the failure classification of
+ * an errored dispatch, for the receipt outcome.
  */
 export function observeOutcome(
   registry: ResourceHealthRegistry,
   ref: ModelRef,
   message: FailedMessage,
-): void {
+): FailureClassification | undefined {
   const key = keyOf(ref)
-  if (message.stopReason === "aborted") return
+  if (message.stopReason === "aborted") return undefined
   if (message.stopReason !== "error") {
     registry.observe({ kind: "success", key })
-    return
+    return undefined
   }
   const classification = classifyFailure(failureEvidence(message))
   const breaker = registry.recordFor(key)?.breaker
@@ -107,4 +109,5 @@ export function observeOutcome(
       { success: false, category: classification.category },
     )
   registry.observe(failureEvent(key, classification))
+  return classification
 }

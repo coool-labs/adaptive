@@ -10,6 +10,7 @@ export default tseslint.config(
       "**/.scratch/**",
       "**/node_modules/**",
       "**/guiconfig.ts",
+      "test-artifacts/**",
     ],
   },
   eslint.configs.recommended,
