@@ -8,7 +8,8 @@
 import fc from "fast-check"
 import { describe, expect, it } from "vitest"
 
-import { selectResumable } from "../../../src/execution/parking/plan.js"
+import { MAX_PARKED_ATTEMPTS, selectResumable } from "../../../src/execution/parking/plan.js"
+import { DEFAULT_HEALTH_CONFIG } from "../../../src/health/resource-health/types.js"
 import type { ResumeContext } from "../../../src/execution/parking/plan.js"
 import { ParkedWorkStore } from "../../../src/state/parked-work/store.js"
 import type {
@@ -86,11 +87,18 @@ describe("selectResumable", () => {
     // A persistently failing rePark used to refresh parkedAt (eviction-immune)
     // and retry forever at every idle boundary. Records at the attempt budget
     // must now be dropped, not retried.
-    const exhausted = record("s#1", 10, { attempts: 5 })
-    const fresh = record("s#2", 20, { attempts: 4 })
+    const exhausted = record("s#1", 10, { attempts: MAX_PARKED_ATTEMPTS })
+    const fresh = record("s#2", 20, { attempts: MAX_PARKED_ATTEMPTS - 1 })
     const plan = selectResumable([exhausted, fresh], allAlive())
     expect(plan.attempt.map((r) => r.id)).toEqual(["s#2"])
     expect(plan.drop.map((r) => r.id)).toEqual(["s#1"])
+  })
+
+  it("the budget outlasts a full day of probes on the default quota window", () => {
+    // Regression (user-reported): five probes at the 15-minute quota window
+    // gave up after ~75 minutes, hours before a session limit reset.
+    const probeSpanMs = MAX_PARKED_ATTEMPTS * DEFAULT_HEALTH_CONFIG.defaultQuotaWindowMs
+    expect(probeSpanMs).toBeGreaterThanOrEqual(24 * 60 * 60_000)
   })
 
   it("drops records whose session is gone", () => {

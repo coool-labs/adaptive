@@ -4,8 +4,13 @@ import type { ParkedRecord } from "../../state/parked-work/types.js"
  * Resume-attempt budget (ADP-011): a record whose continuation prompt kept
  * failing is dropped once its attempts reach this count — the idle loop
  * must be provably bounded, not "as long as idle events keep firing".
+ *
+ * Sized for provider blackouts, not flaky prompts: a quota error rarely
+ * states its reset, so every wake probes again on the fixed default quota
+ * window (15 minutes) and a subscription outage of hours spends one attempt
+ * per probe. 96 probes cover a full day of a single blocked window.
  */
-export const MAX_PARKED_ATTEMPTS = 5
+export const MAX_PARKED_ATTEMPTS = 96
 
 /**
  * Predicates supplied by the wiring at each safe boundary. Kept as

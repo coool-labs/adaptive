@@ -790,7 +790,7 @@ it("bounds the headless re-wait loop without burning the resume budget", async (
 it("consumes a wake only when a resumed run fails again, then gives up visibly", async () => {
   const f = fixture()
   await f.limited()
-  // Five woken rounds that fail again: the budget drains one per failed delivery
+  // MAX_WAKES woken rounds that fail again: the budget drains one per failed delivery
   // (parkingAfterRun passes wakes+1 to recover when the resumed state carries a wake token).
   for (let wakes = 0; wakes < MAX_WAKES; wakes += 1) {
     expect(
@@ -808,7 +808,7 @@ it("consumes a wake only when a resumed run fails again, then gives up visibly",
   expect(notes).toContainEqual({
     version: 1,
     text: expect.stringContaining(
-      "Gave up after 5 failed resumes · /adaptive resume tries now",
+      `Gave up after ${String(MAX_WAKES)} failed resumes · /adaptive resume tries now`,
     ) as unknown,
   })
   await vi.runAllTimersAsync()

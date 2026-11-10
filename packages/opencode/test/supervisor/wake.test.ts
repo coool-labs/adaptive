@@ -16,6 +16,7 @@ import {
   UNKNOWN_WAKE_MS,
   WAKE_GRACE_MS,
 } from "@coool/adaptive-core/execution/parking/wake"
+import { MAX_PARKED_ATTEMPTS } from "@coool/adaptive-core/execution/parking/plan"
 import { parseParkedPayload } from "@coool/adaptive-core/state/parked-work/index"
 import { PARKED_KEY } from "@coool/adaptive-core/state/parked-work/types"
 import { parseReceiptsPayload } from "@coool/adaptive-core/state/receipts/index"
@@ -400,7 +401,7 @@ describe("parked-work wake", () => {
 
   it("gives up with a receipt once the resume cycles are spent", async () => {
     const storage = activeStorage()
-    seed(storage, PARKED_KEY, parkedSeed(4))
+    seed(storage, PARKED_KEY, parkedSeed(MAX_PARKED_ATTEMPTS - 1))
     const h = harness({ storage })
     await h.supervisor.settings()
     await flush()
@@ -412,7 +413,10 @@ describe("parked-work wake", () => {
     expect(parseParkedPayload(storedParked(h.storage))).toEqual([])
     expect(parseReceiptsPayload(storedReceipts(h.storage)).at(-1)).toMatchObject({
       sessionID: "s1",
-      decision: { kind: "park", detail: "gave up after 5 resume attempts" },
+      decision: {
+        kind: "park",
+        detail: `gave up after ${String(MAX_PARKED_ATTEMPTS)} resume attempts`,
+      },
     })
     expect(h.scheduler.pending()).toEqual([])
     expect((await h.supervisor.status()).waiting).toEqual([])
@@ -1034,5 +1038,186 @@ describe("parked-work wake", () => {
     await flush()
     spy.mockRestore()
     expect(h.scheduler.pending()).toEqual([])
+  })
+})
+
+const HOUR = 3_600_000
+const CADENCE = QUOTA_WINDOW + WAKE_GRACE_MS
+
+interface BlackoutRun {
+  handled: number
+  wakes: number
+  delays: number[]
+  recovered: boolean
+}
+
+function continuations(h: ReturnType<typeof harness>): number {
+  return h.session.log.filter((line) => line === CONTINUE).length
+}
+
+/** A run that starts counting after the continuations already delivered. */
+function startRun(h: ReturnType<typeof harness>): BlackoutRun {
+  return { handled: continuations(h), wakes: 0, delays: [], recovered: false }
+}
+
+/** The model Adaptive last switched s1 onto: the one the host runs next. */
+function switchedModel(h: ReturnType<typeof harness>): string {
+  const line = h.session.log.findLast((entry) => entry.startsWith("switch:s1:prov/"))
+  return line?.slice("switch:s1:prov/".length) ?? "a"
+}
+
+/**
+ * Plays the host through a provider blackout. Every continuation Adaptive
+ * delivers runs on the model it switched to and ends out of quota until
+ * `recoversAt`, then succeeds. Wakes fire (the clock moves to each timer)
+ * until the work recovers, Adaptive stops waking, or the next wake would land
+ * after `stopAt`.
+ */
+async function playBlackout(
+  h: ReturnType<typeof harness>,
+  run: BlackoutRun,
+  recoversAt: number,
+  stopAt = Number.POSITIVE_INFINITY,
+): Promise<void> {
+  for (;;) {
+    while (continuations(h) > run.handled) {
+      run.handled += 1
+      const { clock, supervisor } = h
+      await supervisor.handleReport(PROMPT)
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: "s1",
+        at: clock.now - 1,
+        model: ref("prov", switchedModel(h)),
+      })
+      await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: clock.now })
+      if (clock.now >= recoversAt) {
+        await supervisor.handleReport({
+          kind: "execution-succeeded",
+          sessionID: "s1",
+          at: clock.now,
+        })
+        run.recovered = true
+        return
+      }
+      await supervisor.handleReport(quotaFailure(clock.now))
+      await flush()
+    }
+    const timer = h.scheduler.pending()[0]
+    if (timer === undefined || h.clock.now + timer.delayMs > stopAt) return
+    if (run.wakes > 1_000) throw new Error("the blackout never settled")
+    run.wakes += 1
+    run.delays.push(await wake(h))
+  }
+}
+
+/** The plugin process restarting: same storage and session, new supervisor. */
+async function restart(h: ReturnType<typeof harness>): Promise<void> {
+  h.supervisor.dispose()
+  h.scheduler = new FakeScheduler()
+  h.supervisor = makeSupervisor({
+    storage: h.storage,
+    session: h.session,
+    scheduler: h.scheduler,
+    clock: () => h.clock.now,
+  })
+  await h.supervisor.settings()
+  await flush()
+}
+
+function gaveUp(h: ReturnType<typeof harness>): boolean {
+  return parseReceiptsPayload(storedReceipts(h.storage)).some((receipt) =>
+    JSON.stringify(receipt.decision).includes("gave up"),
+  )
+}
+
+function settled(h: ReturnType<typeof harness>): void {
+  expect(parseParkedPayload(storedParked(h.storage))).toEqual([])
+  expect(h.scheduler.pending()).toEqual([])
+}
+
+describe("long provider blackouts (fake clock)", () => {
+  it("waits out a five-hour blackout of every model, then continues the work", async () => {
+    // Regression (user-reported): a session limit that stays down for hours
+    // burned the whole resume budget on 15-minute probes, so Adaptive gave
+    // up long before the quota reset and the work never continued.
+    const h = harness()
+    const start = h.clock.now
+    await exhaustBoth(h)
+    const run = startRun(h)
+    await playBlackout(h, run, start + 5 * HOUR)
+    expect(run.recovered).toBe(true)
+    expect(run.wakes).toBeGreaterThanOrEqual(Math.floor((5 * HOUR) / CADENCE) - 1)
+    // The probe window stays at 15 minutes: no backoff stretches the wait.
+    expect(Math.max(...run.delays)).toBeLessThanOrEqual(CADENCE)
+    expect(gaveUp(h)).toBe(false)
+    settled(h)
+    expect((await h.supervisor.status()).waiting).toEqual([])
+  })
+
+  it("keeps waiting when the models run out of quota minutes apart", async () => {
+    // The incident's shape: prov/a and prov/b fail at different moments, so
+    // wakes alternate between short and long gaps and arrive twice per window.
+    const h = harness()
+    const start = h.clock.now
+    await runOutOfQuota(h, "a")
+    h.clock.now += 4 * 60_000
+    await runOutOfQuota(h, "b")
+    const run = startRun(h)
+    await playBlackout(h, run, start + 5 * HOUR)
+    expect(run.recovered).toBe(true)
+    expect(run.wakes).toBeGreaterThan(20)
+    expect(Math.min(...run.delays)).toBeLessThan(QUOTA_WINDOW / 2)
+    expect(gaveUp(h)).toBe(false)
+    settled(h)
+  })
+
+  it("survives plugin restarts during the blackout without losing or resetting the wait", async () => {
+    const h = harness()
+    const start = h.clock.now
+    await exhaustBoth(h)
+    const run = startRun(h)
+    const recoversAt = start + 5 * HOUR
+    for (let hour = 1; hour <= 5; hour += 1) {
+      await playBlackout(h, run, recoversAt, start + hour * HOUR)
+      expect(run.recovered).toBe(false)
+      h.clock.now = start + hour * HOUR
+      await restart(h)
+      expect(parseParkedPayload(storedParked(h.storage))).toHaveLength(1)
+      expect(h.scheduler.pending()).toHaveLength(1)
+    }
+    await playBlackout(h, run, recoversAt)
+    expect(run.recovered).toBe(true)
+    expect(gaveUp(h)).toBe(false)
+    settled(h)
+  })
+
+  it("gives every blackout a fresh budget once the work succeeded in between", async () => {
+    // Two twenty-hour blackouts need ~160 probes; one budget cannot cover both.
+    const h = harness()
+    for (let blackout = 0; blackout < 2; blackout += 1) {
+      const recoversAt = h.clock.now + 20 * HOUR
+      await exhaustBoth(h)
+      const run = startRun(h)
+      await playBlackout(h, run, recoversAt)
+      expect(run.recovered).toBe(true)
+      expect(gaveUp(h)).toBe(false)
+      settled(h)
+      h.clock.now += HOUR
+    }
+  })
+
+  it("covers a full day of blackout, then gives up with a receipt (bounded)", async () => {
+    const h = harness()
+    const start = h.clock.now
+    await exhaustBoth(h)
+    const run = startRun(h)
+    await playBlackout(h, run, Number.POSITIVE_INFINITY)
+    expect(run.recovered).toBe(false)
+    expect(run.wakes).toBeLessThanOrEqual(MAX_PARKED_ATTEMPTS)
+    expect(h.clock.now - start).toBeGreaterThanOrEqual(24 * HOUR)
+    expect(gaveUp(h)).toBe(true)
+    settled(h)
+    expect((await h.supervisor.status()).waiting).toEqual([])
   })
 })
