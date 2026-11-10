@@ -85,14 +85,11 @@ List several models per tier in your preference order — that order is the reco
 A tier entry may carry a Pi thinking level as `"variant": "high"`. The interactive editor
 (`/adaptive tiers`) builds tiers from model metadata, never from prompts.
 
-Pi's catalogue doesn't declare tool support, so verified declarations live in
-`adaptive/capabilities.json` beside the settings file:
-
-```json
-{ "models": [{ "providerID": "your-provider", "id": "your-model", "tools": true }] }
-```
-
-Undeclared models are treated as unknown, never guessed.
+Pi's catalogue doesn't declare tool support, and Adaptive never guesses from a
+name. Declare it from `/adaptive tools` (also in the main menu): pick a model,
+answer whether it calls tools, and confirm — the declaration is stored in
+`adaptive/capabilities.json` beside the settings file. An undeclared model is
+treated as unknown and skipped on tool turns.
 
 ## Commands
 
@@ -102,6 +99,7 @@ Undeclared models are treated as unknown, never guessed.
 | `/adaptive status`          | Tiers, resource health, capacity evidence.                   |
 | `/adaptive why`             | Explain the latest routing decision.                         |
 | `/adaptive tiers`           | Edit ordered tier membership.                                |
+| `/adaptive tools`           | Declare which models can call tools.                         |
 | `/adaptive health`          | Inspect health; manually mark a resource healthy.            |
 | `/adaptive resume`          | Retry parked work now (bypasses the give-up budget).         |
 | `/adaptive cancel`          | Cancel parked work.                                          |

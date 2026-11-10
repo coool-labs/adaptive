@@ -19,8 +19,15 @@ import type { Rpc } from "@opencode/schema/rpc"
 import type { Receipt } from "@coool/adaptive-core/state/receipts/types"
 import type { StatusSnapshot } from "@coool/adaptive-core/status"
 import type { AdaptiveRpc } from "./definition.js"
+import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
+import type { ResumeOutcome, CancelOutcome } from "@coool/adaptive-core/flow/actions"
+import type { DoctorCheck } from "@coool/adaptive-core/flow/doctor"
 
 export interface AdaptiveRpcSource {
+  resetHealth(model: ModelRef): Promise<void>
+  resumeParked(sessionID: string): Promise<ResumeOutcome>
+  cancelParked(sessionID: string): Promise<CancelOutcome>
+  doctor(): Promise<DoctorCheck[]>
   settings(): Promise<SettingsV1>
   updateSettings(patch: SettingsPatch): Promise<PatchResult>
   status(): Promise<StatusSnapshot>
@@ -122,6 +129,29 @@ export function adaptiveRpcHandlers(
   emit?: AdaptiveRpcEmit,
 ): { [Name in MethodName]: HandlerOf<Name> } {
   return {
+    "health.reset": (model, context) =>
+      source
+        .resetHealth(model)
+        .then(() => undefined)
+        .catch(() =>
+          context.error("internal", "Health could not be reset. Check Adaptive storage."),
+        ),
+    "parked.resume": (input, context) =>
+      source
+        .resumeParked(input.sessionID)
+        .catch((error: unknown) =>
+          context.error("internal", String(error).slice(0, LOG_ERROR_LENGTH)),
+        ),
+    "parked.cancel": (input, context) =>
+      source
+        .cancelParked(input.sessionID)
+        .catch(() =>
+          context.error("internal", "Parked work could not be cancelled. Check Adaptive storage."),
+        ),
+    "doctor.run": (_input, context) =>
+      source
+        .doctor()
+        .catch(() => context.error("internal", "Adaptive doctor could not read the setup.")),
     "settings.get": (_input, context) =>
       source
         .settings()

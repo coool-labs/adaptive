@@ -18,8 +18,9 @@ import { createStore, reconcile } from "solid-js/store"
 import { PLUGIN_ID } from "./plugin-id.js"
 import { adaptiveRpc } from "./rpc/definition.js"
 import type { OperatingMode } from "@coool/adaptive-core/routing/scheduler/types"
+import { TIERS } from "@coool/adaptive-core/routing/tier-policy/types"
 import { parseMode } from "@coool/adaptive-core/state/settings/index"
-import { runAdaptive } from "@coool/adaptive-core/flow/controller"
+import { runAdaptiveCommand } from "@coool/adaptive-core/flow/command"
 import { OPENCODE_COPY } from "./ui/copy.js"
 import type { AdaptiveApi, AdaptiveView } from "@coool/adaptive-core/flow/controller"
 import { errorText } from "@coool/adaptive-core/flow/options"
@@ -56,19 +57,33 @@ export function waitingChip(resumeAt: number | null, now: number): Chip {
 }
 
 /**
+ * The unconfigured chip: no tier has a model, so Adaptive cannot route anything.
+ * Amber like the other "needs your action" states; naming the command is the hint.
+ */
+export function setupChip(): Chip {
+  return { text: "Adaptive · run /adaptive to set up", fg: "#e5c07b" }
+}
+
+/**
  * The prompt footer chip for one session: parked work waiting for quota wins
- * over the mode, then the session's override, then the global mode (ADP-054).
- * `override` is undefined until fetched; null means "follows global".
+ * over everything; a session (or home) whose effective mode is unknown shows
+ * nothing; then the setup hint while nothing is configured; then the session's
+ * override, then the global mode (ADP-054). `override` is undefined until
+ * fetched; null means "follows global". `configured` is undefined until
+ * the first status read lands.
  */
 export function sessionChip(state: {
   mode: OperatingMode | null
   override: OperatingMode | null | undefined
   resumeAt: number | null | undefined
+  configured: boolean | undefined
   now: number
 }): Chip | null {
   if (state.resumeAt !== undefined) return waitingChip(state.resumeAt, state.now)
   const mode = state.override ?? state.mode
-  return mode === null ? null : chipFor(mode)
+  if (mode === null) return null
+  if (state.configured === false) return setupChip()
+  return chipFor(mode)
 }
 
 const BOOT_FETCH_RETRIES = 5
@@ -192,19 +207,29 @@ export default define({
           // Surface the command in the palette's suggested row: discovery was
           // the reason users never found the menu at all.
           suggested: true,
-          slash: { name: "adaptive" },
-          run: () => {
+          slash: { name: "adaptive", arguments: true },
+          run: (input) => {
             // Inside a session the flows steer that session's mode override
             // (ADP-054); on home they patch the global mode.
             const current = context.ui.router.current()
             const sessionID = current.type === "session" ? current.sessionID : undefined
-            void runAdaptive({
-              copy: OPENCODE_COPY,
-              api,
-              view,
-              models,
-              ...(sessionID !== undefined ? { sessionID } : {}),
-            }).catch((error: unknown) => {
+            void runAdaptiveCommand(
+              {
+                copy: OPENCODE_COPY,
+                api,
+                view,
+                models,
+                clock: Date.now,
+                actions: {
+                  resetHealth: (model) => client["health.reset"](model, at()),
+                  resume: (sessionID) => client["parked.resume"]({ sessionID }, at()),
+                  cancel: (sessionID) => client["parked.cancel"]({ sessionID }, at()),
+                  doctor: () => client["doctor.run"](undefined, at()),
+                },
+                ...(sessionID !== undefined ? { sessionID } : {}),
+              },
+              input ?? "",
+            ).catch((error: unknown) => {
               view.toast(errorText(error), "error")
             })
           },
@@ -220,8 +245,10 @@ export default define({
       mode: OperatingMode | null
       sessions: Record<string, OperatingMode | null>
       waiting: Record<string, number | null>
+      /** Any tier has a model; undefined until the first status read lands. */
+      configured: boolean | undefined
       now: number
-    }>({ mode: null, sessions: {}, waiting: {}, now: Date.now() })
+    }>({ mode: null, sessions: {}, waiting: {}, configured: undefined, now: Date.now() })
 
     const fetchMode = async (): Promise<boolean> => {
       try {
@@ -259,9 +286,14 @@ export default define({
       waitingReads += 1
       const read = waitingReads
       try {
-        const sessions = waitingSessions(await api.status())
+        const snapshot = await api.status()
+        const sessions = waitingSessions(snapshot)
         if (read !== waitingReads) return
         setChip("waiting", reconcile(sessions))
+        setChip(
+          "configured",
+          TIERS.some((tier) => snapshot.tiers[tier].length > 0),
+        )
         setChip("now", Date.now())
       } catch {
         // Keep the last known state until the next poll.
@@ -295,9 +327,19 @@ export default define({
       /* v8 ignore stop */
     }
     const chipNode = (sessionID: string | undefined) => {
-      // On home (no session id) the chip shows the global mode; in a session
-      // it shows the session's wait or EFFECTIVE mode (override ?? global).
-      if (sessionID === undefined) return renderChip(chip.mode === null ? null : chipFor(chip.mode))
+      // On home (no session id) the chip shows the setup hint, then the global
+      // mode; in a session it shows the session's wait or EFFECTIVE mode
+      // (override ?? global), with the same setup hint when unconfigured.
+      if (sessionID === undefined)
+        return renderChip(
+          sessionChip({
+            mode: chip.mode,
+            override: undefined,
+            resumeAt: undefined,
+            configured: chip.configured,
+            now: chip.now,
+          }),
+        )
       const override = chip.sessions[sessionID]
       // First render for this session: fetch the override; the store write
       // re-renders this node with the fetched value. Until then the global
@@ -308,6 +350,7 @@ export default define({
           mode: chip.mode,
           override,
           resumeAt: chip.waiting[sessionID],
+          configured: chip.configured,
           now: chip.now,
         }),
       )

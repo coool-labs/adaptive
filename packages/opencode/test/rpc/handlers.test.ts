@@ -9,6 +9,10 @@ import type { StatusSnapshot } from "@coool/adaptive-core/status"
 
 function source(overrides: Partial<AdaptiveRpcSource> = {}): AdaptiveRpcSource {
   return {
+    resetHealth: () => Promise.resolve(),
+    resumeParked: () => Promise.resolve("not-parked"),
+    cancelParked: () => Promise.resolve("not-parked"),
+    doctor: () => Promise.resolve([]),
     settings: () => Promise.resolve(defaultSettings()),
     updateSettings: (patch: SettingsPatch) =>
       Promise.resolve({
@@ -64,6 +68,44 @@ function receipt(): Receipt {
 describe("adaptiveRpcHandlers", () => {
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it("delegates health, parked controls and diagnostics with their explicit outcomes", async () => {
+    const resetHealth = vi.fn(() => Promise.resolve())
+    const resumeParked = vi.fn(() => Promise.resolve("waiting" as const))
+    const cancelParked = vi.fn(() => Promise.resolve("cancelled" as const))
+    const handlers = adaptiveRpcHandlers(source({ resetHealth, resumeParked, cancelParked }))
+    const model = { providerID: "p", id: "m", variant: "high" }
+    expect(await handlers["health.reset"](model, callContext())).toBeUndefined()
+    expect(resetHealth).toHaveBeenCalledWith(model)
+    expect(await handlers["parked.resume"]({ sessionID: "s" }, callContext())).toBe("waiting")
+    expect(resumeParked).toHaveBeenCalledWith("s")
+    expect(await handlers["parked.cancel"]({ sessionID: "s" }, callContext())).toBe("cancelled")
+    expect(cancelParked).toHaveBeenCalledWith("s")
+    expect(await handlers["doctor.run"](undefined, callContext())).toEqual([])
+  })
+
+  it("returns declared operation errors instead of RPC defects", async () => {
+    const fail = () => Promise.reject(new Error("failure"))
+    const handlers = adaptiveRpcHandlers(
+      source({ resetHealth: fail, resumeParked: fail, cancelParked: fail, doctor: fail }),
+    )
+    expect(await handlers["health.reset"]({ providerID: "p", id: "m" }, callContext())).toEqual({
+      type: "internal",
+      message: "Health could not be reset. Check Adaptive storage.",
+    })
+    expect(await handlers["parked.resume"]({ sessionID: "s" }, callContext())).toEqual({
+      type: "internal",
+      message: "Error: failure",
+    })
+    expect(await handlers["parked.cancel"]({ sessionID: "s" }, callContext())).toEqual({
+      type: "internal",
+      message: "Parked work could not be cancelled. Check Adaptive storage.",
+    })
+    expect(await handlers["doctor.run"](undefined, callContext())).toEqual({
+      type: "internal",
+      message: "Adaptive doctor could not read the setup.",
+    })
   })
 
   it("settings.get delegates to the source", async () => {
@@ -206,6 +248,10 @@ describe("adaptiveRpcHandlers", () => {
   it("matches the rpc definition method names (handler-binding contract)", () => {
     const handlers = adaptiveRpcHandlers(source())
     expect(Object.keys(handlers).sort()).toEqual([
+      "doctor.run",
+      "health.reset",
+      "parked.cancel",
+      "parked.resume",
       "receipts.list",
       "session-mode.get",
       "session-mode.set",

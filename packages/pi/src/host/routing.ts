@@ -274,8 +274,18 @@ export function virtualModels(
         }
         selectedRef = fallback
       } else {
-        if (decision.kind !== "apply")
-          throw new Error(`Adaptive unavailable: ${decision.reason}. Check your tier settings.`)
+        if (decision.kind !== "apply") {
+          // Pi's catalog does not declare tool support, so a tool turn can fail
+          // the gate on every configured model: point at the declaration flow.
+          const undeclared =
+            decision.reason === "no-compatible-resource" &&
+            decision.detail?.includes("tool-use-unsupported") === true
+          throw new Error(
+            undeclared
+              ? `Adaptive unavailable: ${decision.reason}. Run /adaptive tools to declare which of your models call tools.`
+              : `Adaptive unavailable: ${decision.reason}. Check your tier settings.`,
+          )
+        }
         selectedRef = decision.model
       }
       const selected = prepared.models.find(

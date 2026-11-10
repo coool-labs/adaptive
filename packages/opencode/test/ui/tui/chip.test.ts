@@ -16,6 +16,18 @@ import { settingsJSON } from "../../supervisor/helpers.js"
 
 type ChipMount = HTMLElement & { dispose: () => void }
 
+/** One configured model: keeps the mode chip (the setup hint needs empty tiers). */
+function configuredStatus(): unknown {
+  return {
+    mode: "observe",
+    pin: null,
+    tiers: { quick: [], standard: [{ ref: { providerID: "prov", id: "a" } }], advanced: [] },
+    parked: 0,
+    waiting: [],
+    receipts: 0,
+  }
+}
+
 function mountSlot(slot: { render: (input?: unknown) => unknown }, input?: unknown): ChipMount {
   const container = document.createElement("div")
   document.body.appendChild(container)
@@ -28,6 +40,7 @@ describe("the footer status chip render", () => {
     const { context, slots } = fakeTuiContext({
       settings: settingsJSON("observe"),
       clientPatches: [],
+      status: configuredStatus(),
     })
     await tuiPlugin.setup(context)
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -44,6 +57,7 @@ describe("the footer status chip render", () => {
     const { context, slots } = fakeTuiContext({
       settings: { ...settingsJSON("observe"), mode: "bogus" },
       clientPatches: [],
+      status: configuredStatus(),
     })
     await tuiPlugin.setup(context)
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -105,6 +119,7 @@ describe("the prompt chip's session mode (ADP-054)", () => {
       settings: settingsJSON("observe"),
       clientPatches: [],
       sessionMode: "observe",
+      status: configuredStatus(),
     })
     await tuiPlugin.setup(context)
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -123,6 +138,7 @@ describe("the prompt chip's session mode (ADP-054)", () => {
       settings: settingsJSON("observe"),
       clientPatches: [],
       failSessionModeGet: true,
+      status: configuredStatus(),
     })
     await tuiPlugin.setup(context)
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -141,6 +157,7 @@ describe("the prompt chip's session mode (ADP-054)", () => {
       settings: settingsJSON("observe"),
       clientPatches: [],
       sessionMode: null,
+      status: configuredStatus(),
     })
     await tuiPlugin.setup(context)
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -158,6 +175,8 @@ describe("the prompt chip's session mode (ADP-054)", () => {
         clientPatches: [],
         failSettingsGet: true,
         sessionMode: "observe",
+        // A configured tier: this test is about the cached override, not the setup hint.
+        status: configuredStatus(),
       })
       await tuiPlugin.setup(context)
       for (let tick = 0; tick < 12; tick++) {

@@ -22,6 +22,7 @@ interface FakeOptions {
   builtinServer?: boolean
   syncFails?: boolean
   selectFails?: boolean
+  status?: unknown
   models?: { providerID: string; modelID: string; name: string; variants: { id: string }[] }[]
 }
 
@@ -40,7 +41,11 @@ function fakeHost(options: FakeOptions = {}) {
   const status = { mode: "observe", pin: null, tiers: { quick: [], standard: [], advanced: [] } }
   const rpc = {
     "settings.get": call("settings.get", { ...defaultSettings(), inviteDismissed: true }),
-    "status.get": call("status.get", status),
+    "status.get": call("status.get", options.status ?? status),
+    "health.reset": call("health.reset", undefined),
+    "parked.resume": call("parked.resume", "resumed"),
+    "parked.cancel": call("parked.cancel", "cancelled"),
+    "doctor.run": call("doctor.run", []),
     "receipts.list": call("receipts.list", []),
     "session-mode.get": call("session-mode.get", { mode: null }),
     "tier-request.get": call("tier-request.get", { tier: "advanced" }),
@@ -98,7 +103,12 @@ function fakeHost(options: FakeOptions = {}) {
         selections.push(selection)
         if (options.selectFails === true) return Promise.reject(new Error("dialog broke"))
         const queue = answers[selection.title] ?? []
-        return Promise.resolve(queue.shift())
+        const answer = queue.shift()
+        return Promise.resolve(
+          typeof answer === "object" && answer !== null && "pick" in answer
+            ? selection.options.find((option) => option.title === answer.pick)?.value
+            : answer,
+        )
       },
       confirm: () => Promise.resolve(true),
       alert: () => Promise.resolve(),
@@ -246,6 +256,79 @@ describe("guiView over the host dialogs", () => {
 })
 
 describe("openAdaptive", () => {
+  it("wires health, parked controls and doctor to the current location", async () => {
+    const ref = { providerID: "prov", id: "a" }
+    const f = fakeHost({
+      session: { id: "s1", builtin: true, directory: "/project" },
+      status: {
+        mode: "observe",
+        pin: null,
+        parked: 1,
+        receipts: 0,
+        waiting: [{ sessionID: "s1", tier: "standard", resumeAt: null }],
+        tiers: {
+          quick: [],
+          advanced: [],
+          standard: [
+            {
+              ref,
+              health: "healthy",
+              breaker: "closed",
+              windowed: false,
+              windowUntil: null,
+              usedPercent: null,
+              resetAt: null,
+            },
+          ],
+        },
+      },
+      answers: {
+        "Adaptive (observe)": [
+          { pick: "Health" },
+          { pick: "Parked work" },
+          { pick: "Doctor" },
+          { pick: "Parked work" },
+        ],
+        "Health · select a model to reset": [ref],
+        "Parked work": ["s1", "s1"],
+        "This session's parked work": [{ pick: "Cancel" }, { pick: "Resume now" }],
+      },
+    })
+    const running = openAdaptive(f.host)
+    for (let turn = 0; turn < 100; turn += 1) await Promise.resolve()
+    const show = f.opened[0]
+    if (show === undefined) throw new Error("doctor dialog missing")
+    const container = document.createElement("div")
+    const dispose = render(
+      () =>
+        show({
+          close: () => {
+            dispose()
+          },
+        }) as Node,
+      container,
+    )
+    expect(container.textContent).toContain("Adaptive doctor")
+    container.querySelector("button")?.click()
+    await running
+    dispose()
+    const actions = f.rpcCalls.filter((call) =>
+      ["health.reset", "parked.cancel", "parked.resume", "doctor.run"].includes(call.method),
+    )
+    expect(actions.map(({ method, input }) => ({ method, input }))).toEqual([
+      { method: "health.reset", input: ref },
+      { method: "parked.cancel", input: { sessionID: "s1" } },
+      { method: "doctor.run", input: undefined },
+      { method: "parked.resume", input: { sessionID: "s1" } },
+    ])
+    expect(
+      actions.every(
+        (call) =>
+          JSON.stringify(call.options) === JSON.stringify({ location: { directory: "/project" } }),
+      ),
+    ).toBe(true)
+  })
+
   const modelInfo = [
     { providerID: "prov", modelID: "a", name: "Model A", variants: [{ id: "high" }] },
   ]

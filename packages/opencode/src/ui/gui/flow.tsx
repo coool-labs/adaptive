@@ -170,6 +170,16 @@ export async function openAdaptive(host: FlowHost): Promise<void> {
       copy: OPENCODE_COPY,
       api: guiFlowApi(host),
       view,
+      clock: Date.now,
+      actions: {
+        resetHealth: (model) =>
+          host.client.rpc(adaptiveRpc)["health.reset"](model, rpcLocation(host)),
+        resume: (sessionID) =>
+          host.client.rpc(adaptiveRpc)["parked.resume"]({ sessionID }, rpcLocation(host)),
+        cancel: (sessionID) =>
+          host.client.rpc(adaptiveRpc)["parked.cancel"]({ sessionID }, rpcLocation(host)),
+        doctor: () => host.client.rpc(adaptiveRpc)["doctor.run"](undefined, rpcLocation(host)),
+      },
       models: (): readonly ModelSummary[] =>
         (models?.list(session?.location) ?? []).map((info) => ({
           providerID: info.providerID,

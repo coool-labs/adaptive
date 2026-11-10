@@ -60,7 +60,11 @@ import {
 } from "@coool/adaptive-core/health/index"
 import { sweepRecord } from "@coool/adaptive-core/health/resource-health/transitions"
 import type { ResourceRecord } from "@coool/adaptive-core/health/resource-health/types"
-import { HealthRecordStore, HEALTH_KEY } from "@coool/adaptive-core/state/health/index"
+import {
+  HealthRecordStore,
+  HEALTH_KEY,
+  parseHealthPayload,
+} from "@coool/adaptive-core/state/health/index"
 import { CapacityReadingStore, CAPACITY_KEY } from "@coool/adaptive-core/state/capacity/index"
 import type { PersistedCapacityReading } from "@coool/adaptive-core/state/capacity/index"
 import { mergeReadings } from "@coool/adaptive-core/health/capacity/merge"
@@ -89,6 +93,9 @@ import type {
 } from "@coool/adaptive-core/state/receipts/types"
 import { buildStatus } from "@coool/adaptive-core/status"
 import type { StatusSnapshot } from "@coool/adaptive-core/status"
+import type { ResumeOutcome, CancelOutcome } from "@coool/adaptive-core/flow/actions"
+import { statusChecks, type DoctorCheck } from "@coool/adaptive-core/flow/doctor"
+import { resourceLabel } from "@coool/adaptive-core/flow/tiers"
 import { RECEIPTS_VIEW_LIMIT } from "./view.js"
 import { ParkedWorkStore, PARKED_KEY } from "@coool/adaptive-core/state/parked-work/index"
 import type { ParkedRecord } from "@coool/adaptive-core/state/parked-work/types"
@@ -121,6 +128,11 @@ import { TIERS } from "@coool/adaptive-core/routing/tier-policy/types"
 /** Which tiers currently have configured resources (ADP-005). */
 function configuredTiers(settings: SettingsV1): TierName[] {
   return TIERS.filter((tier) => settings.tiers[tier].length > 0)
+}
+
+function withoutHealth(records: readonly ResourceRecord[], model: ModelRef): ResourceRecord[] {
+  const keys = new Set(resourceChain(refKey(model)).map(resourceKeyID))
+  return records.filter((record) => !keys.has(resourceKeyID(record.key)))
 }
 
 /** Narrow a wire interrupt reason to the known vocabulary. */
@@ -303,6 +315,10 @@ export class Supervisor {
   constructor(options: SupervisorOptions) {
     this.#options = options
     this.#health = new ResourceHealthRegistry(options.clock)
+    options.ledger.onHealthReset((model) => {
+      this.#health.restore(withoutHealth(this.#health.snapshot(), model))
+    })
+    options.ledger.onResume((sessionID) => this.#resumeParked(sessionID))
     this.#capacity = new CapacityRegistry(options.clock)
     this.#codex = new CodexCapacitySensor({ providerID: CODEX_PROVIDER_ID })
     this.#capacity.register(this.#codex)
@@ -398,8 +414,7 @@ export class Supervisor {
       // pump) live on another instance — persisted failures are the only
       // health that instance can see, and a fresh instance must also assess
       // persisted failures before routing instead of starting from empty.
-      await this.#healthRecords.load()
-      this.#health.hydrate(this.#healthRecords.snapshot())
+      await this.#loadHealth()
       // Session-mode overrides hydrate the same way: a restart (or the
       // host's double-instance reconciliation) must keep steering sessions
       // under the modes the user set for them.
@@ -591,6 +606,96 @@ export class Supervisor {
   /** Current settings (awaits the constructor load). */
   async settings(): Promise<SettingsV1> {
     return this.#ensureSettings()
+  }
+
+  /** Reset the selected resource and its inherited limits without switching a model. */
+  async resetHealth(model: ModelRef): Promise<void> {
+    await this.#ready
+    await this.#options.ledger.healthOperation(async () => {
+      // Explicit mutations must not treat a failed read as an empty store.
+      const records = parseHealthPayload(await this.#options.storage.get(HEALTH_KEY))
+      await this.#healthRecords.replace(withoutHealth(records, model))
+      this.#options.ledger.resetHealth(model)
+    })
+    await this.#rearmWake()
+  }
+
+  async resumeParked(sessionID: string): Promise<ResumeOutcome> {
+    return this.#options.ledger.resumeElsewhere(sessionID) ?? this.#resumeParked(sessionID)
+  }
+
+  async #resumeParked(sessionID: string): Promise<ResumeOutcome> {
+    const settings = await this.#ensureSettings()
+    await this.#parked.refresh()
+    const record = this.#parked.list().find((entry) => entry.sessionID === sessionID)
+    if (record === undefined) return "not-parked"
+    if (this.#modeFor(sessionID, settings) !== "active")
+      throw new Error("Set this session to Active before resuming parked work.")
+    if (this.#disposed || this.#tracker.active(sessionID) !== undefined)
+      throw new Error("Wait for the current run before resuming parked work.")
+    // Manual retry grants a fresh bounded wake budget. Admission still checks
+    // health, compatibility and the shared continuation claim.
+    if (!this.#live) await this.#loadHealth()
+    const resumed = await this.#resumeAttempt({ ...record, attempts: 0 }, settings)
+    await this.#rearmWake()
+    return resumed ? "resumed" : "waiting"
+  }
+
+  async cancelParked(sessionID: string): Promise<CancelOutcome> {
+    await this.#ready
+    // Also cancels a continuation already claimed by another instance but
+    // still settling. Unlike automatic cleanup, persistence failures surface.
+    this.#options.ledger.noteTakeover(sessionID)
+    await this.#parked.refresh()
+    const records = this.#parked.list().filter((entry) => entry.sessionID === sessionID)
+    if (records.length === 0) return "not-parked"
+    for (const record of records) await this.#parked.resume(record.id)
+    this.#options.ledger.clearParked(sessionID)
+    this.#resumeCycles.delete(sessionID)
+    await this.#rearmWake()
+    return "cancelled"
+  }
+
+  async doctor(): Promise<DoctorCheck[]> {
+    const checks: DoctorCheck[] = []
+    try {
+      checks.push(...statusChecks(await this.status()))
+    } catch {
+      checks.push({ state: "error", message: "Settings, health or parked work could not be read" })
+    }
+    try {
+      const settings = await this.#ensureSettings()
+      const inventory = await listCandidates(this.#options.model)
+      for (const tier of TIERS) {
+        for (const ref of settings.tiers[tier]) {
+          const candidate = inventory.find(
+            (model) =>
+              model.providerID === ref.providerID &&
+              model.modelID === ref.id &&
+              model.variant === ref.variant,
+          )
+          const label = `${resourceLabel(ref)} (${tier})`
+          if (candidate === undefined || !candidate.enabled || !candidate.providerEnabled) {
+            checks.push({
+              state: "error",
+              message: `${label}: model unavailable`,
+              action: "Connect its provider or update /adaptive tiers.",
+            })
+          } else if (candidate.capabilities?.tools !== true) {
+            checks.push({
+              state: "warning",
+              message: `${label}: tool calls unsupported`,
+              action: "Use a tool-capable model for coding turns.",
+            })
+          } else {
+            checks.push({ state: "ok", message: `${label}: available with tool support` })
+          }
+        }
+      }
+    } catch {
+      checks.push({ state: "error", message: "Configured models could not be checked" })
+    }
+    return checks
   }
 
   /** Validate and persist a settings patch; returns per-field errors. */
@@ -1779,8 +1884,7 @@ export class Supervisor {
           if (!this.#live) {
             // No instance hears the host yet (fresh start): persisted health
             // is the only current evidence.
-            await this.#healthRecords.load()
-            this.#health.hydrate(this.#healthRecords.snapshot())
+            await this.#loadHealth()
           }
           // A taken record's delivery settles the backoff itself.
           if (!(await this.#sweepParked(settings))) this.#fruitless += 1
@@ -2214,9 +2318,21 @@ export class Supervisor {
     // Persist the record mirror fire-and-forget: the status surface reads
     // persisted records so a serving instance without the event-pump hooks
     // still reports true health. Failures are fail-open (ADP-031).
-    const records: readonly ResourceRecord[] = this.#health.snapshot()
-    void this.#healthRecords.replace(records).catch((error: unknown) => {
-      logFailOpen("health", error)
+    // Capture inside the shared queue: a reset ahead of this write must remove
+    // the same blockers from this instance before its snapshot is persisted.
+    void this.#options.ledger
+      .healthOperation(async () => {
+        if (!this.#disposed) await this.#healthRecords.replace(this.#health.snapshot())
+      })
+      .catch((error: unknown) => {
+        logFailOpen("health", error)
+      })
+  }
+
+  async #loadHealth(): Promise<void> {
+    await this.#options.ledger.healthOperation(async () => {
+      await this.#healthRecords.load()
+      this.#health.hydrate(this.#healthRecords.snapshot())
     })
   }
 

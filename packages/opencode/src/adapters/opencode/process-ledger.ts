@@ -9,6 +9,7 @@
  */
 import { sameModelRef, type ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 import type { TierName } from "@coool/adaptive-core/routing/tier-policy/types"
+import type { ResumeOutcome } from "@coool/adaptive-core/flow/actions"
 
 /** How long another instance's owned switch or prompt stays recognizable. */
 export const MARK_TTL_MS = 60_000
@@ -55,6 +56,15 @@ export interface ProcessLedger {
   mayBeParked(sessionID: string): boolean
   /** The parked store holds none of the session's work. */
   clearParked(sessionID: string): void
+  /** Orders health hydration, persistence and resets across duplicate instances. */
+  healthOperation(operation: () => Promise<void>): Promise<void>
+  /** The listener lives until this instance leaves. */
+  onHealthReset(reset: (model: ModelRef) => void): void
+  /** Publish only after the reset is durable, inside healthOperation. */
+  resetHealth(model: ModelRef): void
+  onResume(resume: (sessionID: string) => Promise<ResumeOutcome>): void
+  /** The live instance owns probe tickets and active-unit state. */
+  resumeElsewhere(sessionID: string): Promise<ResumeOutcome> | undefined
 }
 
 interface Mark<T> {
@@ -72,6 +82,9 @@ interface Shared {
   readonly continuations: Map<string, Mark<OwnedContinuation>>
   readonly wakes: Map<symbol, number>
   readonly parked: Set<string>
+  healthQueue: Promise<void>
+  readonly healthResets: Map<symbol, (model: ModelRef) => void>
+  readonly resumers: Map<symbol, (sessionID: string) => Promise<ResumeOutcome>>
 }
 
 /**
@@ -133,6 +146,9 @@ export function processLedger(holder: object = globalThis): ProcessLedger {
     continuations: new Map<string, Mark<OwnedContinuation>>(),
     wakes: new Map<symbol, number>(),
     parked: new Set<string>(),
+    healthQueue: Promise.resolve(),
+    healthResets: new Map<symbol, (model: ModelRef) => void>(),
+    resumers: new Map<symbol, (sessionID: string) => Promise<ResumeOutcome>>(),
   }
   slot[LEDGER] = shared
   const owner = Symbol("instance")
@@ -151,6 +167,8 @@ export function processLedger(holder: object = globalThis): ProcessLedger {
       left = true
       shared.live.delete(owner)
       shared.wakes.delete(owner)
+      shared.healthResets.delete(owner)
+      shared.resumers.delete(owner)
     },
     claim(sessionID) {
       if (shared.claims.has(sessionID)) return false
@@ -210,6 +228,26 @@ export function processLedger(holder: object = globalThis): ProcessLedger {
     },
     clearParked(sessionID) {
       shared.parked.delete(sessionID)
+    },
+    healthOperation(operation) {
+      const pending = shared.healthQueue.then(operation)
+      shared.healthQueue = pending.catch(() => undefined)
+      return pending
+    },
+    onHealthReset(reset) {
+      if (!left) shared.healthResets.set(owner, reset)
+    },
+    resetHealth(model) {
+      for (const reset of shared.healthResets.values()) reset(model)
+    },
+    onResume(resume) {
+      if (!left) shared.resumers.set(owner, resume)
+    },
+    resumeElsewhere(sessionID) {
+      for (const [other, resume] of shared.resumers) {
+        if (other !== owner && shared.live.has(other)) return resume(sessionID)
+      }
+      return undefined
     },
   }
 }

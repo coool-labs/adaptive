@@ -17,6 +17,51 @@ function pair(): [ReturnType<typeof processLedger>, ReturnType<typeof processLed
 }
 
 describe("process ledger", () => {
+  it("delegates resumes only to another live, registered instance", async () => {
+    const [one, two] = pair()
+    const sessions: string[] = []
+    one.onResume((sessionID) => {
+      sessions.push(sessionID)
+      return Promise.resolve("resumed")
+    })
+    expect(two.resumeElsewhere("s1")).toBeUndefined()
+    one.markLive()
+    expect(one.resumeElsewhere("s1")).toBeUndefined()
+    expect(await two.resumeElsewhere("s1")).toBe("resumed")
+    one.leave()
+    one.onResume(() => Promise.resolve("waiting"))
+    expect(two.resumeElsewhere("s2")).toBeUndefined()
+    expect(sessions).toEqual(["s1"])
+  })
+
+  it("orders health operations across instances and recovers after a failed write", async () => {
+    const [one, two] = pair()
+    const calls: string[] = []
+    const first = one.healthOperation(() => {
+      calls.push("first")
+      return Promise.reject(new Error("write failed"))
+    })
+    const second = two.healthOperation(() => {
+      calls.push("second")
+      return Promise.resolve()
+    })
+    await expect(first).rejects.toThrow("write failed")
+    await second
+    expect(calls).toEqual(["first", "second"])
+  })
+
+  it("broadcasts health resets to registered instances until they leave", () => {
+    const [one, two] = pair()
+    const calls: string[] = []
+    one.onHealthReset((model) => calls.push(`one:${model.id}`))
+    two.onHealthReset((model) => calls.push(`two:${model.id}`))
+    one.resetHealth(A)
+    two.leave()
+    two.onHealthReset(() => calls.push("disposed"))
+    one.resetHealth(B)
+    expect(calls).toEqual(["one:a", "two:a", "one:b"])
+  })
+
   it("lives on the global object by default, shared by every view", () => {
     const first = processLedger()
     const second = processLedger()

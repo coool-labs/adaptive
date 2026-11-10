@@ -19,7 +19,12 @@ describe("adaptiveRpc definition", () => {
   })
 
   it("rejects empty and oversized session identifiers on read methods", () => {
-    for (const name of ["session-mode.get", "tier-request.get"] as const) {
+    for (const name of [
+      "session-mode.get",
+      "tier-request.get",
+      "parked.resume",
+      "parked.cancel",
+    ] as const) {
       for (const sessionID of ["", "s".repeat(129)]) {
         const verdict = validate(adaptiveRpc.methods[name].input, { sessionID })
         expect("issues" in verdict).toBe(true)
@@ -36,6 +41,10 @@ describe("adaptiveRpc definition", () => {
   it("pins the id, method names, and event names", () => {
     expect(ADAPTIVE_RPC_ID).toBe("coool.adaptive")
     expect(Object.keys(adaptiveRpc.methods).sort()).toEqual([
+      "doctor.run",
+      "health.reset",
+      "parked.cancel",
+      "parked.resume",
       "receipts.list",
       "session-mode.get",
       "session-mode.set",
@@ -53,7 +62,7 @@ describe("adaptiveRpc definition", () => {
   })
 
   it("void schemas accept undefined and reject any other input", () => {
-    for (const name of ["settings.get", "status.get", "receipts.list"] as const) {
+    for (const name of ["settings.get", "status.get", "receipts.list", "doctor.run"] as const) {
       const input = adaptiveRpc.methods[name].input
       expect(validate(input, undefined)).toEqual({ value: undefined })
       expect("issues" in validate(input, 1)).toBe(true)
@@ -74,6 +83,38 @@ describe("adaptiveRpc definition", () => {
     const output = adaptiveRpc.methods["settings.get"].output
     const value = { version: 1, mode: "observe" }
     expect(validate(output, value)).toEqual({ value })
+  })
+
+  it("health reset requires bounded model identifiers including any variant", () => {
+    const input = adaptiveRpc.methods["health.reset"].input
+    for (const value of [
+      null,
+      [],
+      {},
+      { providerID: 1 },
+      { providerID: " " },
+      { providerID: "x".repeat(1025) },
+      { providerID: "p", id: "" },
+      { providerID: "p", id: "m", variant: null },
+      { providerID: "p", id: "m", variant: " " },
+    ]) {
+      expect(validate(input, value)).toHaveProperty("issues")
+    }
+    for (const value of [
+      { providerID: "p", id: "m" },
+      { providerID: "p", id: "m", variant: "high" },
+    ])
+      expect(validate(input, value)).toEqual({ value })
+    expect(validate(adaptiveRpc.methods["health.reset"].output, undefined)).toEqual({
+      value: undefined,
+    })
+    expect(validate(adaptiveRpc.methods["parked.resume"].output, "waiting")).toEqual({
+      value: "waiting",
+    })
+    expect(validate(adaptiveRpc.methods["parked.cancel"].output, "cancelled")).toEqual({
+      value: "cancelled",
+    })
+    expect(validate(adaptiveRpc.methods["doctor.run"].output, [])).toEqual({ value: [] })
   })
 
   it("the settings-changed event schema validates its data object", () => {

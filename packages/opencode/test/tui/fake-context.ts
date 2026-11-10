@@ -195,6 +195,10 @@ export function fakeTuiContext(options: {
                 )
           },
           "receipts.list": () => Promise.resolve(options.receipts ?? []),
+          "health.reset": () => Promise.resolve(undefined),
+          "parked.resume": () => Promise.resolve("resumed"),
+          "parked.cancel": () => Promise.resolve("cancelled"),
+          "doctor.run": () => Promise.resolve([]),
           "session-mode.get": (input: { sessionID: string }) => {
             counts.sessionModeGets += 1
             return options.failSessionModeGet

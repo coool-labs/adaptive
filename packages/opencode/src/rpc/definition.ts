@@ -28,6 +28,9 @@ import type { TierName } from "@coool/adaptive-core/routing/tier-policy/types"
 import { MAX_SESSION_ID_LENGTH } from "@coool/adaptive-core/state/session-modes/types"
 import type { Receipt } from "@coool/adaptive-core/state/receipts/types"
 import type { StatusSnapshot } from "@coool/adaptive-core/status"
+import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
+import type { ResumeOutcome, CancelOutcome } from "@coool/adaptive-core/flow/actions"
+import type { DoctorCheck } from "@coool/adaptive-core/flow/doctor"
 
 export const ADAPTIVE_RPC_ID = "coool.adaptive"
 const RPC_VENDOR = "coool.adaptive"
@@ -69,6 +72,14 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const isString = (value: unknown): value is string => typeof value === "string"
 
+const modelIdentifier = (value: unknown): boolean =>
+  isString(value) && value.trim().length > 0 && value.length <= 1024
+const isModelRef = (value: unknown): boolean =>
+  isRecord(value) &&
+  modelIdentifier(value["providerID"]) &&
+  modelIdentifier(value["id"]) &&
+  (value["variant"] === undefined || modelIdentifier(value["variant"]))
+
 /**
  * `{ sessionID: string }` wire shape. Bounds checked here too: a session id
  * beyond the bound cannot be a real host identifier and an empty string is
@@ -97,6 +108,35 @@ const isTierRequestSet = (value: unknown): boolean =>
 export const adaptiveRpc = Rpc.define({
   id: ADAPTIVE_RPC_ID,
   methods: {
+    "health.reset": {
+      errors: INTERNAL_ERROR,
+      input: schema<ModelRef>(
+        isModelRef,
+        "providerID, id and optional variant must be non-empty strings of at most 1024 characters",
+      ),
+      output: voidSchema(),
+    },
+    "parked.resume": {
+      errors: INTERNAL_ERROR,
+      input: schema<{ sessionID: string }>(
+        hasSessionID,
+        "sessionID must be a non-empty string of at most 128 characters",
+      ),
+      output: schema<ResumeOutcome>(isString, "output must be a resume outcome"),
+    },
+    "parked.cancel": {
+      errors: INTERNAL_ERROR,
+      input: schema<{ sessionID: string }>(
+        hasSessionID,
+        "sessionID must be a non-empty string of at most 128 characters",
+      ),
+      output: schema<CancelOutcome>(isString, "output must be a cancel outcome"),
+    },
+    "doctor.run": {
+      errors: INTERNAL_ERROR,
+      input: voidSchema(),
+      output: schema<DoctorCheck[]>(Array.isArray, "output must be an array"),
+    },
     "settings.get": {
       errors: INTERNAL_ERROR,
       input: voidSchema(),

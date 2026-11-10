@@ -562,6 +562,10 @@ describe("plugin entry: rpc surface", () => {
     await adaptivePlugin.setup(context)
     expect(record?.definition.id).toBe("coool.adaptive")
     expect(Object.keys(record?.definition.methods ?? {}).sort()).toEqual([
+      "doctor.run",
+      "health.reset",
+      "parked.cancel",
+      "parked.resume",
       "receipts.list",
       "session-mode.get",
       "session-mode.set",

@@ -24,6 +24,8 @@ It is set up entirely from the `/adaptive` menu in OpenCode. There are no config
 - **Quota awareness.** It reads usage from provider response headers. When a subscription is nearly used up (about 10% left), new tasks go to the next ready model in the tier, and it is used again after the reset time when the provider reports one.
 - **Recovery that survives a restart.** If work is interrupted and cannot continue right away because no model in its tier is ready, it is saved and resumes by itself when the first one returns (for example when a quota resets), without a new prompt and without repeating finished tool calls — even after an OpenCode restart. Meanwhile the footer shows `Adaptive · waiting · resumes 18:42`.
 - **Dry run.** In `observe` mode it records what it would have done, with the reason, before it changes anything. A session can have its own mode.
+- **Manual controls.** Mark a model healthy after a cooldown you know has passed, and resume or cancel parked work from the session itself — no prompt resend, no repeated tool calls.
+- **Doctor.** One `/adaptive doctor` report flags empty tiers, models that have gone missing or lost tool support, limited resources and parked work, with what to do next.
 - **Escalation on evidence only.** An outage never sends work to a more expensive tier. Moving up needs a context overflow, a policy rejection, or an explicit request from the agent.
 
 ## Install
@@ -51,6 +53,20 @@ New installs start in `observe` mode: Adaptive records what it would do but chan
 Any session can override the global mode: open `/adaptive` inside the session and choose **This session…**.
 
 To reorder or remove a model, select it in the tier list. **Status** shows each model's state, including subscription usage (`used 72%, resets 18:42`) when the provider reports it.
+
+The menu also carries the everyday operations, and each has a slash shortcut:
+
+| Command                     | Purpose                                                                 |
+| --------------------------- | ----------------------------------------------------------------------- |
+| `/adaptive`                 | Main menu.                                                              |
+| `/adaptive status`          | Tiers, resource health, capacity evidence.                              |
+| `/adaptive why`             | Explain the latest routing decision.                                    |
+| `/adaptive tiers`           | Edit ordered tier membership.                                           |
+| `/adaptive health`          | Mark a model healthy again after a cooldown or quota reset.             |
+| `/adaptive resume`          | Retry this session's parked work now (bypasses the give-up budget).     |
+| `/adaptive cancel`          | Cancel this session's parked work.                                      |
+| `/adaptive observe on\|off` | Enable or disable observation of manual-model sessions.                 |
+| `/adaptive doctor`          | Check tiers, model availability, tool support, health, and parked work. |
 
 ## Tiers
 
@@ -97,6 +113,7 @@ An outage never moves work to a stronger tier. Work only moves up on real eviden
 - **Nothing changes.** You are in `observe` mode. Switch to `active` in `/adaptive` → **Mode**.
 - **A model is never picked.** Its provider must be connected in OpenCode.
 - **Receipts show `park` on a new task.** Every model in its tier was blocked when the task started, so it ran on OpenCode's own model. The receipt says why; check `/adaptive` → **Status** for cooldowns.
+- **A model stays limited although its quota reset.** The provider did not report the reset yet. If you know better, `/adaptive health` marks it healthy.
 - **Why did it pick that model?** `/adaptive` → **Receipts**.
 - **"Plugin failed" toast.** The plugin didn't load. Update it with `opencode plugin update`, or remove and add it again.
 

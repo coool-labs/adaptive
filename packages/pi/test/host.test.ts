@@ -131,7 +131,11 @@ it("rejects tool support that Pi's catalogue cannot verify, oversized context, a
     sources(() => Promise.resolve(settings)),
     () => ["read"],
   )
-  await expect(tools?.route(request, ctx)).rejects.toThrow("no-compatible-resource")
+  // Undeclared tool support points at the declaration flow; every other
+  // incompatibility keeps the generic tier-settings hint.
+  await expect(tools?.route(request, ctx)).rejects.toThrow(
+    "Adaptive unavailable: no-compatible-resource. Run /adaptive tools to declare which of your models call tools.",
+  )
   const [definition] = virtualModels(
     sources(() => Promise.resolve(settings)),
     () => [],
@@ -146,7 +150,7 @@ it("rejects tool support that Pi's catalogue cannot verify, oversized context, a
         sessionManager: branch,
       },
     ),
-  ).rejects.toThrow("no-compatible-resource")
+  ).rejects.toThrow("Adaptive unavailable: no-compatible-resource. Check your tier settings.")
   await expect(
     definition?.route(
       {

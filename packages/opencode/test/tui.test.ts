@@ -1,7 +1,7 @@
 // covers: ["ADP-024", "ADP-032", "ADP-033", "ADP-054", "ADP-055"]
 import { describe, expect, it, vi } from "vitest"
 
-import tuiPlugin, { chipFor, sessionChip, waitingChip } from "../src/tui.js"
+import tuiPlugin, { chipFor, sessionChip, setupChip, waitingChip } from "../src/tui.js"
 import { settingsJSON } from "./supervisor/helpers.js"
 import { fakeTuiContext, modelInfo } from "./tui/fake-context.js"
 import type { OperatingMode } from "@coool/adaptive-core/routing/scheduler/types"
@@ -14,7 +14,75 @@ function observedSettings(
   return { ...settingsJSON(mode, tiers), inviteDismissed: true }
 }
 
+/** One configured model: keeps the mode chip (the setup hint needs empty tiers). */
+function configuredStatus(): unknown {
+  return {
+    mode: "observe",
+    pin: null,
+    tiers: { quick: [], standard: [{ ref: { providerID: "prov", id: "a" } }], advanced: [] },
+    parked: 0,
+    waiting: [],
+    receipts: 0,
+  }
+}
+
 describe("tui entry", () => {
+  it("dispatches action subcommands through location-scoped RPC", async () => {
+    const rpcCalls: { method: string; options: unknown }[] = []
+    const location = { directory: "/project" }
+    const ref = { providerID: "prov", id: "a" }
+    const { context, layers, dialogs } = fakeTuiContext({
+      settings: observedSettings("active"),
+      clientPatches: [],
+      rpcCalls,
+      location,
+      route: { type: "session", sessionID: "s1" },
+      status: {
+        mode: "active",
+        pin: null,
+        parked: 0,
+        waiting: [],
+        receipts: 0,
+        tiers: {
+          quick: [],
+          advanced: [],
+          standard: [
+            {
+              ref,
+              health: "healthy",
+              breaker: "closed",
+              windowed: false,
+              windowUntil: null,
+              usedPercent: null,
+              resetAt: null,
+            },
+          ],
+        },
+      },
+    })
+    const dispose = await tuiPlugin.setup(context)
+    const command = (
+      layers[0] as { commands: { slash: { arguments?: boolean }; run: (input: string) => void }[] }
+    ).commands[0]
+    if (command === undefined) throw new Error("command missing")
+    expect(command.slash.arguments).toBe(true)
+    dialogs.selectQueue.push(ref)
+    dialogs.confirmQueue.push(true)
+    for (const input of ["health", "resume", "cancel", "doctor"]) {
+      command.run(input)
+      for (let turn = 0; turn < 30; turn += 1) await Promise.resolve()
+    }
+    for (const method of ["health.reset", "parked.resume", "parked.cancel", "doctor.run"])
+      expect(rpcCalls).toContainEqual({ method, options: { location } })
+    expect(dialogs.toasts.map((toast) => toast.message)).toEqual([
+      "Health reset",
+      "Resuming parked work",
+      "Parked work cancelled",
+    ])
+    dialogs.shows.at(-1)?.onClose?.()
+    await dispose?.()
+  })
+
   it("registers the /adaptive slash command", async () => {
     const { context, layers } = fakeTuiContext({
       settings: settingsJSON("observe"),
@@ -311,6 +379,7 @@ describe("tui entry: footer chip", () => {
       settings: settingsJSON("observe"),
       clientPatches: [],
       sessionMode: "active",
+      status: configuredStatus(),
     })
     await tuiPlugin.setup(context)
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -373,7 +442,11 @@ describe("tui entry: waiting chip (ADP-024)", () => {
     const snapshot = (waiting: unknown[]) => ({
       mode: "active",
       pin: null,
-      tiers: { quick: [], standard: [], advanced: [] },
+      tiers: {
+        quick: [],
+        standard: [{ ref: { providerID: "prov", id: "a" } }],
+        advanced: [],
+      },
       parked: waiting.length,
       waiting,
       receipts: 0,
@@ -422,23 +495,41 @@ describe("sessionChip", () => {
   const AT = new Date(2026, 10, 7, 18, 42).getTime()
 
   it("shows a parked session's wait over its mode", () => {
-    expect(sessionChip({ mode: "active", override: null, resumeAt: AT, now: NOW })).toEqual({
+    expect(
+      sessionChip({ mode: "active", override: null, resumeAt: AT, now: NOW, configured: true }),
+    ).toEqual({
       text: "Adaptive · waiting · resumes 18:42",
       fg: "#e5c07b",
     })
-    expect(sessionChip({ mode: null, override: undefined, resumeAt: null, now: NOW })).toEqual(
-      waitingChip(null, NOW),
-    )
+    expect(
+      sessionChip({ mode: null, override: undefined, resumeAt: null, now: NOW, configured: true }),
+    ).toEqual(waitingChip(null, NOW))
   })
 
   it("falls back to the override, then the global mode", () => {
-    const base = { resumeAt: undefined, now: NOW }
+    const base = { resumeAt: undefined, now: NOW, configured: true as const }
     expect(sessionChip({ ...base, mode: "active", override: "off" })).toEqual(chipFor("off"))
     expect(sessionChip({ ...base, mode: "active", override: null })).toEqual(chipFor("active"))
     expect(sessionChip({ ...base, mode: "observe", override: undefined })).toEqual(
       chipFor("observe"),
     )
     expect(sessionChip({ ...base, mode: null, override: undefined })).toBeNull()
+  })
+
+  it("asks for setup while no tier is configured, but the wait still wins", () => {
+    expect(setupChip()).toEqual({ text: "Adaptive · run /adaptive to set up", fg: "#e5c07b" })
+    expect(
+      sessionChip({
+        mode: "active",
+        override: null,
+        resumeAt: undefined,
+        now: NOW,
+        configured: false,
+      }),
+    ).toEqual(setupChip())
+    expect(
+      sessionChip({ mode: null, override: undefined, resumeAt: AT, now: NOW, configured: false }),
+    ).toEqual(waitingChip(AT, NOW))
   })
 })
 
