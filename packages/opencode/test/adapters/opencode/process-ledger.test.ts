@@ -72,6 +72,18 @@ describe("process ledger", () => {
     second.release("ledger-test")
   })
 
+  it("ignores a ledger an older release left on the holder", () => {
+    const legacy = { live: new Set<symbol>(), claims: new Set<string>() }
+    const holder = { [Symbol.for("coool.adaptive/process-ledger")]: legacy }
+    const ledger = processLedger(holder)
+    const reset: string[] = []
+    ledger.onHealthReset((model) => reset.push(model.id))
+    ledger.resetHealth(A)
+    expect(reset).toEqual(["a"])
+    expect(ledger.claim("s1")).toBe(true)
+    expect(legacy.claims.size).toBe(0)
+  })
+
   it("knows when another instance hears the host, until it leaves", () => {
     const [one, two] = pair()
     expect(one.liveElsewhere()).toBe(false)

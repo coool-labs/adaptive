@@ -90,9 +90,12 @@ interface Shared {
 /**
  * Duplicate instances may come from separate module copies, so the ledger
  * lives on the holder (`globalThis`) under a registry symbol every copy
- * resolves identically.
+ * resolves identically. A copy from another release may already have
+ * published a ledger of a different shape (the host can keep an older plugin
+ * loaded beside a newer one); the shape version in the key keeps copies that
+ * disagree about it from sharing one. Bump it whenever `Shared` changes.
  */
-const LEDGER = Symbol.for("coool.adaptive/process-ledger")
+const LEDGER = Symbol.for("coool.adaptive/process-ledger/2")
 
 type LedgerHolder = Record<symbol, Shared | undefined>
 

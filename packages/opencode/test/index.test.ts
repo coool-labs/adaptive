@@ -26,7 +26,7 @@ import {
 // Every entry instance shares the process-wide ledger; a mark one test's
 // supervisor leaves (a continuation, a claim) must not reach the next test.
 beforeEach(() => {
-  Reflect.deleteProperty(globalThis, Symbol.for("coool.adaptive/process-ledger"))
+  Reflect.deleteProperty(globalThis, Symbol.for("coool.adaptive/process-ledger/2"))
 })
 
 const HOOK_NAMES = [
@@ -239,6 +239,31 @@ describe("plugin entry", () => {
     expect([...session.registered.keys()].sort()).toEqual([...HOOK_NAMES].sort())
     expect(events.signal()).toBeInstanceOf(AbortSignal)
     expect(cleanup).toBeTypeOf("function")
+  })
+
+  it("sets up beside a ledger an older release left on the process", async () => {
+    // Regression (user-reported): 1.6.0 published a ledger without health
+    // resets, and 1.6.1 loaded into the same process died on it in setup.
+    const legacy = Symbol.for("coool.adaptive/process-ledger")
+    Reflect.set(globalThis, legacy, {
+      live: new Set<symbol>(),
+      claims: new Set<string>(),
+      takeovers: new Map<string, number>(),
+      switches: new Map(),
+      continuations: new Map(),
+      wakes: new Map<symbol, number>(),
+      parked: new Set<string>(),
+    })
+    try {
+      const storage = new KeyFailStorage("unused")
+      seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
+      const cleanup = await adaptivePlugin.setup(
+        fakeContext({ storage, session: new FakeSupervisorSession(), events: fakeEvents() }),
+      )
+      expect(cleanup).toBeTypeOf("function")
+    } finally {
+      Reflect.deleteProperty(globalThis, legacy)
+    }
   })
 
   it("arms the parked-work wake at setup and cancels it on cleanup", async () => {
