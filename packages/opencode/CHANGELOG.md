@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.6.1] — 2026-11-10
+
+# opencode-adaptive 1.6.0
+
+No behavioral changes. This release locks in the multi-provider subscription
+experience with a new end-to-end regression suite: a goal configured across
+ClaudeAgent / OpenAI subscriptions plus a paid OpenRouter fallback is proven to
+walk the ladder in priority order, park and wake through quota resets, resume
+across multiple limit changes, route sub-agents on their own tiers, and finish
+unattended — including a regression test proving idle wake cycles never burn
+the resume budget.
+
+### Shared core
+
+- test: fill behavioral coverage gaps and fix the defects they exposed (d4599b8)
+- fix: revive a session-failed goal after owned recovery continues (b10b093)
+- fix: keep parked work waiting through multi-hour quota blackouts (b880fc1)
+- feat: share health, parked work, doctor and tool-support actions through core (aa864eb)
+
 ## [1.6.0] — 2026-11-09
 
 # opencode-adaptive 1.6.0
@@ -163,6 +182,7 @@ Initial release.
 - Capacity awareness from provider response headers (best-effort, never load-bearing).
 - Fail-open on internal plugin failure; privacy and configured-provider restrictions fail closed.
 
+[1.6.1]: https://github.com/coool-labs/adaptive/releases/tag/opencode-v1.6.1
 [1.6.0]: https://github.com/coool-labs/adaptive/releases/tag/opencode-v1.6.0
 [1.2.3]: https://github.com/coool-labs/adaptive/releases/tag/v1.2.3
 [1.2.2]: https://github.com/coool-labs/adaptive/releases/tag/v1.2.2
