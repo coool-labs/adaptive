@@ -1,5 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process"
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { createServer, type Server } from "node:http"
@@ -155,7 +163,11 @@ export async function startHost(
 ): Promise<StartedHost> {
   const owned = options.paths === undefined
   const home = options.paths?.home ?? mkdtempSync(join(tmpdir(), "adaptive-e2e-home-"))
-  const project = options.paths?.project ?? mkdtempSync(join(tmpdir(), "adaptive-e2e-proj-"))
+  // The host canonicalizes cwd; RPC locations must use the same directory.
+  // macOS tmpdir() uses /var, a symlink to /private/var.
+  const project = realpathSync(
+    options.paths?.project ?? mkdtempSync(join(tmpdir(), "adaptive-e2e-proj-")),
+  )
   if (owned) for (const dir of ["config", "data", "cache"]) mkdirSync(join(home, dir))
 
   // Fresh sessions get a title model call before any scripted scenario runs,
@@ -248,12 +260,19 @@ export async function startHost(
   if (!ready) {
     child.kill("SIGKILL")
     await provider.close()
+    const logPath = join(home, "data", "opencode", "log", "opencode.log")
+    const pluginFailures = existsSync(logPath)
+      ? readFileSync(logPath, "utf8")
+          .split("\n")
+          .filter((line) => line.includes("failed to load plugin"))
+          .join("\n")
+      : ""
     if (owned) {
       rmSync(home, { recursive: true, force: true })
       rmSync(project, { recursive: true, force: true })
     }
     throw new Error(
-      `opencode serve did not become ready within ${String(BOOT_TIMEOUT_MS)}ms; stderr: ${stderr.slice(0, 2000) || bootError}`,
+      `opencode serve did not become ready within ${String(BOOT_TIMEOUT_MS)}ms; stderr: ${stderr.slice(0, 2000) || bootError}; plugin failures: ${pluginFailures}`,
     )
   }
 

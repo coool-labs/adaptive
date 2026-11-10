@@ -1,5 +1,5 @@
 /**
- * T-26: real-PTY TUI journeys on a real OpenCode TUI with the packed plugin
+ * T-26: real-PTY TUI journeys on a real OpenCode TUI with the built workspace plugin
  * loaded against a sidecar fake provider (ADP-043).
  *
  * Reachable journeys: boot/first-run state, keyboard-only palette
@@ -15,12 +15,11 @@
  * routing ladder, pinned-tier markers, clearing), the reconnect
  * after the background service daemon dies, and dimension runs.
  *
- * Host facts (empirical, OpenCode 2.2.5):
- * - Plugin TUI bundles mount only from the HOME-based global config
- *   (~/.config/opencode/opencode.json). A project-local `plugins` entry
- *   registers the palette command but its RPC calls fail with
- * `rpc.unavailable`; the $XDG_CONFIG_HOME config file is not consulted for
- *   plugin discovery at all (probed: 16 palette attempts never matched).
+ * Host facts (empirical, OpenCode 2.2.7):
+ * - Global and project-local installs both work when RPC carries the TUI
+ *   location. Both install shapes are exercised below.
+ * - The home prompt renders before the configured model is ready. Submitting
+ *   during that gap opens sign-in instead of starting a fake-provider turn.
  * - The plugin's keymap layer registers asynchronously some seconds after
  *   the boot prompt appears, so the palette match is retried.
  * - The `/` slash menu opens the command search. Filter after it mounts,
@@ -33,7 +32,7 @@
  *   verified by re-reading the resulting state (menu descriptions, tier
  *   counts, editor rows) instead.
  */
-// covers: ["ADP-043", "ADP-054"]
+// covers: ["ADP-043", "ADP-054", "ADP-056"]
 import { expect, step, test } from "@termwright/test"
 import type { TermwrightFixtures } from "@termwright/test"
 import { spawnSync } from "node:child_process"
@@ -94,6 +93,7 @@ async function launchTui(
      * only reachable when they carry the TUI location.
      */
     install?: "global" | "project"
+    staleLedger?: boolean
   } = {},
 ): Promise<Launched> {
   // Bundle the sidecar entry to plain JS: the termwright host node has no TS
@@ -166,20 +166,16 @@ async function launchTui(
     },
   }
   const projectInstall = options.install === "project"
+  const plugins = [
+    ...(options.staleLedger === true ? [join(REPO_ROOT, "test", "fixtures", "stale-ledger")] : []),
+    REPO_ROOT,
+  ]
   const opencodeJson = JSON.stringify({
     $schema: "https://opencode.ai/config.json",
     model: "fake/fake-model",
     provider: { fake: fakeProvider, openai: openaiProvider },
-    ...(projectInstall ? { plugins: [REPO_ROOT] } : {}),
+    ...(projectInstall ? { plugins } : {}),
   })
-  // The plugin must be configured in the GLOBAL config for the TUI to mount
-  // its bundle: a project-local plugins entry registers the palette command
-  // but every rpc(definition) call fails with rpc.unavailable, and the
-  // $XDG_CONFIG_HOME config file is not consulted for plugin discovery at
-  // all (both probed empirically on 2.2.5). The TUI resolves the global
-  // config from the HOME-based path, so the entry is written there; the
-  // XDG copy is kept because `opencode service set port` writes its
-  // service.json under XDG_CONFIG_HOME.
   // Both global config files carry the provider (the server-side model
   // inventory is scoped to the plugin's load location), but the `plugins`
   // entry lives ONLY in the XDG copy: when both global configs list the
@@ -191,7 +187,7 @@ async function launchTui(
   const globalJsonXdg = JSON.stringify({
     $schema: "https://opencode.ai/config.json",
     provider: { fake: fakeProvider, openai: openaiProvider },
-    ...(projectInstall ? {} : { plugins: [REPO_ROOT] }),
+    ...(projectInstall ? {} : { plugins }),
   })
   const globalJsonHome = JSON.stringify({
     $schema: "https://opencode.ai/config.json",
@@ -260,9 +256,10 @@ function seedReceipts(home: string, count: number): void {
   expect(seeded.status).toBe(0)
 }
 
-/** Boot the TUI and wait for the home screen. */
+/** Wait for model readiness, not just the earlier home-screen placeholder. */
 async function bootTui(launched: Launched): Promise<void> {
   await launched.app.waitForText("Ask anything", { timeout: 150_000 })
+  await launched.app.waitForText("Fake Model", { timeout: 30_000 })
 }
 
 /**
@@ -654,6 +651,36 @@ test(
     await closeLaunched(launched)
   },
 )
+
+for (const install of ["global", "project"] as const) {
+  test(
+    `/adaptive opens from palette and slash beside a stale ledger (${install} install)`,
+    { timeout: 120_000 },
+    async ({ termwright: tw, terminal }) => {
+      const launched = await launchTui(tw, terminal, { install, staleLedger: true })
+      const app = launched.app
+      try {
+        await bootTui(launched)
+        await step("palette opens and saves the invitation", async () => {
+          await runAdaptiveCommand(app)
+          await app.waitForText("Adaptive starts in Observe mode", { timeout: 15_000 })
+          await confirmInvite(app)
+          await app.waitForText("Settings saved", { timeout: 30_000 })
+          await app.waitForText("Adaptive (observe)", { timeout: 30_000 })
+        })
+        await app.press("Escape")
+        await step("slash reopens the menu and status dialog", async () => {
+          await runAdaptiveSlash(app)
+          await app.waitForText("Adaptive (observe)", { timeout: 30_000 })
+          await openStatusPage(app, /No models configured yet — open Models to add some\./)
+        })
+      } finally {
+        await app.close()
+        await closeLaunched(launched)
+      }
+    },
+  )
+}
 
 test(
   "the status page shows its empty state on a fresh install and escape backs out of every level",

@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep command setup working when an older Adaptive release has left an
+  incompatible process ledger in the host. Version the shared ledger key.
+
+### Tests
+
+- Cover stale-ledger coexistence through real TUI `/adaptive` dialogs (global
+  and project installs), browser `/web-adaptive` commands, and runtime RPC.
+- Include plugin-load failures in runtime E2E startup diagnostics.
+- Match sandbox RPC locations to the host's canonical project path on macOS.
+- Wait for the configured model before submitting TUI turns, preventing a
+  startup race into the host's sign-in flow.
+
 ## [1.6.1] — 2026-11-10
 
 # opencode-adaptive 1.6.0

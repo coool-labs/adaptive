@@ -1,7 +1,7 @@
 /**
  * Web command journeys (ADP-034): the browser app never mounts plugin GUI
  * bundles, so `/web-adaptive` is the one way to see and switch the mode there.
- * Driven through the real composer's slash menu on the packed plugin, at
+ * Driven through the real composer's slash menu on the built workspace plugin, at
  * desktop and mobile widths. Each reply line lands in the session timeline as
  * its own notice inside a collapsed "Updates" group.
  *
@@ -10,14 +10,25 @@
  */
 // covers: ["ADP-034", "ADP-035"]
 import { expect, test, type Page } from "@playwright/test"
-import { HOST_PASSWORD, rpc, startHost, type StartedHost } from "../runtime-e2e/helpers.js"
+import { join } from "node:path"
+import {
+  HOST_PASSWORD,
+  REPO_ROOT,
+  rpc,
+  startHost,
+  type StartedHost,
+} from "../runtime-e2e/helpers.js"
 
 test.describe.configure({ mode: "serial" })
 
 let host: StartedHost
 
 test.beforeAll(async () => {
-  host = await startHost({})
+  // A fresh host alone missed the 1.6.1 setup crash: an older release may
+  // already have published an incompatible ledger in the same process.
+  host = await startHost({
+    pluginEntries: [join(REPO_ROOT, "test", "fixtures", "stale-ledger"), REPO_ROOT],
+  })
 })
 
 test.afterAll(async () => {
