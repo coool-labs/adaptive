@@ -249,7 +249,17 @@ describe.each(variants)("GUI /adaptive on a real host (%s)", (_name, load) => {
       expect(titles(pick)).toEqual(["Open the menu now", "Later"])
       pick.choose("Open the menu now")
       const menu = await gui.next("Adaptive (observe)")
-      expect(titles(menu)).toEqual(["Status", "Models", "Mode", "Tier", "Pin", "Receipts"])
+      expect(titles(menu)).toEqual([
+        "Status",
+        "Models",
+        "Mode",
+        "Tier",
+        "Pin",
+        "Receipts",
+        "Health",
+        "Parked work",
+        "Doctor",
+      ])
       menu.dismiss()
       await gui.finished()
       expect(gui.toasts).toEqual([{ title: "Settings saved", variant: "success" }])
@@ -1228,6 +1238,91 @@ describe.each(variants)("GUI /adaptive on a real host (%s)", (_name, load) => {
       expect(gui.toasts).toHaveLength(1)
       expect(gui.toasts[0]).toMatchObject({ variant: "error" })
       expect(gui.toasts[0]?.title).toContain("boom")
+    })
+  })
+
+  describe("manual actions", () => {
+    it("resumes and cancels parked work, resets a limited model and runs the doctor", async () => {
+      const host = await startHost({ models: MODELS })
+      const project = host.client.rpc(adaptiveRpc)
+      const at = { location: { directory: host.project } }
+      const settle = async (patch: Record<string, unknown>): Promise<void> => {
+        await rpc(host).settings.set(patch)
+        await project["settings.set"](patch, at)
+      }
+      try {
+        await settle({
+          mode: "active",
+          tiers: { quick: [], standard: [FAKE], advanced: [] },
+          inviteDismissed: true,
+        })
+        // Days of quota: the session parks and the model is marked limited,
+        // which gives Health something to reset.
+        host.provider.setModelScripts({
+          "fake-model": {
+            behaviors: [
+              {
+                status: 429,
+                headers: { "retry-after": String(3 * 24 * 3600) },
+                body: JSON.stringify({
+                  error: { message: "You exceeded your current quota", type: "insufficient_quota" },
+                }),
+              },
+            ],
+          },
+        })
+        const session = await host.client.session.create()
+        await host.client.session.prompt({ sessionID: session.id, text: "finish this" })
+        await vi.waitFor(
+          async () => {
+            const snap = await project["status.get"](undefined, at)
+            expect(snap.waiting.some((item) => item.sessionID === session.id)).toBe(true)
+          },
+          { timeout: 60_000, interval: 250 },
+        )
+
+        const { gui, command } = installOn(host, { session: { id: session.id } })
+        gui.open(command)
+        let menu = await gui.next("Adaptive (active)")
+        // Resume now finds the tier still unavailable and says the wait goes on.
+        menu.choose("Parked work")
+        const parked = await gui.next("Parked work")
+        parked.choose("This session")
+        const run = await gui.next("This session's parked work")
+        run.choose("Resume now")
+        const waiting = await gui.next("Parked work")
+        expect(waiting.description).toContain("No model in this tier is available yet")
+        waiting.ok()
+        menu = await gui.next("Adaptive (active)")
+        // Cancel drops the wait entirely.
+        menu.choose("Parked work")
+        const parkedAgain = await gui.next("Parked work")
+        parkedAgain.choose("This session")
+        const drop = await gui.next("This session's parked work")
+        drop.choose("Cancel")
+        menu = await gui.next("Adaptive (active)")
+        // Health lists the limited model; confirming resets it.
+        menu.choose("Health")
+        const limited = await gui.next("Health · select a model to reset")
+        limited.choose("fake/fake-model")
+        const confirmReset = await gui.next("Reset model health?")
+        confirmReset.answer(true)
+        menu = await gui.next("Adaptive (active)")
+        // The doctor reports from the same instance's status.
+        menu.choose("Doctor")
+        const report = await gui.next("Adaptive doctor")
+        expect(report.kind).toBe("custom")
+        expect(report.text()).toContain("No parked work")
+        report.escape()
+        ;(await gui.next("Adaptive (active)")).dismiss()
+        await gui.finished()
+        expect(gui.toasts).toEqual([
+          { title: "Parked work cancelled", variant: "success" },
+          { title: "Health reset", variant: "success" },
+        ])
+      } finally {
+        await host.close()
+      }
     })
   })
 })

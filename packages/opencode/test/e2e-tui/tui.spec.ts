@@ -374,6 +374,16 @@ async function runAdaptiveSlash(app: TerminalApp): Promise<void> {
   expect(app.screen().text()).toContain("Adaptive")
   expect(app.screen().text()).not.toContain("No results found")
   await app.press("Enter")
+  // Probed on 2.2.6 with slash.arguments: true (probed with and without the
+  // flag): the flag keeps the bare slash command in the prompt — the first
+  // Enter only selects it into the editor, and the prompt submission (a
+  // second Enter) dispatches the command with its raw input. The flag is
+  // load-bearing: it lets `/adaptive doctor` and `/adaptive health` dispatch
+  // with arguments, and stops half-typed slash text from reaching the model
+  // as a prompt (probed: without the flag "/adaptive doctor" is submitted as
+  // an ordinary message). The palette path dispatches on the first Enter.
+  await app.waitForQuiet({ quietMs: 500 })
+  await app.press("Enter")
   await app.waitForText(/OpenCode Adaptive|Adaptive \((?:observe|active|off)\)/, {
     timeout: 30_000,
   })
