@@ -214,10 +214,10 @@ describe("ParkedWorkStore", () => {
     for (let index = 0; index < MAX_PARKED; index += 1) {
       await store.park(record({ id: `s#${String(index)}`, parkedAt: index }))
     }
-    await store.park(record({ id: "s#0", parkedAt: -5 }))
+    await store.park(record({ id: "s#0", parkedAt: 5_000 }))
     expect(store.count()).toBe(MAX_PARKED)
     expect(store.list()[MAX_PARKED - 1]?.id).toBe("s#0")
-    expect(store.list()[MAX_PARKED - 1]?.parkedAt).toBe(-5)
+    expect(store.list()[MAX_PARKED - 1]?.parkedAt).toBe(5_000)
   })
 
   test("load round-trips records across restart", async () => {

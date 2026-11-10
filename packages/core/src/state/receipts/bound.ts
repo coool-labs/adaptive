@@ -14,10 +14,16 @@ import type {
   ParkDecision,
 } from "../../routing/scheduler/types.js"
 import type { ModelRef } from "../../routing/work-unit/types.js"
+import { truncateBounded } from "../../execution/escalation/types.js"
 import { MAX_RECEIPT_TEXT } from "./types.js"
 
+/**
+ * Agent-written evidence can carry emoji; cutting between the halves of a
+ * surrogate pair would persist a lone surrogate that renders as garbage and
+ * throws in URI encoders, so the cut backs off to the pair boundary.
+ */
 export function boundText(raw: string): string {
-  return raw.length > MAX_RECEIPT_TEXT ? raw.slice(0, MAX_RECEIPT_TEXT) : raw
+  return truncateBounded(raw, MAX_RECEIPT_TEXT)
 }
 
 function boundRef(ref: ModelRef): ModelRef {

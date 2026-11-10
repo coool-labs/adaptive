@@ -20,6 +20,34 @@ function boundDetail(raw: string): string {
   return raw.length > MAX_PARKED_TEXT ? raw.slice(0, MAX_PARKED_TEXT) : raw
 }
 
+/**
+ * Identity must survive a round trip: the read path drops empty identifiers
+ * and truncates over-long ones, so persisting either would leave a record
+ * that vanishes on reload or can never be resumed by its own id (a truncated
+ * sessionID would even point the continuation at another session). Throwing
+ * lets the wiring layer fail open instead.
+ */
+function assertParkable(record: ParkedRecord): void {
+  for (const field of ["id", "sessionID"] as const) {
+    const value = record[field]
+    if (value.length === 0 || value.length > MAX_PARKED_TEXT) {
+      throw new Error(
+        `invalid parked record: ${field} must be 1-${String(MAX_PARKED_TEXT)} characters`,
+      )
+    }
+  }
+  if (!Number.isFinite(record.parkedAt) || record.parkedAt < 0) {
+    throw new Error("invalid parked record: parkedAt must be a non-negative finite number")
+  }
+  // A dropped count would silently reset the resume budget (ADP-011).
+  if (
+    record.attempts !== undefined &&
+    !(Number.isInteger(record.attempts) && record.attempts >= 0)
+  ) {
+    throw new Error("invalid parked record: attempts must be a non-negative integer")
+  }
+}
+
 export class ParkedWorkStore {
   #records: ParkedRecord[] = []
   #queue: Promise<unknown> = Promise.resolve()
@@ -74,6 +102,7 @@ export class ParkedWorkStore {
   }
 
   async #park(record: ParkedRecord): Promise<void> {
+    assertParkable(record)
     await this.#refresh()
     const bounded: ParkedRecord = {
       ...record,

@@ -77,9 +77,14 @@ async function acquire(lock: string, clock: () => number): Promise<void> {
     }
     // The holder usually released between `open` and `stat`; any failure to
     // inspect the lock just means "try again until the deadline".
+    const seen = await readFile(lock, "utf8").catch(() => undefined)
     const held = await stat(lock).catch(() => undefined)
-    if (held !== undefined && clock() - held.mtimeMs > STALE_LOCK_MS) {
-      await rm(lock, { force: true })
+    if (seen !== undefined && held !== undefined && clock() - held.mtimeMs > STALE_LOCK_MS) {
+      // Every waiter judges a crashed holder's lock stale at about the same
+      // moment. Only the one whose judgement still describes the file may
+      // remove it, or it would delete the fresh lock another waiter just took.
+      if ((await readFile(lock, "utf8").catch(() => undefined)) === seen)
+        await rm(lock, { force: true })
       continue
     }
     if (clock() >= deadline) {

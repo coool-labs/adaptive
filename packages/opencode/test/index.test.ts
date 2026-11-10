@@ -48,6 +48,7 @@ function fakeContext(options: {
   addedCommands?: unknown[]
   said?: { sessionID: string; text: string; description: string; resume: boolean }[]
   registeredRpc?: (record: { definition: unknown; handlers: unknown }) => void
+  emitted?: unknown[][]
 }): Parameters<typeof adaptivePlugin.setup>[0] {
   const infos = options.infos ?? [makeInfo("prov", "a")]
   const model: ModelSource = {
@@ -102,7 +103,12 @@ function fakeContext(options: {
         options.registeredRpc?.({ definition, handlers })
         return Promise.resolve({
           dispose: () => Promise.resolve(),
-          events: { emit: () => Promise.resolve() },
+          events: {
+            emit: (...args: unknown[]) => {
+              options.emitted?.push(args)
+              return Promise.resolve()
+            },
+          },
         })
       },
     },
@@ -148,6 +154,40 @@ describe("plugin entry", () => {
       expect(events.signal()?.aborted).toBe(true)
     },
   )
+
+  it("rolls back tool and rpc registrations too when the web command fails to register", async () => {
+    const session = new FakeSupervisorSession()
+    const events = fakeEvents()
+    const context = fakeContext({ storage: new KeyFailStorage("unused"), session, events })
+    const failure = new Error("command registration failed")
+    const disposed: string[] = []
+    vi.spyOn(console, "error").mockImplementation(() => undefined)
+    vi.spyOn(context.session, "hook").mockImplementation((name) =>
+      Promise.resolve({
+        dispose: () => {
+          disposed.push(name)
+          return Promise.resolve()
+        },
+      }),
+    )
+    vi.spyOn(context.tool, "transform").mockResolvedValue({
+      dispose: () => {
+        disposed.push("tool")
+        return Promise.resolve()
+      },
+    })
+    vi.spyOn(context.rpc, "register").mockResolvedValue({
+      events: { emit: () => Promise.resolve() },
+      dispose: () => {
+        disposed.push("rpc")
+        return Promise.reject(new Error("rpc disposal failed"))
+      },
+    })
+    vi.spyOn(context.command, "transform").mockRejectedValue(failure)
+    await expect(adaptivePlugin.setup(context)).rejects.toBe(failure)
+    expect(disposed).toEqual([...HOOK_NAMES, "tool", "rpc"])
+    expect(events.signal()?.aborted).toBe(true)
+  })
 
   it("awaits every registration during cleanup even when disposals reject", async () => {
     const session = new FakeSupervisorSession()
@@ -601,6 +641,73 @@ describe("plugin entry: rpc surface", () => {
     expect(
       (await handlers["tier-request.get"]?.({ sessionID: "s1" })) as { tier: string | null },
     ).toEqual({ tier: "quick" })
+  })
+})
+
+describe("plugin entry: change events (ADP-036/044)", () => {
+  type Handler = (input: unknown, context?: unknown) => Promise<unknown>
+
+  async function boot() {
+    const storage = new KeyFailStorage("unused")
+    seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
+    const emitted: unknown[][] = []
+    const addedCommands: unknown[] = []
+    let handlers: Record<string, Handler> = {}
+    const context = fakeContext({
+      storage,
+      session: new FakeSupervisorSession(),
+      events: fakeEvents(),
+      emitted,
+      addedCommands,
+      registeredRpc: (captured) => {
+        handlers = (captured as { handlers: Record<string, Handler> }).handlers
+      },
+    })
+    await adaptivePlugin.setup(context)
+    const command = addedCommands[0] as {
+      execute: (input: { sessionID: string; prompt: { text: string } }) => Promise<void>
+    }
+    return { emitted, handlers, command }
+  }
+
+  it("announces every successful write on the registered rpc emitter, and nothing else", async () => {
+    const { emitted, handlers, command } = await boot()
+    await handlers["settings.set"]?.({ mode: "observe" })
+    await handlers["session-mode.set"]?.({ sessionID: "s1", mode: "off" })
+    await handlers["tier-request.set"]?.({ sessionID: "s1", tier: "quick" })
+    expect(emitted).toEqual([
+      ["settings-changed", { version: 1 }],
+      ["session-mode-changed", { sessionID: "s1" }],
+      ["tier-request-changed", { sessionID: "s1" }],
+    ])
+    // The web command is another writer: open TUI/GUI views must refresh too.
+    emitted.length = 0
+    await command.execute({ sessionID: "s1", prompt: { text: "/web-adaptive active" } })
+    expect(emitted).toEqual([["settings-changed", { version: 1 }]])
+    // Rejected writes and reads announce nothing.
+    emitted.length = 0
+    await handlers["settings.set"]?.({ mode: "bogus" })
+    await handlers["session-mode.set"]?.({ sessionID: "", mode: "off" })
+    await handlers["tier-request.set"]?.({ sessionID: "s1", tier: "bogus" })
+    await command.execute({ sessionID: "s1", prompt: { text: "/web-adaptive banana" } })
+    await handlers["settings.get"]?.(undefined)
+    expect(emitted).toEqual([])
+  })
+
+  it("an invalid rpc write is answered with the field to fix, through the real supervisor", async () => {
+    const { handlers } = await boot()
+    expect(await handlers["settings.set"]?.({ mode: "bogus" })).toEqual({
+      ok: false,
+      errors: ["invalid mode"],
+    })
+    expect(await handlers["session-mode.set"]?.({ sessionID: "s1", mode: "bogus" })).toEqual({
+      ok: false,
+      errors: ["mode must be one of off, observe, active or null"],
+    })
+    expect(await handlers["tier-request.set"]?.({ sessionID: "s1", tier: "bogus" })).toEqual({
+      ok: false,
+      errors: ["tier must be one of quick, standard, advanced or null"],
+    })
   })
 })
 

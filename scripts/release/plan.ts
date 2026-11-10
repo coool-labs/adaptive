@@ -245,7 +245,10 @@ export function notesTemplate(release: PlannedRelease): string {
 }
 
 export function stripNotes(text: string): string {
-  return text.replace(/<!--[\s\S]*?-->/g, "").trim()
+  const notes = text.replace(/<!--[\s\S]*?-->/g, "").trim()
+  // An unterminated comment would publish the template guidance as release notes.
+  if (notes.includes("<!--")) throw new Error("notes: unterminated <!-- comment")
+  return notes
 }
 
 export function changelogEntry(release: PlannedRelease, date: string, notes: string): string {
@@ -328,7 +331,8 @@ export function taggedReleases(
     const version = tag.startsWith(prefix)
       ? tag.slice(prefix.length)
       : tag.slice(tag.lastIndexOf("@") + 1)
-    return [{ id: pkg.id, name: pkg.name, version, tag }]
+    // Only a stable semver names a release; a bare or pre-release suffix is not one.
+    return /^\d+\.\d+\.\d+$/.test(version) ? [{ id: pkg.id, name: pkg.name, version, tag }] : []
   })
 }
 

@@ -10,6 +10,10 @@ export interface ReleaseEffects {
   push(): void
 }
 
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 /**
  * The bumps are committed before verification so the git stage stays clean
  * while the battery runs; a failed verification restores the original files
@@ -28,8 +32,26 @@ export function executeRelease(plan: readonly PlannedRelease[], effects: Release
     effects.push()
   } catch (error) {
     if (!verified) {
-      effects.restore()
-      if (committed) effects.discardCommit()
+      const failures: string[] = []
+      const cleanup = (step: () => void): void => {
+        try {
+          step()
+        } catch (failure) {
+          failures.push(describe(failure))
+        }
+      }
+      // Each cleanup runs even if the other fails, and neither may hide why the release stopped.
+      cleanup(() => {
+        effects.restore()
+      })
+      if (committed)
+        cleanup(() => {
+          effects.discardCommit()
+        })
+      if (failures.length > 0)
+        throw new Error(`${describe(error)}; cleanup failed: ${failures.join("; ")}`, {
+          cause: error,
+        })
     }
     throw error
   }

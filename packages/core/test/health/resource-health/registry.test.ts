@@ -228,6 +228,54 @@ describe("ResourceHealthRegistry", () => {
       expect(assessment.kind === "probe" ? assessment.ticket.key : undefined).toEqual(PROVIDER_KEY)
     })
 
+    it("never probes through a due provider breaker while the model's own breaker still backs off (regression)", () => {
+      const { now, advance } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      tripBreaker(registry, PROVIDER_KEY)
+      advance(DEFAULT_HEALTH_CONFIG.breaker.baseOpenMs + 1)
+      // The model breaker opens later, so it is still inside its window when
+      // the provider breaker is already due.
+      tripBreaker(registry, MODEL_KEY)
+      const assessment = registry.assess(MODEL_KEY)
+      expect(assessment).toEqual({
+        kind: "blocked",
+        reason: "breaker-open",
+        key: MODEL_KEY,
+        retryAtMs: DEFAULT_HEALTH_CONFIG.breaker.baseOpenMs,
+      })
+      expect(registry.recordFor(PROVIDER_KEY)?.breaker.state).toBe("open")
+      // Once the model window elapses, the single probe goes to the widest due breaker.
+      advance(DEFAULT_HEALTH_CONFIG.breaker.baseOpenMs)
+      const probe = registry.assess(MODEL_KEY)
+      expect(probe.kind === "probe" ? probe.ticket.key : undefined).toEqual(PROVIDER_KEY)
+    })
+
+    it("never doubles up on a model's in-flight probe through a due provider breaker (regression)", () => {
+      const { now, advance } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      tripBreaker(registry, MODEL_KEY)
+      advance(DEFAULT_HEALTH_CONFIG.breaker.baseOpenMs + 1)
+      const modelProbe = registry.assess(MODEL_KEY)
+      expect(modelProbe.kind === "probe" ? modelProbe.ticket.key : undefined).toEqual(MODEL_KEY)
+      // The provider breaker trips afterwards and is already due, yet the
+      // model probe is still in flight.
+      registry.restore([
+        ...registry.snapshot(),
+        {
+          key: PROVIDER_KEY,
+          health: "degraded",
+          breaker: { state: "open", failures: 5, openCount: 1, reopenAt: now() },
+          updatedAt: now(),
+        },
+      ])
+      expect(registry.assess(MODEL_KEY)).toEqual({
+        kind: "blocked",
+        reason: "probe-in-flight",
+        key: MODEL_KEY,
+      })
+      expect(registry.recordFor(PROVIDER_KEY)?.breaker.state).toBe("open")
+    })
+
     it("evaluate never mutates breaker state (a due-open breaker blocks without issuing a probe)", () => {
       const { now, advance } = fakeClock()
       const registry = new ResourceHealthRegistry(now)

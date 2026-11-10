@@ -14,6 +14,16 @@ import type { ModelRef } from "../work-unit/types.js"
 import type { DeferDecision, EscalateDecision, EscalationInput } from "./types.js"
 import { MAX_ESCALATION_EVIDENCE } from "./types.js"
 
+/**
+ * Only a well-formed whole-number budget can bound the loop: NaN, infinite,
+ * fractional, or negative counters would make `used >= max` unreachable or
+ * leave a negative remainder, so they read as exhausted (finite is the
+ * invariant, not the caller's good behavior).
+ */
+function hasBudgetLeft({ used, max }: EscalationInput["budget"]): boolean {
+  return Number.isSafeInteger(used) && Number.isSafeInteger(max) && used >= 0 && used < max
+}
+
 function escalate(
   input: EscalationInput,
   target: ModelRef,
@@ -38,7 +48,7 @@ export function planEscalation(input: EscalationInput): EscalateDecision | Defer
   if (input.evidence.length === 0) {
     return { kind: "defer", reason: "escalation-not-justified" }
   }
-  if (input.budget.max <= 0 || input.budget.used >= input.budget.max) {
+  if (!hasBudgetLeft(input.budget)) {
     return { kind: "defer", reason: "escalation-budget-exhausted" }
   }
   const next = nextTier(input.currentTier)

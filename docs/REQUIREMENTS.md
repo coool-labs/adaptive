@@ -102,7 +102,7 @@ persistence, validation and fail-open guarantees.
 - **ADP-057** — Register `adaptive/auto`, `adaptive/quick`, `adaptive/standard`, and `adaptive/advanced`; selecting a non-virtual model hands control back immediately and notes it.
 - **ADP-058** — Routing changes and parking produce transcript notes outside model context; verbosity is `quiet`, `changes`, or `all`.
 - **ADP-059** — Health, capacity, receipts and parked work are shared across Pi processes with cross-process locking; half-open admits exactly one probe across processes.
-- **ADP-060** — Parking supports abortable in-place waits up to two minutes, no duplicate pre-dispatch message, one owned hidden continuation for mid-run resume, at most three automatic wakes per task, and a wake claimed at most once across processes.
+- **ADP-060** — Parking supports abortable in-place waits up to two minutes, no duplicate pre-dispatch message, one owned hidden continuation for mid-run resume, a bounded number of automatic wakes per task (only wakes whose run failed again count), and a wake claimed at most once across processes.
 - **ADP-061** — Non-retried infrastructure failures restart the same task at most twice; user aborts never restart.
 - **ADP-062** — `/adaptive` uses the shared flow; `/adaptive doctor` reports supported versions, credentials, storage, conflicting routers, health and parked work with an actionable remedy for each problem.
 - **ADP-063** — First run proposes tiers deterministically from available configured models, saves nothing without confirmation, and defaults to observe.

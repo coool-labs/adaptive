@@ -411,3 +411,91 @@ describe("fake provider scenarios", () => {
     expect(call?.headers["x-fake-marker"]).toBe("yes")
   })
 })
+
+describe("fake provider determinism under load and real-client request shapes", () => {
+  it("serves chat completions and the model list when the client appends a query string", async () => {
+    const provider = await start("success")
+    const chat = await fetch(`${provider.url}${CHAT_PATH}?api-version=2024-02-01`, {
+      method: "POST",
+      body: JSON.stringify({ model: FAKE_MODEL_ID }),
+    })
+    expect(chat.status).toBe(200)
+    expect(((await chat.json()) as { object: string }).object).toBe("chat.completion")
+    const models = await fetch(`${provider.url}/v1/models?limit=10`)
+    expect(models.status).toBe(200)
+    expect(((await models.json()) as { object: string }).object).toBe("list")
+    const unknown = await fetch(`${provider.url}/v1/other?x=/chat/completions`, { method: "POST" })
+    expect(unknown.status).toBe(404)
+  })
+
+  it("hands concurrent requests distinct positions in the script (recovery-after-n holds under parallelism)", async () => {
+    const provider = await start("recovery-after-n")
+    const responses = await Promise.all(Array.from({ length: 8 }, () => post(provider.url)))
+    const statuses = responses.map((response) => response.status)
+    expect(statuses.filter((status) => status === 429)).toHaveLength(RECOVERY_AFTER_FAILURES)
+    expect(statuses.filter((status) => status === 200)).toHaveLength(8 - RECOVERY_AFTER_FAILURES)
+    expect(provider.requestCount()).toBe(8)
+  })
+
+  it("keeps per-model queues and the global script independent under interleaving", async () => {
+    const provider = await start("rate-limited")
+    provider.setModelScripts({
+      a: { behaviors: [{ status: 503 }, { status: 200 }] },
+    })
+    const body = (model: string): { body: string } => ({ body: JSON.stringify({ model }) })
+    const results = await Promise.all([
+      post(provider.url, body("a")),
+      post(provider.url, body("other")),
+      post(provider.url, body("a")),
+      post(provider.url, body("other")),
+      post(provider.url, body("a")),
+    ])
+    const statusesOf = (model: string): number[] =>
+      results
+        .map((response, index) => ({ response, model: ["a", "other", "a", "other", "a"][index] }))
+        .filter((entry) => entry.model === model)
+        .map((entry) => entry.response.status)
+        .sort()
+    expect(statusesOf("a")).toEqual([200, 200, 503])
+    expect(statusesOf("other")).toEqual([429, 429])
+  })
+
+  it("restarts the global script from its first behavior when replaced mid-run", async () => {
+    const provider = await start("recovery-after-n")
+    await post(provider.url)
+    await post(provider.url)
+    provider.setScript(FAKE_SCENARIOS["recovery-after-n"])
+    expect((await post(provider.url)).status).toBe(429)
+  })
+
+  it("records every call, including model-list reads, in arrival order", async () => {
+    const provider = await start("success")
+    await fetch(`${provider.url}/v1/models`)
+    await post(provider.url)
+    await fetch(`${provider.url}/nope`)
+    expect(provider.calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      "GET /v1/models",
+      `POST ${CHAT_PATH}`,
+      "GET /nope",
+    ])
+    expect(provider.requestCount()).toBe(3)
+    const times = provider.calls.map((call) => call.at)
+    expect(times).toEqual([...times].sort((left, right) => left - right))
+  })
+
+  it("fails a request in flight when the provider closes, instead of hanging it", async () => {
+    const provider = await createFakeProvider(FAKE_SCENARIOS.timeout)
+    const pending = post(provider.url).then(
+      () => "completed",
+      () => "failed",
+    )
+    // Wait for the request to reach the server before closing it.
+    while (provider.requestCount() === 0) {
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve)
+      })
+    }
+    await provider.close()
+    expect(await pending).toBe("failed")
+  })
+})

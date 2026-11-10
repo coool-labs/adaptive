@@ -19,6 +19,7 @@ import {
   recordProbeSuccess,
   releaseProbe,
 } from "../circuit-breaker/breaker.js"
+import type { BreakerRecord } from "../circuit-breaker/types.js"
 import { resourceChain, resourceKeyID } from "./key.js"
 import { applyHealthEvent, initialRecord, sweepRecord } from "./transitions.js"
 import {
@@ -231,6 +232,12 @@ export class ResourceHealthRegistry {
       return blocked(hard.reason, hard.key, hard.retryAtMs)
     }
 
+    // Two passes over the chain: the request would reach every scope, so a
+    // backing-off or probing breaker at ANY scope blocks it. Only when none
+    // blocks may the widest due breaker take the single probe — otherwise a
+    // due provider breaker would send the probe to a model whose own breaker
+    // is still backing off, or double up on that model's in-flight probe.
+    const due: { record: ResourceRecord; breaker: BreakerRecord }[] = []
     for (const record of records) {
       if (record === undefined) {
         continue
@@ -245,22 +252,25 @@ export class ResourceHealthRegistry {
         this.#records.set(resourceKeyID(record.key), current)
       }
       const admission = admitProbe(current.breaker, now)
-      if (admission.kind === "closed") {
-        continue
-      }
       if (admission.kind === "waiting") {
         return blocked("breaker-open", record.key, admission.retryAtMs)
       }
       if (admission.kind === "in-flight") {
         return blocked("probe-in-flight", record.key, undefined)
       }
+      if (admission.kind === "admitted") {
+        due.push({ record, breaker: admission.record })
+      }
+    }
+    const first = due[0]
+    if (first !== undefined) {
       const probeId = this.#newProbeId()
-      this.#records.set(resourceKeyID(record.key), {
-        ...record,
-        breaker: { ...admission.record, probeId, probeAt: now },
+      this.#records.set(resourceKeyID(first.record.key), {
+        ...first.record,
+        breaker: { ...first.breaker, probeId, probeAt: now },
         updatedAt: now,
       })
-      return { kind: "probe", ticket: { id: probeId, key: record.key } }
+      return { kind: "probe", ticket: { id: probeId, key: first.record.key } }
     }
 
     // Draining is the softest blocker; report the narrowest draining scope.

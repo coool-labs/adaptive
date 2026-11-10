@@ -1904,6 +1904,10 @@ export class Supervisor {
       if (this.#recoveryPending.get(sessionID) === pending) {
         this.#recoveryPending.delete(sessionID)
         this.#recoveryPendingAt.delete(sessionID)
+        // A steering signal raised for this chain dies with it: when the
+        // settle failed before the guard consumed it, it must not abort the
+        // session's next, unrelated recovery.
+        this.#recoveryInterrupted.delete(sessionID)
       }
     })
   }
@@ -2158,6 +2162,10 @@ export class Supervisor {
   async #takeOver(sessionID: string): Promise<void> {
     const { ledger } = this.#options
     ledger.noteTakeover(sessionID)
+    // A pending owned recovery predates this steering: its continuation
+    // would land on top of the user's own turn (or override their model
+    // pick), so it aborts at its post-settle guard like an interruption.
+    if (this.#recoveryPending.has(sessionID)) this.#recoveryInterrupted.add(sessionID)
     this.#resumeCycles.delete(sessionID)
     this.#goalResumePending.delete(sessionID)
     const parkedHere = (): ParkedRecord[] =>

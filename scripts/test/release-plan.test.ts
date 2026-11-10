@@ -230,6 +230,13 @@ it("offers a notes template whose guidance is stripped before use", () => {
   )
 })
 
+it("refuses notes that still hold an unterminated guidance comment", () => {
+  expect(() => stripNotes("### Fixed\n\n<!-- Release notes for pi-v1.0.0.\n- fix")).toThrow(
+    "notes: unterminated <!-- comment",
+  )
+  expect(stripNotes("<!-- a --> kept <!-- b -->")).toBe("kept")
+})
+
 it("writes a changelog entry listing shared core changes", () => {
   expect(changelogEntry(RELEASE, "2026-11-08", " ### Fixed\n\n- A fix. \n")).toBe(
     "## [1.5.1] — 2026-11-08\n\n### Fixed\n\n- A fix.\n\n### Shared core\n\n- health: fix (bbbbbbb)",
@@ -340,6 +347,13 @@ it("maps legacy name-at-version tags back to packages during the transition", ()
 
 it("leaves tokens that belong to no package unmapped", () => {
   expect(taggedReleases(["v1.5.0", "chore"], [pkg()])).toEqual([])
+})
+
+it("does not map a release tag without a stable version, so a resume refuses it", () => {
+  const packages = [pkg(), pkg({ id: "pi", name: "@coool/pi-adaptive" })]
+  expect(
+    taggedReleases(["pi-v", "opencode-v1.5", "pi-v1.0.0-rc.1", "opencode-adaptive@"], packages),
+  ).toEqual([])
 })
 
 it("distinguishes published, missing and failed npm lookups", () => {

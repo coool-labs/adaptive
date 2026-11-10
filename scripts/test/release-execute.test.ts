@@ -21,11 +21,15 @@ const plan: readonly PlannedRelease[] = [
   },
 ]
 
-function fixture(failure?: string): { calls: string[]; effects: ReleaseEffects } {
+function fixture(failure?: string | readonly string[]): {
+  calls: string[]
+  effects: ReleaseEffects
+} {
   const calls: string[] = []
   const call = (step: string): void => {
     calls.push(step)
-    if (step === failure) throw new Error(step)
+    if (typeof failure === "string" ? step === failure : failure?.includes(step))
+      throw new Error(step)
   }
   return {
     calls,
@@ -85,4 +89,56 @@ it("keeps the verified commit when the push fails", () => {
   expect(calls.at(-1)).toBe("push")
   expect(calls).not.toContain("restore")
   expect(calls).not.toContain("discardCommit")
+})
+
+it("still discards the local commit when restoring the files fails, and says why the release stopped", () => {
+  const { calls, effects } = fixture(["verify:opencode,pi", "restore"])
+  expect(() => {
+    executeRelease(plan, effects)
+  }).toThrow("verify:opencode,pi; cleanup failed: restore")
+  expect(calls).toEqual(["prepare", "commit", "verify:opencode,pi", "restore", "discardCommit"])
+})
+
+it("restores the files when discarding the local commit is refused, keeping the original failure first", () => {
+  const { calls, effects } = fixture(["verify:opencode,pi", "discardCommit"])
+  const failure = (() => {
+    try {
+      executeRelease(plan, effects)
+    } catch (error) {
+      return error
+    }
+    return undefined
+  })()
+  expect(failure).toMatchObject({
+    message: "verify:opencode,pi; cleanup failed: discardCommit",
+    cause: { message: "verify:opencode,pi" },
+  })
+  expect(calls).toEqual(["prepare", "commit", "verify:opencode,pi", "restore", "discardCommit"])
+})
+
+it("reports every failed cleanup step before the release error and never discards an uncommitted tree", () => {
+  const both = fixture(["verify:opencode,pi", "restore", "discardCommit"])
+  expect(() => {
+    executeRelease(plan, both.effects)
+  }).toThrow("verify:opencode,pi; cleanup failed: restore; discardCommit")
+  const early = fixture(["commit", "restore"])
+  expect(() => {
+    executeRelease(plan, early.effects)
+  }).toThrow("commit; cleanup failed: restore")
+  expect(early.calls).not.toContain("discardCommit")
+})
+
+it("describes a non-Error failure by its text", () => {
+  const { effects } = fixture()
+  expect(() => {
+    executeRelease(plan, {
+      ...effects,
+      verify: () => {
+        throw "plain string" // eslint-disable-line @typescript-eslint/only-throw-error
+      },
+      restore: () => {
+        throw "cleanup string" // eslint-disable-line @typescript-eslint/only-throw-error
+      },
+    })
+  }).toThrow("plain string; cleanup failed: cleanup string")
 })

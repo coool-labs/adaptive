@@ -22,6 +22,8 @@ export function requirementCatalogue(
   host: RequirementHost,
 ): { all: string[]; applicable: string[] } {
   const all = [...doc.matchAll(/^- \*\*ADP-\d{3}\*\*/gm)].map((match) => match[0].slice(4, 11))
+  const duplicate = all.find((id, index) => all.indexOf(id) !== index)
+  if (duplicate !== undefined) throw new Error(`requirements: ${duplicate} is defined twice`)
   const scopes = new Map<string, string>()
   for (const match of doc.matchAll(/^- \[([^\]]+)\]: (.+)$/gm)) {
     const separator = match[0].indexOf("]")

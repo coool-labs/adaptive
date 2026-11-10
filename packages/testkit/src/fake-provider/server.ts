@@ -177,13 +177,17 @@ export async function createFakeProvider(
       at: Date.now(),
     })
 
-    if (request.method === "GET" && String(request.url).endsWith("/models")) {
+    // Route on the path alone: OpenAI-compatible clients append query
+    // parameters (api-version, limit) that must not turn a route into a 404.
+    const path = String(request.url).replace(/\?.*$/s, "")
+
+    if (request.method === "GET" && path.endsWith("/models")) {
       response.writeHead(200, { "content-type": "application/json" })
       response.end(modelsBody(FAKE_MODELS))
       return
     }
 
-    if (request.method !== "POST" || !String(request.url).endsWith("/chat/completions")) {
+    if (request.method !== "POST" || !path.endsWith("/chat/completions")) {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: { message: "not found" } }))
       return

@@ -30,7 +30,8 @@ import type { TierName } from "../../routing/tier-policy/types.js"
 import { INTERRUPT_REASONS } from "../../routing/work-unit/interruption.js"
 import { FAILURE_CATEGORIES } from "../../health/classifier/types.js"
 import { parseModelRef } from "../settings/parse.js"
-import { MAX_RECEIPTS, MAX_RECEIPT_TEXT, RECEIPTS_VERSION } from "./types.js"
+import { boundText } from "./bound.js"
+import { MAX_RECEIPTS, RECEIPTS_VERSION } from "./types.js"
 import type { Receipt, ReceiptOutcome } from "./types.js"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -38,8 +39,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function boundString(raw: unknown): string | undefined {
-  if (typeof raw !== "string") return undefined
-  return raw.length > MAX_RECEIPT_TEXT ? raw.slice(0, MAX_RECEIPT_TEXT) : raw
+  return typeof raw === "string" ? boundText(raw) : undefined
 }
 
 function isFiniteNonNegative(raw: unknown): raw is number {

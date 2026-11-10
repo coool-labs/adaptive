@@ -1,6 +1,7 @@
 // covers: ["ADP-008", "ADP-065"]
-import { readFileSync } from "node:fs"
+import { readdirSync, readFileSync } from "node:fs"
 import { classifyFailure } from "@coool/adaptive-core/health/classifier/classify"
+import { FAILURE_CATEGORIES } from "@coool/adaptive-core/health/classifier/types"
 import { expect, it } from "vitest"
 import { failureEvidence } from "../src/evidence.js"
 
@@ -48,8 +49,13 @@ function corpus(version: string): readonly CorpusEntry[] {
   })
 }
 
-it("classifies every labelled Pi 1.5.0 provider error", () => {
-  for (const entry of corpus("1.5.0")) {
+const corpusVersions = readdirSync(new URL("fixtures/pi-errors/", import.meta.url))
+  .filter((file) => file.endsWith(".json"))
+  .map((file) => file.slice(0, -".json".length))
+
+it.each(corpusVersions)("classifies every labelled Pi %s provider error", (version) => {
+  expect(corpus(version).length).toBeGreaterThan(0)
+  for (const entry of corpus(version)) {
     const result = classifyFailure(failureEvidence(entry))
     expect({
       source: entry.source,
@@ -62,6 +68,25 @@ it("classifies every labelled Pi 1.5.0 provider error", () => {
     })
   }
 })
+
+it("keeps a labelled corpus for the minimum supported Pi version and every concrete matrix version", () => {
+  const matrix: unknown = JSON.parse(
+    readFileSync(new URL("../pi-host-matrix.json", import.meta.url), "utf8"),
+  )
+  const versions: unknown = Object.getOwnPropertyDescriptor(matrix, "versions")?.value
+  if (!Array.isArray(versions)) throw new Error("pi-host-matrix.json: versions must be an array")
+  for (const version of versions.filter((entry) => entry !== "latest"))
+    expect(corpusVersions).toContain(version)
+})
+
+it.each(corpusVersions)(
+  "labels at least one real Pi %s error for every failure category",
+  (version) => {
+    expect(new Set(corpus(version).map((entry) => entry.category))).toEqual(
+      new Set(FAILURE_CATEGORIES),
+    )
+  },
+)
 
 it("trusts only status prefixes pi-ai writes itself", () => {
   expect(failureEvidence({ stopReason: "error", errorMessage: "  429 slow down " })).toEqual({

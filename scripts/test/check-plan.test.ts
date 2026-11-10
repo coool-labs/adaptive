@@ -38,6 +38,9 @@ describe("check planning", () => {
     [["check", "--skip", "unknown"], "Unknown --skip"],
     [["check", "--unknown"], "Unknown argument"],
     [["check", "--all", "--pkg", "pi"], "Use --all or --pkg"],
+    [["check", "--pkg", "pi", "--all"], "Use --all or --pkg"],
+    [["check", "--pkg", "--all"], "Unknown --pkg"],
+    [["check", "--skip", "--all"], "Unknown --skip"],
   ])("rejects invalid arguments %j", (args, message) => {
     expect(() => parseCheckOptions(args, available)).toThrow(message)
   })
@@ -106,6 +109,25 @@ describe("check planning", () => {
       piScripts,
     )
     expect(check.filter((step) => step.workspace === "pi").map((step) => step.script)).toEqual([
+      "typecheck",
+      "coverage",
+    ])
+  })
+
+  it("skips a step by its exact name, so skipping a package gate keeps the same-named root gate", () => {
+    const steps = planChecks(
+      parseCheckOptions(["check", "--skip", "typecheck"], available),
+      available,
+      scripts,
+    )
+    expect(steps.map((step) => step.script)).toContain("typecheck:tooling")
+    expect(steps.filter((step) => step.script === "typecheck")).toEqual([])
+    expect(steps.filter((step) => step.script === "coverage")).not.toEqual([])
+  })
+
+  it("never plans a gate for a workspace that does not declare the script", () => {
+    const steps = planChecks(parseCheckOptions(["verify"], available), ["pi"], scripts)
+    expect(steps.filter((step) => step.workspace === "pi").map((step) => step.script)).toEqual([
       "typecheck",
       "coverage",
     ])

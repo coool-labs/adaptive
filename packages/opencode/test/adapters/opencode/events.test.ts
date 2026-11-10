@@ -238,4 +238,88 @@ describe("subscribeSessions", () => {
     await subscription.done
     expect(errors).toEqual([])
   })
+  describe("resubscribe backoff (ADP-011: every retry loop is bounded)", () => {
+    /** A source whose every subscribe fails, so the pump retries until disposed. */
+    function failingSource(failures: number, then: () => AsyncIterable<unknown>): EventSource {
+      let calls = 0
+      return {
+        subscribe: () => {
+          calls += 1
+          if (calls <= failures) {
+            return {
+              [Symbol.asyncIterator]: () => ({
+                next: () => Promise.reject(new Error(`down ${String(calls)}`)),
+              }),
+            }
+          }
+          return then()
+        },
+      } as unknown as EventSource
+    }
+
+    it("doubles the pause per consecutive failure and caps it at thirty seconds", async () => {
+      const pauses: number[] = []
+      let dispose: () => void = () => undefined
+      const hold = (): AsyncIterable<unknown> => ({
+        [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => undefined) }),
+      })
+      const subscription = subscribeSessions(
+        failingSource(9, hold),
+        () => undefined,
+        () => undefined,
+        (ms) => {
+          pauses.push(ms)
+          if (pauses.length === 9) dispose()
+          return Promise.resolve()
+        },
+      )
+      dispose = () => {
+        subscription.dispose()
+      }
+      await subscription.done
+      expect(pauses).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000])
+    })
+
+    it("starts the climb over once a stream proved itself by delivering events", async () => {
+      const pauses: number[] = []
+      let calls = 0
+      const source = {
+        subscribe: () => {
+          calls += 1
+          const call = calls
+          return {
+            [Symbol.asyncIterator]: () => {
+              let step = 0
+              return {
+                next: () => {
+                  step += 1
+                  // Calls 1-2 fail at once; call 3 delivers an event then
+                  // fails; call 4 fails at once again.
+                  if (call === 3 && step === 1) {
+                    return Promise.resolve({
+                      done: false,
+                      value: sessionEvent("session.execution.started", { sessionID: "s1" }, 1),
+                    })
+                  }
+                  return Promise.reject(new Error(`down ${String(call)}`))
+                },
+              }
+            },
+          }
+        },
+      } as unknown as EventSource
+      const subscription = subscribeSessions(
+        source,
+        () => undefined,
+        () => undefined,
+        (ms) => {
+          pauses.push(ms)
+          if (pauses.length === 4) subscription.dispose()
+          return Promise.resolve()
+        },
+      )
+      await subscription.done
+      expect(pauses).toEqual([1000, 2000, 1000, 2000])
+    })
+  })
 })

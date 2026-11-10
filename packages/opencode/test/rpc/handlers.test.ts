@@ -6,6 +6,7 @@ import type { SettingsV1 } from "@coool/adaptive-core/state/settings/index"
 import { defaultSettings } from "@coool/adaptive-core/state/settings/index"
 import type { Receipt } from "@coool/adaptive-core/state/receipts/types"
 import type { StatusSnapshot } from "@coool/adaptive-core/status"
+import { LOG_ERROR_LENGTH } from "@coool/adaptive-core/log"
 
 function source(overrides: Partial<AdaptiveRpcSource> = {}): AdaptiveRpcSource {
   return {
@@ -182,6 +183,33 @@ describe("adaptiveRpcHandlers", () => {
       type: "internal",
       message: "Error: tiers unavailable",
     })
+  })
+
+  it("bounds every surfaced failure message, so a hostile error body never rides the wire (ADP-051)", async () => {
+    const huge = () => Promise.reject(new Error(`${"x".repeat(5000)} sk-LEAKED`))
+    const handlers = adaptiveRpcHandlers(
+      source({
+        settings: huge,
+        status: huge,
+        receipts: huge,
+        resumeParked: huge,
+        getSessionMode: huge,
+        getTierRequest: huge,
+      }),
+    )
+    const results = [
+      await handlers["settings.get"](undefined, callContext()),
+      await handlers["status.get"](undefined, callContext()),
+      await handlers["receipts.list"](undefined, callContext()),
+      await handlers["parked.resume"]({ sessionID: "s" }, callContext()),
+      await handlers["session-mode.get"]({ sessionID: "s" }, callContext()),
+      await handlers["tier-request.get"]({ sessionID: "s" }, callContext()),
+    ]
+    for (const result of results) {
+      const message = (result as unknown as { message: string }).message
+      expect(message.length).toBeLessThanOrEqual(LOG_ERROR_LENGTH)
+      expect(message).not.toContain("sk-LEAKED")
+    }
   })
 
   it("settings.set returns the patch result and emits settings-changed on success", async () => {

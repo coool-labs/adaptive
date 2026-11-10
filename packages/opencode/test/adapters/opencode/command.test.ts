@@ -162,4 +162,22 @@ describe("web command", () => {
     expect(await run("/web-adaptive")).toEqual(["Adaptive could not complete that command."])
     expect(errors.mock.calls.some((call) => String(call[0]).includes("command"))).toBe(true)
   })
+  it("answers a failed mode switch instead of throwing (fail-open)", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const { run, said } = setup({ setMode: () => Promise.reject(new Error("storage down")) })
+    expect(await run("/web-adaptive off")).toEqual(["Adaptive could not complete that command."])
+    expect(said.every((message) => message.sessionID === "s1")).toBe(true)
+    expect(errors.mock.calls.some((call) => String(call[0]).includes("command"))).toBe(true)
+  })
+
+  it.each([
+    "/web-adaptive off now",
+    "/web-adaptive status please",
+    "/web-adaptive-off",
+    "turn it on",
+  ])("treats %j as usage, never as a mode change", async (text) => {
+    const { run, setMode } = setup()
+    expect(await run(text)).toEqual(["Usage: /web-adaptive [status | on | off | observe | active]"])
+    expect(setMode).not.toHaveBeenCalled()
+  })
 })
