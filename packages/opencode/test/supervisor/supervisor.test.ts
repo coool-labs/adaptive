@@ -2769,7 +2769,7 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     })
   })
 
-  it("keeps the ownership mark across nested owned prompts until each settles", async () => {
+  it("the ownership mark survives the owned prompt and a folded veto adds nothing", async () => {
     const log: string[] = []
     const gates: (() => void)[] = []
     const source = {
@@ -2791,28 +2791,25 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     const session = { source } as unknown as FakeSupervisorSession
     const storage = activeStorage()
     const supervisor = makeSupervisor({ storage, session })
-    // Two overlapping owned recoveries: each marks the session before its
-    // prompt and only the last settle releases the in-flight window.
+    // One owned recovery marks the session before its prompt. A second veto
+    // while the chain is still in flight folds into it: no second switch, no
+    // second prompt, no second receipt (ADP-023 stacking regression).
     await supervisor.handleRetry(retryInput())
     await flush()
-    await supervisor.handleRetry(retryInput())
+    const second = retryInput()
+    await supervisor.handleRetry(second)
     await flush()
-    expect(log).toEqual([
-      "switch:b",
-      `prompt:${CONTINUATION_PROMPT}`,
-      "switch:b",
-      `prompt:${CONTINUATION_PROMPT}`,
-    ])
+    expect(second.decision).toEqual({ retry: false })
+    expect(log).toEqual(["switch:b", `prompt:${CONTINUATION_PROMPT}`])
     gates[0]?.()
-    gates[1]?.()
     await flush()
-    // The prompt hooks for those owned prompts never fired in this fake; the
-    // mark survives them and skips the next prompt report's admission. Each
-    // veto recorded its own unit-less recovery-admission receipt.
+    // The owned prompt's hook never fired in this fake; the mark survives it
+    // and skips the next prompt report's admission. The fold recorded one
+    // unit-less recovery-admission receipt.
     await supervisor.handleReport(PROMPT_S1)
-    expect(log).toHaveLength(4)
+    expect(log).toHaveLength(2)
     const receipts = parseReceiptsPayload(storedReceipts(storage))
-    expect(receipts).toHaveLength(2)
+    expect(receipts).toHaveLength(1)
     expect(receipts.every((receipt) => receipt.unitID === undefined)).toBe(true)
   })
 

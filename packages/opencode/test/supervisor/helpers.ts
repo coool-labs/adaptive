@@ -27,7 +27,9 @@ export class FakeSupervisorSession {
   readonly failGet: boolean
   readonly failWait: boolean
   readonly failPrompt: boolean
+  readonly holdWait: boolean
   readonly source: SupervisorSessionSourceFixture & SessionHookSource
+  #waitGate: () => void = () => undefined
 
   constructor(
     options: {
@@ -35,12 +37,15 @@ export class FakeSupervisorSession {
       failGet?: boolean
       failWait?: boolean
       failPrompt?: boolean
+      /** Holds every `wait` open until `releaseWait()` — pins a recovery mid-settle. */
+      holdWait?: boolean
     } = {},
   ) {
     this.log = options.log ?? []
     this.failGet = options.failGet ?? false
     this.failWait = options.failWait ?? false
     this.failPrompt = options.failPrompt ?? false
+    this.holdWait = options.holdWait ?? false
     let counter = 0
     const hook = (name: string, cb: AnyCallback) => {
       this.registered.set(name, cb)
@@ -63,7 +68,10 @@ export class FakeSupervisorSession {
       wait: (input: { sessionID: string }) => {
         if (this.failWait) return Promise.reject(new Error("settle failed"))
         this.log.push(`wait:${input.sessionID}`)
-        return Promise.resolve()
+        if (!this.holdWait) return Promise.resolve()
+        return new Promise<void>((resolve) => {
+          this.#waitGate = resolve
+        })
       },
       switchModel: (input: { sessionID: string; model: ModelRef }) => {
         const variant = input.model.variant !== undefined ? `@${input.model.variant}` : ""
@@ -78,6 +86,13 @@ export class FakeSupervisorSession {
         return Promise.resolve({ sessionID: input.sessionID })
       },
     }
+  }
+
+  /** Release a `holdWait`-held settle (no-op when nothing is held). */
+  releaseWait(): void {
+    const gate = this.#waitGate
+    this.#waitGate = () => undefined
+    gate()
   }
 
   /** Invoke a captured hook callback with a (wire-shaped) input. */

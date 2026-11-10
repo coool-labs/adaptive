@@ -156,6 +156,14 @@ export class RecoveryAbortedError extends Error {
   }
 }
 
+/**
+ * A settle→switch→prompt chain completes in seconds; a pending recovery
+ * older than this is wedged (its continuation never landed and no outcome
+ * will clear it), so a fresh failure's recovery supersedes it instead of
+ * vetoing forever. Production stacking bursts were <250 ms wide.
+ */
+const RECOVERY_SUPERSEDE_MS = 10_000
+
 export class Supervisor {
   readonly #options: SupervisorOptions
   readonly #settings: SettingsStore
@@ -226,6 +234,14 @@ export class Supervisor {
    * the recovery does (it never rejects).
    */
   readonly #recoveryPending = new Map<string, Promise<void>>()
+  /**
+   * When each pending recovery started (clock ms). A failure arriving while
+   * a recovery is pending folds into it (one chain per session); a chain
+   * pending longer than RECOVERY_SUPERSEDE_MS is wedged or abandoned —
+   * settle normally completes in seconds — and a fresh failure's recovery
+   * supersedes it instead of stalling the session behind it forever.
+   */
+  readonly #recoveryPendingAt = new Map<string, number>()
   /**
    * Units opened by an owned continuation's prompt. Such a unit can fail
    * before the recovery that started it returns from its prompt call; its
@@ -1495,6 +1511,12 @@ export class Supervisor {
     })
     const wrapped = schedulerForMode(plan, this.#modeFor(report.sessionID, settings))
     if (wrapped.kind === "escalate") {
+      // A pending owned recovery already continues this session's work (the
+      // same rule the quota path applies): record nothing and start nothing.
+      // The pending chain's continuation carries the next outcome, and a
+      // persistent capability failure re-escalates at the next safe boundary
+      // within budget — the budget must not be spent on a skipped escalation.
+      if (this.#recoveryPending.has(report.sessionID)) return
       this.#escalations.set(report.sessionID, escalationUsed + 1)
       // Recorded unit-less on purpose: the receipt describes the CONTINUATION
       // decision, so the continuation unit adopts it and its outcome attaches
@@ -1726,6 +1748,27 @@ export class Supervisor {
       this.#observeHealth(failureEvent(refKey(input.model), classification))
     }
 
+    // A pending owned recovery already continues this session's work. Veto
+    // the host retry (it would race the pending settle→switch→prompt) but
+    // start nothing: a fresh admission here could also replace the session's
+    // pending probe slot while the in-flight chain still owns it. The
+    // stacked-continuation burst (nine same-model applies in 85 ms in the
+    // receipt ring) came through this unguarded path — unit-less vetoes
+    // never consume the per-unit veto budget, so only this guard bounds
+    // them. The exception is the pending chain's own continuation unit: its
+    // failure echo legitimately starts the next nested recovery (its mark
+    // lifecycle is what lets the chain hand work to the next resource). A
+    // chain pending longer than RECOVERY_SUPERSEDE_MS is wedged — a fresh
+    // failure supersedes it instead of vetoing forever.
+    const continuationEcho = unitID !== undefined && this.#continuationUnits.has(unitID)
+    const pendingAt = this.#recoveryPendingAt.get(input.sessionID)
+    const superseded =
+      pendingAt !== undefined && this.#options.clock() - pendingAt >= RECOVERY_SUPERSEDE_MS
+    if (this.#recoveryPending.has(input.sessionID) && !continuationEcho && !superseded) {
+      input.decision = { retry: false }
+      return
+    }
+
     // Recovery = fresh admission; the failed resource is already health-blocked.
     let recovery: RecoveryOption = { kind: "none" }
     let routingTier: TierName | undefined
@@ -1855,9 +1898,13 @@ export class Supervisor {
     // race is still seen.
     const pending = run.catch(() => undefined)
     this.#recoveryPending.set(sessionID, pending)
+    this.#recoveryPendingAt.set(sessionID, this.#options.clock())
     return run.finally(() => {
       // A later recovery on the session owns the entry now.
-      if (this.#recoveryPending.get(sessionID) === pending) this.#recoveryPending.delete(sessionID)
+      if (this.#recoveryPending.get(sessionID) === pending) {
+        this.#recoveryPending.delete(sessionID)
+        this.#recoveryPendingAt.delete(sessionID)
+      }
     })
   }
 
