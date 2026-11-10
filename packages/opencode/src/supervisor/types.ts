@@ -34,6 +34,26 @@ export interface RetryHookInput {
   decision: { retry: false } | { retry: true; delay: number }
 }
 
+/**
+ * Structural mirror of the host goal state the supervisor reads to decide
+ * whether a paused goal may be brought back. Deliberately brand-free: the
+ * adapter converts the host's goal payload.
+ */
+export interface GoalSnapshot {
+  readonly status: string
+  readonly reason?: string | undefined
+}
+
+/**
+ * The host goal surface, as far as the supervisor needs it: read a session's
+ * goal, resume a paused one. Optional — hosts without a goal engine simply
+ * omit it, and goal continuity degrades to "goal stays paused".
+ */
+export interface GoalSurface {
+  get(sessionID: string): Promise<GoalSnapshot | null>
+  resume(sessionID: string): Promise<void>
+}
+
 /** Everything the supervisor needs from the host. */
 export interface SupervisorOptions {
   readonly session: SupervisorSessionSource
@@ -45,6 +65,8 @@ export interface SupervisorOptions {
   readonly schedule: (callback: () => void, delayMs: number) => () => void
   /** What every plugin instance in the process shares (ADP-056). */
   readonly ledger: ProcessLedger
+  /** Host goal surface, when the host has one (goal continuity, ADP-015). */
+  readonly goal?: GoalSurface | undefined
 }
 
 /** The Codex header sensor watches ChatGPT/Codex-backed resources. */

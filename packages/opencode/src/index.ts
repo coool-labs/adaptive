@@ -3,6 +3,7 @@ import { isCodexHeaderName } from "@coool/adaptive-core/sensors/codex-capacity/i
 import {
   adaptiveCommand,
   escalationTool,
+  goalSurface,
   processLedger,
   registerSessionHooks,
   subscribeSessions,
@@ -35,6 +36,7 @@ export default Plugin.define({
       clock: () => Date.now(),
       schedule: unrefTimeout,
       ledger: processLedger(),
+      goal: goalSurface(context.rpc, context.session),
     })
     // Every disposal settles independently: a failing dispose is logged, never
     // allowed to mask the other disposals or (during rollback) the original

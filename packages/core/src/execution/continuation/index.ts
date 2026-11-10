@@ -9,3 +9,5 @@ export type {
 export { CONTINUATION_PROMPT } from "./prompts.js"
 export { planContinuation } from "./plan.js"
 export { executeContinuation } from "./execute.js"
+export { shouldResumeGoal } from "./goal.js"
+export type { GoalSnapshot } from "./goal.js"

@@ -52,6 +52,7 @@ import type {
 import { MAX_ESCALATION_EVIDENCE } from "@coool/adaptive-core/routing/scheduler/types"
 import type { CandidateModel, Demand } from "@coool/adaptive-core/routing/compatibility/types"
 import { checkCompatibility } from "@coool/adaptive-core/routing/compatibility/gate"
+import { shouldResumeGoal } from "@coool/adaptive-core/execution/index"
 import {
   classifyFailure,
   CapacityRegistry,
@@ -236,6 +237,10 @@ export class Supervisor {
   readonly #quotaRecoveriesRemaining = new Map<string, number>()
   /** Interruptions observed while a recovery was pending on the session. */
   readonly #recoveryInterrupted = new Set<string>()
+  // Sessions whose last owned continuation delivery may have landed while
+  // the host goal was paused by a session failure; consumed once the
+  // delivered episode succeeds (see #resumeGoalIfPaused).
+  readonly #goalResumePending = new Set<string>()
   /**
    * Half-open probe tickets by session: a probe admitted while computing the
    * recovery for a veto belongs to the continuation episode that follows, so
@@ -1234,6 +1239,34 @@ export class Supervisor {
       }
       await this.#attachOutcome(unit, { status: "succeeded" })
     }
+    // A paused goal comes back only at the delivered continuation episode's
+    // success: the host's resume sends exactly one synthetic continuation,
+    // so resuming while another unit already runs would double-prompt. When
+    // a unit is open, the next success consumes the mark instead.
+    if (
+      this.#goalResumePending.has(report.sessionID) &&
+      this.#tracker.active(report.sessionID) === undefined
+    ) {
+      this.#goalResumePending.delete(report.sessionID)
+      await this.#resumeGoalIfPaused(report.sessionID)
+    }
+  }
+
+  /**
+   * Brings a goal back that the host paused over a session failure (ADP-015,
+   * ADP-028): the limit hit paused it, this session's owned continuation
+   * landed and succeeded, so the goal's loop continues on the recovered
+   * model. Deliberate pauses stay paused; goal-surface failures are
+   * fail-open.
+   */
+  async #resumeGoalIfPaused(sessionID: string): Promise<void> {
+    const goal = this.#options.goal
+    if (goal === undefined) return
+    try {
+      if (shouldResumeGoal(await goal.get(sessionID))) await goal.resume(sessionID)
+    } catch (error) {
+      logFailOpen("goal", error)
+    }
   }
 
   async #onExecutionFailed(
@@ -1278,6 +1311,10 @@ export class Supervisor {
       error: report.error,
     })
     this.#afterUnitClose(closed)
+    // The delivered continuation's episode failed: work did not continue, so
+    // a paused goal stays paused. A further recovery re-marks on its own
+    // delivery.
+    this.#goalResumePending.delete(report.sessionID)
     if (model !== undefined && countTerminal) {
       this.#observeHealth(failureEvent(refKey(model), classification))
     }
@@ -1517,6 +1554,9 @@ export class Supervisor {
       reason,
     })
     this.#afterUnitClose(closed)
+    // The user steering ends any pending goal resume along with the recovery
+    // the interruption aborted.
+    this.#goalResumePending.delete(report.sessionID)
     // User and host interruptions never produce health evidence (the
     // classifier maps them outside the infrastructure vocabulary).
     if (unit !== undefined) {
@@ -1849,11 +1889,17 @@ export class Supervisor {
         action,
         ops: { ...this.#ops, settle: () => Promise.resolve() },
       })
+      // The continuation is out. If the host paused its goal over the
+      // failure this recovery answers, the pause write landed before the
+      // settle completed — the delivered episode's success decides whether
+      // the goal comes back (see #resumeGoalIfPaused).
+      this.#goalResumePending.add(sessionID)
     } catch (error) {
       // The continuation prompt never reached the host, so no unit will open
       // to consume the tier intent — drop it or it would pin the marker
       // wipes and mislabel a later user prompt's admission.
       if (tier !== undefined) this.#continuationTiers.delete(sessionID)
+      this.#goalResumePending.delete(sessionID)
       throw error
     }
   }
@@ -2066,6 +2112,7 @@ export class Supervisor {
     const { ledger } = this.#options
     ledger.noteTakeover(sessionID)
     this.#resumeCycles.delete(sessionID)
+    this.#goalResumePending.delete(sessionID)
     const parkedHere = (): ParkedRecord[] =>
       this.#parked.list().filter((record) => record.sessionID === sessionID)
     // A session that never parked costs no storage read (OFF stays free).
