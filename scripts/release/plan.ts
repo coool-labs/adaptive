@@ -244,6 +244,21 @@ export function notesTemplate(release: PlannedRelease): string {
   ].join("\n")
 }
 
+/** Without a terminal, or under --yes, an editor would wait forever for input. */
+export function requireNotes(
+  plan: readonly PlannedRelease[],
+  notes: Readonly<Partial<Record<Plugin, string>>>,
+  interactive: boolean,
+): void {
+  if (interactive) return
+  const missing = plan.filter((release) => notes[release.id] === undefined).map(({ id }) => id)
+  if (missing.length === 0) return
+  const remedies = missing.map((id) => `--notes ${id}=<file> or --${id} skip`)
+  throw new Error(
+    `release: no notes for ${missing.join(", ")} and no terminal to edit them; pass ${remedies.join(", ")}`,
+  )
+}
+
 export function stripNotes(text: string): string {
   const notes = text.replace(/<!--[\s\S]*?-->/g, "").trim()
   // An unterminated comment would publish the template guidance as release notes.

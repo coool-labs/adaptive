@@ -14,6 +14,7 @@ import {
   releaseCommits,
   releaseSummary,
   releaseTagPatterns,
+  requireNotes,
   setLockVersion,
   setManifestVersion,
   stripNotes,
@@ -228,6 +229,27 @@ it("offers a notes template whose guidance is stripped before use", () => {
   expect(stripNotes(`${template}\n### Fixed\n\n- Parked runs wake once.\n`)).toBe(
     "### Fixed\n\n- Parked runs wake once.",
   )
+})
+
+it("refuses to open an editor without a terminal or under --yes", () => {
+  const pi: PlannedRelease = { ...RELEASE, id: "pi", name: "@coool/pi-adaptive", tag: "pi-v1.5.1" }
+  const plan = [RELEASE, pi]
+  // Regression: a shared-core change planned pi under --yes with only opencode
+  // notes, and the release hung inside an editor that had no terminal.
+  expect(() => {
+    requireNotes(plan, { opencode: "notes/opencode.md" }, false)
+  }).toThrow(
+    "release: no notes for pi and no terminal to edit them; pass --notes pi=<file> or --pi skip",
+  )
+  expect(() => {
+    requireNotes(plan, {}, false)
+  }).toThrow("pass --notes opencode=<file> or --opencode skip, --notes pi=<file> or --pi skip")
+  expect(() => {
+    requireNotes(plan, { opencode: "notes/opencode.md", pi: "notes/pi.md" }, false)
+  }).not.toThrow()
+  expect(() => {
+    requireNotes(plan, {}, true)
+  }).not.toThrow()
 })
 
 it("refuses notes that still hold an unterminated guidance comment", () => {

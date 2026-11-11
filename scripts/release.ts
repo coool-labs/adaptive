@@ -19,6 +19,7 @@ import {
   releaseCommits,
   releaseSummary,
   releaseTagPatterns,
+  requireNotes,
   tagName,
   setLockVersion,
   setManifestVersion,
@@ -192,6 +193,10 @@ async function main(): Promise<void> {
     console.log("release: nothing to release")
     return
   }
+  if (!dry) {
+    const terminal = process.stdin.isTTY && process.stdout.isTTY
+    requireNotes(plan, options.notes, terminal && !options.yes)
+  }
   const generated = new Map<string, string>()
   let lock = readFileSync("package-lock.json", "utf8")
   for (const release of plan) {
@@ -203,16 +208,9 @@ async function main(): Promise<void> {
     else {
       mkdirSync("test-artifacts/release", { recursive: true })
       if (!existsSync(saved)) writeFileSync(saved, notesTemplate(release))
-      const editor = process.env["EDITOR"]
-      if (!editor)
-        throw new Error(`release: set EDITOR or pass --notes ${release.id}=<file>; draft: ${saved}`)
-      const result = spawnSync(`${editor} "$ADAPTIVE_RELEASE_NOTES"`, {
-        shell: true,
-        stdio: "inherit",
-        env: { ...process.env, ADAPTIVE_RELEASE_NOTES: resolve(saved) },
-      })
+      const result = spawnSync("nano", [resolve(saved)], { stdio: "inherit" })
       if (result.error !== undefined) throw result.error
-      if (result.status !== 0) throw new Error("release: editor failed")
+      if (result.status !== 0) throw new Error(`release: nano failed; draft: ${saved}`)
       notes = stripNotes(readFileSync(saved, "utf8"))
     }
     const entry = changelogEntry(release, new Date().toISOString().slice(0, 10), notes)

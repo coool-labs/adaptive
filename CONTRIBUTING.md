@@ -107,8 +107,12 @@ never published. Explicit choices work without prompts:
 `npm run release -- --opencode patch --pi minor --notes opencode=notes/opencode.md --notes pi=notes/pi.md --yes`.
 Omit a nonexistent package or use `--pi skip` to leave an existing package unchanged.
 Notes files must be committed or outside the working tree; the real release
-requires a clean `main` branch. Without `--notes`, set
-`EDITOR`; drafts survive failed verification in `test-artifacts/release/`.
+requires a clean `main` branch. Without `--notes`, an interactive run opens
+each draft in `nano`; drafts survive failed verification in `test-artifacts/release/`.
+With `--yes` or without a terminal it never opens an editor: every planned
+package needs `--notes <pkg>=<file>` or `--<pkg> skip`, checked before any file
+changes. Shared-core commits plan both plugins, so an OpenCode-only release
+under `--yes` needs `--pi skip`.
 
 The CLI bumps manifests and the lockfile, updates changelogs, commits, and then
 runs full scoped verification **on the committed artifacts** — the git stage
