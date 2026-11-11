@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-11-11
+
+# pi-adaptive 1.0.2
+
+- Fixes onboarding in hosts that bridge Pi's UI, such as PiChamber. When the
+  host cannot draw Adaptive's picker, the dialog is now treated as dismissed
+  instead of throwing `Cannot read properties of undefined (reading 'picked')`
+  on every session start.
+- Doctor hints name `/adaptive` menu entries (Models, Health, Parked work)
+  instead of typed subcommands.
+
+### Shared core
+
+- fix: open /adaptive from the slash menu on Enter (5cafbea)
+
 ### Changed
 
 - Doctor hints name `/adaptive` menu entries (Models, Health, Parked work)
@@ -78,5 +93,6 @@ Initial Pi integration; not yet published.
 - Add `/adaptive` (status, why, tiers, health, resume, cancel, observe on|off, doctor), a first-run tier proposal that saves only after confirmation, and Ctrl+Alt+A.
 - Add deterministic tests, real-Pi SDK faux-provider scenarios, a versioned provider-error corpus, a packed minimum/latest host matrix over SDK, JSON, and real-terminal surfaces, and requirement traceability. See the [test strategy](docs/TEST_STRATEGY.md).
 
+[1.0.2]: https://github.com/coool-labs/adaptive/releases/tag/pi-v1.0.2
 [1.0.1]: https://github.com/coool-labs/adaptive/releases/tag/pi-v1.0.1
 [1.0.0]: https://github.com/coool-labs/adaptive/releases/tag/pi-v1.0.0
