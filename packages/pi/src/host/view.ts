@@ -27,7 +27,7 @@ interface DialogHost {
         keys: unknown,
         done: (result: T) => void,
       ) => Component,
-    ): Promise<T>
+    ): Promise<T | undefined>
   }
 }
 /**
@@ -128,12 +128,15 @@ export function piView(host: DialogHost): AdaptiveView {
     options: readonly SelectOption<T>[],
     actions: readonly { title: string; value: string; bind: string }[] = [],
   ): Promise<PickResult<T>> {
-    if (host.mode === "tui")
-      return host.ui.custom<PickResult<T>>((tui, _theme, _keys, done) =>
+    if (host.mode === "tui") {
+      // Hosts that bridge ctx.ui (PiChamber) resolve a surface they cannot draw with undefined.
+      const result = await host.ui.custom<PickResult<T>>((tui, _theme, _keys, done) =>
         picker(title, options, actions, tui.terminal.rows, done, () => {
           tui.requestRender()
         }),
       )
+      return result ?? { picked: undefined, action: undefined }
+    }
     const search =
       options.length > 20
         ? await host.ui.input(title, "Search provider / model / name (empty shows all)")

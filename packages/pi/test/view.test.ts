@@ -132,6 +132,19 @@ it("adapts all shared view operations to TUI components at actual terminal width
   expect(welcome.render(60)).toContain("standard: two")
 })
 
+it("treats a custom surface the host cannot draw as a dismissed dialog", async () => {
+  const fake = host("tui")
+  const view = piView({
+    ...fake.ctx,
+    ui: { ...fake.ctx.ui, custom: () => Promise.resolve(undefined) },
+  })
+  expect(await view.select({ title: "Pick", options: [{ title: "A", value: 7 }] })).toBeUndefined()
+  expect(await view.selectPaged({ title: "Pick", options: [], actions: [] })).toEqual({
+    picked: undefined,
+    action: undefined,
+  })
+})
+
 it("uses RPC-native primitives, preserving duplicate labels, search, actions and cancellation", async () => {
   const fake = host("rpc")
   const view = piView(fake.ctx)
