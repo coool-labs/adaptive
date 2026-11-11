@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.6.3] — 2026-11-11
+
+# opencode-adaptive 1.6.3
+
+Fixes `/adaptive` doing nothing when picked from the slash menu. The command
+was registered as taking arguments, and OpenCode only inserts such commands
+into the prompt — running them on the prompt-submit key. With keybinds that
+send messages on another key (for example submit on Ctrl+Return and Enter for
+a newline), picking `/adaptive` never opened the menu. The command now takes
+no arguments: picking it from the slash menu opens the menu immediately, like
+the GUI.
+
+Typed `/adaptive <subcommand>` forms are gone from the OpenCode TUI; every
+action lives in the `/adaptive` menu (Status, Models, Mode, Tier, Pin,
+Receipts, Health, Parked work, Doctor). Doctor hints name menu entries
+instead of typed subcommands.
+
+The fix is locked in with a real-PTY journey that launches with a custom
+keymap (submit on Ctrl+Return, Enter inserting a newline) and asserts the
+slash pick opens the menu.
+
+### Shared core
+
+- fix: open /adaptive from the slash menu on Enter (5cafbea)
+
 ### Fixed
 
 - Picking `/adaptive` from the slash menu opens the menu on Enter, even when
@@ -226,6 +251,7 @@ Initial release.
 - Capacity awareness from provider response headers (best-effort, never load-bearing).
 - Fail-open on internal plugin failure; privacy and configured-provider restrictions fail closed.
 
+[1.6.3]: https://github.com/coool-labs/adaptive/releases/tag/opencode-v1.6.3
 [1.6.2]: https://github.com/coool-labs/adaptive/releases/tag/opencode-v1.6.2
 [1.6.1]: https://github.com/coool-labs/adaptive/releases/tag/opencode-v1.6.1
 [1.6.0]: https://github.com/coool-labs/adaptive/releases/tag/opencode-v1.6.0
