@@ -8,7 +8,10 @@ interface RecordingEffects extends PublishEffects {
   readonly calls: string[]
 }
 
-function recording(state: { published: boolean; localTag: "absent" | "on-head" | "detached" }) {
+function recording(
+  state: { published: boolean; localTag: "absent" | "on-head" | "detached" },
+  lands = true,
+) {
   const calls: string[] = []
   const effects: RecordingEffects = {
     calls,
@@ -20,7 +23,10 @@ function recording(state: { published: boolean; localTag: "absent" | "on-head" |
       calls.push("localTag")
       return state.localTag
     },
-    publish: () => calls.push("publish"),
+    publish: () => {
+      calls.push("publish")
+      state.published = lands
+    },
     createTag: () => calls.push("createTag"),
     pushTag: () => calls.push("pushTag"),
   }
@@ -31,7 +37,24 @@ describe("executePublish", () => {
   it("publishes, tags and pushes in dependency order", () => {
     const effects = recording({ published: false, localTag: "absent" })
     expect(executePublish(TARGET, effects)).toEqual(["publish", "tag", "pushTag"])
-    expect(effects.calls).toEqual(["registryState", "localTag", "publish", "createTag", "pushTag"])
+    expect(effects.calls).toEqual([
+      "registryState",
+      "localTag",
+      "publish",
+      "registryState",
+      "createTag",
+      "pushTag",
+    ])
+  })
+
+  it("refuses to tag when npm publish exits 0 but the registry lacks the version", () => {
+    // Regression: 1.6.3 was tagged and pushed after `npm publish` exited 0,
+    // yet the registry never listed it.
+    const effects = recording({ published: false, localTag: "absent" }, false)
+    expect(() => executePublish(TARGET, effects)).toThrow(
+      "publish: npm publish exited 0 but the registry does not list @coool/pi-adaptive@1.0.0",
+    )
+    expect(effects.calls).toEqual(["registryState", "localTag", "publish", "registryState"])
   })
 
   it("does not publish or tag again when both already agree", () => {

@@ -32,7 +32,9 @@ export type PublishAction = "publish" | "tag" | "pushTag"
  * Sequence that makes the registry and the certification tag agree with the
  * published manifest version. The push is always requested: pushing an
  * up-to-date tag is a no-op, and an existing local tag still has to reach the
- * remote after a manual publish.
+ * remote after a manual publish. A tag left on the release commit after
+ * `main` moved on stays "detached": publish the version by hand
+ * (`npm publish --workspace packages/<id>`) and the tag already certifies it.
  */
 export function publishActions(state: PublishState, tag: string): readonly PublishAction[] {
   if (state.localTag === "detached") throw new Error(`publish: ${tag} points at a different commit`)
