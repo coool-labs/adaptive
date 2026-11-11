@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import tuiPlugin, { chipFor, sessionChip, setupChip, waitingChip } from "../src/tui.js"
 import { settingsJSON } from "./supervisor/helpers.js"
-import { fakeTuiContext, modelInfo } from "./tui/fake-context.js"
+import { byTitle, fakeTuiContext, modelInfo } from "./tui/fake-context.js"
 import type { OperatingMode } from "@coool/adaptive-core/routing/scheduler/types"
 import { WAITING_POLL_MS } from "@coool/adaptive-core/flow/waiting"
 
@@ -27,7 +27,7 @@ function configuredStatus(): unknown {
 }
 
 describe("tui entry", () => {
-  it("dispatches action subcommands through location-scoped RPC", async () => {
+  it("runs the menu's action rows through location-scoped RPC", async () => {
     const rpcCalls: { method: string; options: unknown }[] = []
     const location = { directory: "/project" }
     const ref = { providerID: "prov", id: "a" }
@@ -40,8 +40,8 @@ describe("tui entry", () => {
       status: {
         mode: "active",
         pin: null,
-        parked: 0,
-        waiting: [],
+        parked: 1,
+        waiting: [{ sessionID: "s1", tier: "standard", resumeAt: null }],
         receipts: 0,
         tiers: {
           quick: [],
@@ -61,25 +61,28 @@ describe("tui entry", () => {
       },
     })
     const dispose = await tuiPlugin.setup(context)
-    const command = (
-      layers[0] as { commands: { slash: { arguments?: boolean }; run: (input: string) => void }[] }
-    ).commands[0]
+    const command = (layers[0] as { commands: { run: () => void }[] }).commands[0]
     if (command === undefined) throw new Error("command missing")
-    expect(command.slash.arguments).toBe(true)
-    dialogs.selectQueue.push(ref)
+    dialogs.selectQueue.push(byTitle("Health"), ref)
     dialogs.confirmQueue.push(true)
-    for (const input of ["health", "resume", "cancel", "doctor"]) {
-      command.run(input)
-      for (let turn = 0; turn < 30; turn += 1) await Promise.resolve()
-    }
+    dialogs.selectQueue.push(byTitle("Parked work"), "s1", byTitle("Cancel"))
+    dialogs.selectQueue.push(byTitle("Doctor"))
+    // Resuming continues the session's run, so it closes the menu.
+    dialogs.selectQueue.push(byTitle("Parked work"), "s1", byTitle("Resume now"))
+    command.run()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // The doctor report stays open until Escape closes it.
+    dialogs.shows.at(-1)?.onClose?.()
+    await new Promise((resolve) => setTimeout(resolve, 0))
     for (const method of ["health.reset", "parked.resume", "parked.cancel", "doctor.run"])
       expect(rpcCalls).toContainEqual({ method, options: { location } })
     expect(dialogs.toasts.map((toast) => toast.message)).toEqual([
       "Health reset",
-      "Resuming parked work",
       "Parked work cancelled",
+      "Resuming parked work",
     ])
-    dialogs.shows.at(-1)?.onClose?.()
+    expect(dialogs.selectQueue).toEqual([])
+    expect(dialogs.selects.at(-1)?.title).toBe("This session's parked work")
     await dispose?.()
   })
 
@@ -91,12 +94,20 @@ describe("tui entry", () => {
     await tuiPlugin.setup(context)
     const layer = layers[0] as {
       mode?: string
-      commands: { id: string; slash: { name: string }; palette?: boolean; suggested?: boolean }[]
+      commands: {
+        id: string
+        slash: { name: string; arguments?: true }
+        palette?: boolean
+        suggested?: boolean
+      }[]
     }
     expect(layer.commands[0]?.id).toBe("coool.adaptive.menu")
     expect(layer.commands[0]?.slash.name).toBe("adaptive")
-    // palette:true is what makes the command discoverable in the TUI command
-    // palette (the /adaptive slash flow only lands in the editor).
+    // An argument command only lands in the prompt and runs on the submit
+    // key; with Enter bound to newline, picking /adaptive did nothing
+    // (regression: a user's ctrl+return submit binding).
+    expect(layer.commands[0]?.slash.arguments).toBeUndefined()
+    // palette:true keeps the menu discoverable outside the editor slash list.
     expect(layer.commands[0]?.palette).toBe(true)
     // suggested:true surfaces the command in the palette's suggested row.
     expect(layer.commands[0]?.suggested).toBe(true)

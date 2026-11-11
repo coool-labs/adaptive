@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Doctor hints name `/adaptive` menu entries (Models, Health, Parked work)
+  instead of typed subcommands.
+
 ## [1.0.1] — 2026-11-10
 
 # pi-adaptive 1.0.0

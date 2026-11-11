@@ -25,6 +25,13 @@ export interface DialogRecord {
   sets: unknown[]
 }
 
+const PICK = Symbol("pick")
+
+/** A select queue entry that picks the option with this title: menu action rows carry closures. */
+export function byTitle(title: string): unknown {
+  return { [PICK]: title }
+}
+
 export interface SlotRecord {
   append: string
   render: (input?: unknown) => unknown
@@ -101,7 +108,7 @@ export function fakeTuiContext(options: {
   }
   const select = (spec: {
     title: string
-    options: { value: unknown }[]
+    options: { title: string; value: unknown }[]
     search?: (query: string, options: { value: unknown }[]) => unknown
     actions?: { title: string; bind: string; onTrigger: () => void }[]
   }) => {
@@ -143,6 +150,11 @@ export function fakeTuiContext(options: {
       return pending
     }
     const next = dialogs.selectQueue.shift()
+    if (typeof next === "object" && next !== null && PICK in next) {
+      const option = spec.options.find((candidate) => candidate.title === next[PICK])
+      if (option === undefined) throw new Error(`no option titled ${String(next[PICK])}`)
+      return Promise.resolve(option.value as never)
+    }
     return Promise.resolve(next as never)
   }
   const sessionModePatches = options.sessionModePatches ?? []

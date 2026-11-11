@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Picking `/adaptive` from the slash menu opens the menu on Enter, even when
+  Enter inserts a newline and messages are sent with another key.
+
+### Changed
+
+- Typed `/adaptive <subcommand>` forms are gone from the OpenCode TUI; every
+  action lives in the `/adaptive` menu (Status, Health, Parked work, Doctor…).
+  Doctor hints name menu entries instead of typed subcommands.
+
+### Tests
+
+- Real-PTY journey with a custom keymap (submit on Ctrl+Return, Enter =
+  newline) proves the slash pick opens the menu.
+
 ## [1.6.2] — 2026-11-10
 
 # opencode-adaptive 1.6.2

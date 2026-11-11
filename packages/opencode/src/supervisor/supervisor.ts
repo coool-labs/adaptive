@@ -700,7 +700,7 @@ export class Supervisor {
             checks.push({
               state: "error",
               message: `${label}: model unavailable`,
-              action: "Connect its provider or update /adaptive tiers.",
+              action: "Connect its provider or replace it in /adaptive → Models.",
             })
           } else if (candidate.capabilities?.tools !== true) {
             checks.push({

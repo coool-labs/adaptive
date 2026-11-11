@@ -94,6 +94,8 @@ async function launchTui(
      */
     install?: "global" | "project"
     staleLedger?: boolean
+    /** TUI settings merged over the defaults (`cli.json` shape), e.g. keybinds. */
+    cliConfig?: unknown
   } = {},
 ): Promise<Launched> {
   // Bundle the sidecar entry to plain JS: the termwright host node has no TS
@@ -203,6 +205,8 @@ async function launchTui(
   env["XDG_CACHE_HOME"] = join(home, "cache")
   env["OPENCODE_SERVER_PASSWORD"] = PASSWORD
   env["TERM"] = "xterm-256color"
+  if (options.cliConfig !== undefined)
+    env["OPENCODE_CLI_CONFIG_CONTENT"] = JSON.stringify(options.cliConfig)
 
   // The TUI's background service binds a managed port that defaults to a
   // FIXED value (49374) — the user's own opencode session may own it, and
@@ -370,16 +374,9 @@ async function runAdaptiveSlash(app: TerminalApp): Promise<void> {
   await app.waitForQuiet({ quietMs: 500 })
   expect(app.screen().text()).toContain("Adaptive")
   expect(app.screen().text()).not.toContain("No results found")
-  await app.press("Enter")
-  // Probed on 2.2.6 with slash.arguments: true (probed with and without the
-  // flag): the flag keeps the bare slash command in the prompt — the first
-  // Enter only selects it into the editor, and the prompt submission (a
-  // second Enter) dispatches the command with its raw input. The flag is
-  // load-bearing: it lets `/adaptive doctor` and `/adaptive health` dispatch
-  // with arguments, and stops half-typed slash text from reaching the model
-  // as a prompt (probed: without the flag "/adaptive doctor" is submitted as
-  // an ordinary message). The palette path dispatches on the first Enter.
-  await app.waitForQuiet({ quietMs: 500 })
+  // One Enter picks the entry and runs it: the command takes no arguments,
+  // so it does not wait for a prompt submit (which a custom keybind may
+  // move off Enter).
   await app.press("Enter")
   await app.waitForText(/OpenCode Adaptive|Adaptive \((?:observe|active|off)\)/, {
     timeout: 30_000,
@@ -649,6 +646,33 @@ test(
     })
     await app.close()
     await closeLaunched(launched)
+  },
+)
+
+test(
+  "/adaptive opens from the slash menu when Enter inserts a newline",
+  { timeout: 120_000 },
+  async ({ termwright: tw, terminal }) => {
+    // A user's keybinds: submit on ctrl+return, Enter adds a newline. Picking
+    // an argument command only inserted it into the prompt, and Enter never
+    // submitted it, so the menu never opened.
+    const launched = await launchTui(tw, terminal, {
+      cliConfig: {
+        keybinds: {
+          "input.submit": "ctrl+return",
+          "input.newline": "return,shift+return,alt+return,ctrl+j",
+        },
+      },
+    })
+    const app = launched.app
+    try {
+      await bootTui(launched)
+      await runAdaptiveSlash(app)
+      await app.waitForText("Adaptive starts in Observe mode", { timeout: 15_000 })
+    } finally {
+      await app.close()
+      await closeLaunched(launched)
+    }
   },
 )
 

@@ -25,7 +25,7 @@ export function statusChecks(snapshot: StatusSnapshot): DoctorCheck[] {
     (tier) => ({
       state: "warning",
       message: `${tier}: no configured models`,
-      action: "Open /adaptive tiers to add a model.",
+      action: "Add a model in /adaptive → Models.",
     }),
   )
   // A model listed in two tiers is one resource with one health state.
@@ -41,14 +41,14 @@ export function statusChecks(snapshot: StatusSnapshot): DoctorCheck[] {
       : {
           state: "ok",
           message: `Health: ${plural(limited, "model")} limited`,
-          action: "Inspect /adaptive health; reset only after checking the provider.",
+          action: "Check /adaptive → Health; reset only after checking the provider.",
         },
     snapshot.parked === 0
       ? { state: "ok", message: "No parked work" }
       : {
           state: "ok",
           message: plural(snapshot.parked, "parked task"),
-          action: "Use /adaptive resume or /adaptive cancel in the waiting session.",
+          action: "Use /adaptive → Parked work in the waiting session.",
         },
   ]
 }

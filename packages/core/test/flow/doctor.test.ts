@@ -13,7 +13,7 @@ describe("statusChecks", () => {
       ...["quick", "standard", "advanced"].map((tier) => ({
         state: "warning",
         message: `${tier}: no configured models`,
-        action: "Open /adaptive tiers to add a model.",
+        action: "Add a model in /adaptive → Models.",
       })),
       { state: "ok", message: "Health: no models limited" },
       { state: "ok", message: "No parked work" },
@@ -36,12 +36,12 @@ describe("statusChecks", () => {
       {
         state: "ok",
         message: "Health: 2 models limited",
-        action: "Inspect /adaptive health; reset only after checking the provider.",
+        action: "Check /adaptive → Health; reset only after checking the provider.",
       },
       {
         state: "ok",
         message: "1 parked task",
-        action: "Use /adaptive resume or /adaptive cancel in the waiting session.",
+        action: "Use /adaptive → Parked work in the waiting session.",
       },
     ])
     expect(

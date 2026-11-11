@@ -86,6 +86,7 @@ Requirements the TUI RPC under test imposes on the sandbox (both established emp
 - Boot waits for the configured fake model as well as the home prompt. On 2.2.7 the prompt renders first; submitting before model readiness opens host sign-in. The fake-provider turn regression failed under Node 24 before this condition-based readiness fix and passes after it.
 - The plugin's keymap layer must register with `mode: "global"` (`src/tui.tsx`); the default input-mode scoping kept the palette from matching the command.
 - The keymap layer registers asynchronously some seconds after the boot prompt, so the suite retries the palette match. The reliable slash path is `/` followed by Enter (typing the full `/adaptive` word races the slash filter).
+- `/adaptive` takes no slash arguments, so picking it from the slash menu runs it on that one Enter. On 2.2.7 an argument command (`slash.arguments`) is only inserted into the prompt and runs on the prompt-submit key; with a custom keymap that binds submit to Ctrl+Return and Enter to newline, picking `/adaptive` did nothing. A journey launches with exactly that keymap (`OPENCODE_CLI_CONFIG_CONTENT`) and asserts the slash pick opens the invitation; it failed against the argument-taking build and passes after the fix. The earlier suite missed it because every journey used the default keymap and pressed Enter twice.
 
 ## Cross-surface sync E2E (ADP-044)
 

@@ -20,8 +20,8 @@ import { adaptiveRpc } from "./rpc/definition.js"
 import type { OperatingMode } from "@coool/adaptive-core/routing/scheduler/types"
 import { TIERS } from "@coool/adaptive-core/routing/tier-policy/types"
 import { parseMode } from "@coool/adaptive-core/state/settings/index"
-import { runAdaptiveCommand } from "@coool/adaptive-core/flow/command"
 import { OPENCODE_COPY } from "./ui/copy.js"
+import { runAdaptive } from "@coool/adaptive-core/flow/controller"
 import type { AdaptiveApi, AdaptiveView } from "@coool/adaptive-core/flow/controller"
 import { errorText } from "@coool/adaptive-core/flow/options"
 import type { ModelSummary } from "@coool/adaptive-core/flow/tiers"
@@ -207,29 +207,30 @@ export default define({
           // Surface the command in the palette's suggested row: discovery was
           // the reason users never found the menu at all.
           suggested: true,
-          slash: { name: "adaptive", arguments: true },
-          run: (input) => {
+          // No `arguments`: the host only inserts an argument command into the
+          // prompt and runs it on the submit key, so with Enter bound to
+          // newline (submit on ctrl+return) picking /adaptive did nothing.
+          // Without it, picking the entry opens the menu, like the GUI.
+          slash: { name: "adaptive" },
+          run: () => {
             // Inside a session the flows steer that session's mode override
             // (ADP-054); on home they patch the global mode.
             const current = context.ui.router.current()
             const sessionID = current.type === "session" ? current.sessionID : undefined
-            void runAdaptiveCommand(
-              {
-                copy: OPENCODE_COPY,
-                api,
-                view,
-                models,
-                clock: Date.now,
-                actions: {
-                  resetHealth: (model) => client["health.reset"](model, at()),
-                  resume: (sessionID) => client["parked.resume"]({ sessionID }, at()),
-                  cancel: (sessionID) => client["parked.cancel"]({ sessionID }, at()),
-                  doctor: () => client["doctor.run"](undefined, at()),
-                },
-                ...(sessionID !== undefined ? { sessionID } : {}),
+            void runAdaptive({
+              copy: OPENCODE_COPY,
+              api,
+              view,
+              models,
+              clock: Date.now,
+              actions: {
+                resetHealth: (model) => client["health.reset"](model, at()),
+                resume: (sessionID) => client["parked.resume"]({ sessionID }, at()),
+                cancel: (sessionID) => client["parked.cancel"]({ sessionID }, at()),
+                doctor: () => client["doctor.run"](undefined, at()),
               },
-              input ?? "",
-            ).catch((error: unknown) => {
+              ...(sessionID !== undefined ? { sessionID } : {}),
+            }).catch((error: unknown) => {
               view.toast(errorText(error), "error")
             })
           },
