@@ -283,14 +283,23 @@ export async function exerciseParking(options: PiTerminalOptions): Promise<void>
       await terminal.waitForText("(adaptive) auto", { timeout: 20_000 })
       await submit(terminal, "MATRIX_DROPPED_INPUT")
       await terminal.waitForText("Parked: no available standard model", { timeout: 10_000 })
-      const token = rows(index(options))[0]?.["token"]
-      await submit(terminal, "MATRIX_REPLACEMENT_INPUT")
+      // The card is drawn mid-run; input typed before the run ends is steering input,
+      // which parking deliberately leaves to the host.
+      await terminal.waitForText("standard waiting", { timeout: 10_000 })
       await terminal.waitForQuiet({ quietMs: 100, timeout: 10_000 })
-      assert.notEqual(
-        rows(index(options))[0]?.["token"],
-        token,
-        "new input did not replace parked work",
+      const token = rows(index(options))[0]?.["token"]
+      const parkedFile = sessionFile(trace)
+      const count = (events: readonly Record<string, unknown>[], type: string) =>
+        events.filter((event) => event["customType"] === type).length
+      await submit(terminal, "MATRIX_REPLACEMENT_INPUT")
+      // The note follows savePark, so the replacement's record is indexed once it lands.
+      await waitForTrace(
+        parkedFile,
+        (events) => count(events, "adaptive.parked") === 2 && count(events, "adaptive.note") === 2,
       )
+      const replaced = rows(index(options))
+      assert.equal(replaced.length, 1, "new input left no single parked record")
+      assert.notEqual(replaced[0]?.["token"], token, "new input did not replace parked work")
       await selectModel(terminal, "adaptive-faux/manual-physical")
       await turn(terminal, trace, "MATRIX_MANUAL_TAKEOVER")
       assert.deepEqual(rows(index(options)), [], "manual takeover left a wake armed")
