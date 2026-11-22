@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## [1.0.3] — 2026-11-22
+
+# pi-adaptive 1.0.3
+
+Pi now recognizes OpenAI's depleted-balance replies as quota exhaustion and
+fails over to the next configured provider instead of retrying the account.
+Contended state writes also wait long enough for a subagent burst to finish.
+
+### Fixed
+
+- OpenAI replies saying no credits remain or are left are classified as
+  quota exhaustion. Both the shared-quota message and the textual
+  `no credits remaining` / `no credits left` forms fail over to the next
+  configured provider.
+- A state-file lock now waits up to three seconds for a live holder. A busy
+  subagent burst, or a host under CPU pressure, could previously exceed the
+  one-second budget and fail a legitimate write open.
+
+### Tests
+
+- The Pi error corpus and subscription-recovery suite cover the no-credits
+  reply and assert the failover.
+
+### Shared core
+
+- fix: route subagent first units and dedupe recovery (3347790)
+- fix: open /adaptive from the slash menu on Enter (5cafbea)
+
 ## [1.0.2] — 2026-11-11
 
 # pi-adaptive 1.0.2
@@ -93,6 +121,7 @@ Initial Pi integration; not yet published.
 - Add `/adaptive` (status, why, tiers, health, resume, cancel, observe on|off, doctor), a first-run tier proposal that saves only after confirmation, and Ctrl+Alt+A.
 - Add deterministic tests, real-Pi SDK faux-provider scenarios, a versioned provider-error corpus, a packed minimum/latest host matrix over SDK, JSON, and real-terminal surfaces, and requirement traceability. See the [test strategy](docs/TEST_STRATEGY.md).
 
+[1.0.3]: https://github.com/coool-labs/adaptive/releases/tag/pi-v1.0.3
 [1.0.2]: https://github.com/coool-labs/adaptive/releases/tag/pi-v1.0.2
 [1.0.1]: https://github.com/coool-labs/adaptive/releases/tag/pi-v1.0.1
 [1.0.0]: https://github.com/coool-labs/adaptive/releases/tag/pi-v1.0.0
