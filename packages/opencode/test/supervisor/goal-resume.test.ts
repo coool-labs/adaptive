@@ -4,11 +4,13 @@
  * bring the goal back, while every deliberate pause stays paused (ADP-015,
  * ADP-028).
  */
-// covers: ["ADP-025"]
+// covers: ["ADP-015", "ADP-024", "ADP-025", "ADP-028"]
 import { describe, expect, it } from "vitest"
 
 import { CONTINUATION_PROMPT } from "@coool/adaptive-core/execution/index"
+import { WAKE_GRACE_MS } from "@coool/adaptive-core/execution/parking/wake"
 import { DEFAULT_HEALTH_CONFIG } from "@coool/adaptive-core/health/resource-health/types"
+import { parseParkedPayload } from "@coool/adaptive-core/state/parked-work/index"
 import { makeInfo, wireRef } from "../adapters/opencode/helpers.js"
 import {
   FakeScheduler,
@@ -19,6 +21,7 @@ import {
   ref,
   seed,
   settingsJSON,
+  storedParked,
 } from "./helpers.js"
 import type { GoalSnapshot, GoalSurface } from "../../src/supervisor/types.js"
 
@@ -66,6 +69,8 @@ class FakeGoal {
 interface Harness {
   clock: { now: number }
   session: FakeSupervisorSession
+  storage: KeyFailStorage
+  scheduler: FakeScheduler
   goal: FakeGoal
   supervisor: ReturnType<typeof makeSupervisor>
 }
@@ -73,16 +78,18 @@ interface Harness {
 function harness(options: { goal?: FakeGoal } = {}): Harness {
   const clock = { now: 1_000 }
   const session = new FakeSupervisorSession()
+  const storage = ladderStorage()
+  const scheduler = new FakeScheduler()
   const goal = options.goal ?? new FakeGoal()
   const supervisor = makeSupervisor({
-    storage: ladderStorage(),
+    storage,
     session,
     clock: () => clock.now,
-    scheduler: new FakeScheduler(),
+    scheduler,
     infos: LADDER_INFOS,
     goal: goal.source,
   })
-  return { clock, session, goal, supervisor }
+  return { clock, session, storage, scheduler, goal, supervisor }
 }
 
 /** One fresh turn on `sessionID` that ends out of quota on `model`. */
@@ -222,6 +229,66 @@ describe("goal resume after an owned continuation", () => {
     await runOutOfQuota(h2, "s1", CLAUDE)
     await expect(continuationSucceeds(h2, "s1", CODEX)).resolves.toBeUndefined()
     expect(h2.goal.log).toEqual([`get:s1`, `resume:s1`])
+  })
+
+  it("resumes the goal the parked wake recovered once its continuation succeeds", async () => {
+    const h = harness()
+    h.goal.state = {
+      status: "paused",
+      reason: "The session failed: Model API quota exceeded across all providers",
+    }
+    // First turn fails on the preferred model; the veto failover continues on
+    // the second rung.
+    await runOutOfQuota(h, "s1", CLAUDE)
+    expect(h.session.log).toContain(CONTINUE("s1"))
+    // That continuation fails too: the ladder is spent, the work parks and a
+    // wake is armed at the end of the quota window.
+    await h.supervisor.handleReport({ kind: "prompt", sessionID: "s1" })
+    await h.supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: h.clock.now,
+      model: CODEX,
+    })
+    await h.supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: h.clock.now })
+    await h.supervisor.handleReport({
+      kind: "execution-failed",
+      sessionID: "s1",
+      at: h.clock.now,
+      error: { type: "UnknownError", message: "Model quota exhausted" },
+    })
+    await flush()
+    expect(parseParkedPayload(storedParked(h.storage))).toMatchObject([
+      { sessionID: "s1", tier: "standard", reason: "all-blocked" },
+    ])
+    expect(h.scheduler.pending()).toHaveLength(1)
+    expect(h.scheduler.pending()[0]?.delayMs).toBe(QUOTA_WINDOW + WAKE_GRACE_MS)
+    expect(h.goal.log).toEqual([])
+
+    // The wake fires at the window's end and delivers an owned continuation;
+    // the window has lifted, so admission reclaims the preferred rung.
+    h.clock.now += QUOTA_WINDOW + WAKE_GRACE_MS
+    await h.scheduler.fire()
+    await flush()
+    expect(h.session.log).toContain(`switch:s1:anthropic/claude-sonnet-4`)
+    expect(h.session.log).toContain(CONTINUE("s1"))
+
+    // The woken continuation's turn lands and succeeds: the paused goal
+    // (the host paused it when the session failed) is brought back.
+    await h.supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: h.clock.now,
+      model: CLAUDE,
+    })
+    await h.supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: h.clock.now })
+    await h.supervisor.handleReport({
+      kind: "execution-succeeded",
+      sessionID: "s1",
+      at: h.clock.now,
+    })
+    await flush()
+    expect(h.goal.log).toEqual([`get:s1`, `resume:s1`])
   })
 
   it("runs without a goal surface", async () => {

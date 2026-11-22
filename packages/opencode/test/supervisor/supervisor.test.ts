@@ -720,6 +720,28 @@ describe("supervisor", () => {
       expect(parseParkedPayload(storedParked(storage))).toHaveLength(1)
     })
 
+    it("stays parked and logs when the still-parked receipt cannot be written", async () => {
+      const errors = spyErrors()
+      const session = new FakeSupervisorSession()
+      const storage = new KeyFailStorage(RECEIPTS_KEY)
+      seed(storage, SETTINGS_KEY, settingsJSON("active", { standard: [wireRef("prov", "a")] }))
+      seedParked(storage)
+      const supervisor = makeSupervisor({ storage, session })
+      await supervisor.handleReport({
+        kind: "model-selected",
+        sessionID: "s2",
+        at: 5,
+        model: ref("prov", "a"),
+      })
+      await supervisor.handleReport({ kind: "http-response", sessionID: "s2", status: 429 })
+      await supervisor.handleReport({ kind: "idle", sessionID: "s1" })
+      expect(session.log).toEqual([])
+      // The receipt is fail-open; the work stays parked for the next wake.
+      expect(parseParkedPayload(storedParked(storage))).toHaveLength(1)
+      expect(errors.lines.join("\n")).toContain("[coool.adaptive] receipts:")
+      errors.restore()
+    })
+
     it("drops the parked record when the session is gone", async () => {
       const session = new FakeSupervisorSession({ failGet: true })
       const storage = activeStorage()
@@ -1836,6 +1858,27 @@ describe("supervisor", () => {
         },
       })
       expect(receipts[1]?.tier).toBe("advanced")
+    })
+
+    it("records an observe-only defer on the current tier when no target exists", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = new KeyFailStorage("unused")
+      seed(
+        storage,
+        SETTINGS_KEY,
+        settingsJSON("observe", {
+          standard: [wireRef("prov", "a")],
+          advanced: [],
+        }),
+      )
+      await failingEpisode(storage, session, CONTEXT_OVERFLOW)
+      expect(session.log).toEqual([])
+      const receipts = parseReceiptsPayload(storedReceipts(storage))
+      expect(receipts[1]?.decision).toEqual({
+        kind: "observe-only",
+        would: { kind: "defer", reason: "escalation-no-candidate" },
+      })
+      expect(receipts[1]?.tier).toBe("standard")
     })
 
     it("never escalates on an infrastructure failure (ADP-019)", async () => {
@@ -3304,12 +3347,16 @@ describe('prompt-hook admission (awaited session.hook("prompt"))', () => {
     for (let i = 0; i < 5; i += 1) {
       await supervisor.handleReport({ kind: "http-response", sessionID: "s1", status: 503 })
     }
-    // Veto #1 admits a's probe; its recovery hangs in settle, so the ticket
-    // stays pending on the session.
+    // Veto #1 admits a's probe; its continuation is delivered while a is
+    // still half-open, so the ticket stays pending on the session.
     now = 40_000
     const first = retryInput()
     first.error = { type: "UnknownError", message: "", status: 503 }
     await supervisor.handleRetry(first)
+    await flush()
+    // The delivered continuation ends the first chain's ownership (the next
+    // recovery may start only after this safe boundary).
+    gates[0]?.()
     await flush()
     // Veto #2 (a later turn): a is still half-open (probe in flight), b is
     // due — its probe replaces the pending slot, so the a-ticket must re-arm

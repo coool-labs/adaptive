@@ -95,6 +95,27 @@ const reply = (text: string): FakeProviderScript => ({
   ],
 })
 
+const toolCall = (name: string, args: string): FakeProviderBehavior => ({
+  body: JSON.stringify({
+    id: "chatcmpl-tool",
+    object: "chat.completion",
+    created: 1_700_000_000,
+    model: "fake-model",
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: "call_t", type: "function", function: { name, arguments: args } }],
+        },
+        finish_reason: "tool_calls",
+      },
+    ],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  }),
+})
+
 const quotaBehavior: FakeProviderBehavior = {
   status: 429,
   headers: {
@@ -118,6 +139,12 @@ const rateLimited1: FakeProviderBehavior = {
   status: 429,
   headers: { "retry-after": "1" },
   body: JSON.stringify({ error: { message: "rate limited", type: "fake_error", code: null } }),
+}
+
+const subagentQuota: FakeProviderBehavior = {
+  status: 429,
+  headers: { "retry-after": "60" },
+  body: JSON.stringify({ error: { message: "You've hit your usage limit" } }),
 }
 
 const breakerStatus = async (host: StartedHost): Promise<string> => {
@@ -822,28 +849,6 @@ describe("runtime e2e: supervision lifecycle", () => {
       // runs a child episode in its own session. The child's turn carries no
       // prompt hook, so the pump's execution-started fallback admits it —
       // subagents are separate units sharing provider health (ADP-013).
-      const toolCall = (name: string, args: string): FakeProviderBehavior => ({
-        body: JSON.stringify({
-          id: "chatcmpl-tool",
-          object: "chat.completion",
-          created: 1_700_000_000,
-          model: "fake-model",
-          choices: [
-            {
-              index: 0,
-              message: {
-                role: "assistant",
-                content: null,
-                tool_calls: [
-                  { id: "call_t", type: "function", function: { name, arguments: args } },
-                ],
-                finish_reason: "tool_calls",
-              },
-            },
-          ],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-        }),
-      })
       const host = await startHost({ script: scenarioScript("success") })
       hosts.push(host)
       await rpc(host).settings.set({
@@ -909,6 +914,149 @@ describe("runtime e2e: supervision lifecycle", () => {
         childReceipts.some((r) => r.sessionID === childID && r.decision.kind === "apply"),
       ).toBe(true)
       await stop(host, session.id)
+    },
+  )
+
+  it.each([
+    {
+      label: "rate limit",
+      failure: rateLimited1,
+      category: "rate_limited",
+      hasFallback: true,
+    },
+    {
+      label: "shared subscription quota",
+      failure: subagentQuota,
+      category: "quota_exhausted",
+      hasFallback: true,
+    },
+    {
+      label: "an exhausted tier (park)",
+      failure: subagentQuota,
+      category: "quota_exhausted",
+      hasFallback: false,
+    },
+  ])(
+    "a real subagent recovers from $label and completes",
+    { timeout: 180_000 },
+    async ({ failure, category, hasFallback }) => {
+      // The child gets its own host-configured model (`general` agent) so the
+      // scripted failure is deterministically the CHILD's: subagents always run
+      // in the background, and a sequential script would leak the failure to
+      // the parent's own continuation request on the shared model.
+      const host = await startHost({
+        models: {
+          "fake-model": { name: "Parent model" },
+          "fake-child": { name: "Subagent model" },
+          "fake-child-2": { name: "Subagent fallback" },
+        },
+        additionalProviderIDs: ["backup"],
+        agents: { general: { model: "fake/fake-child" } },
+      })
+      hosts.push(host)
+      await rpc(host).settings.set({
+        version: 1,
+        mode: "active",
+        tiers: {
+          quick: [
+            { providerID: "fake", id: "fake-child" },
+            ...(hasFallback ? [{ providerID: "backup", id: "fake-child-2" }] : []),
+          ],
+          // Empty: the parent keeps its configured model, while the child's
+          // role hint routes it to quick (ADP-002).
+          standard: [],
+          advanced: [],
+        },
+        agentTiers: { general: "quick" },
+      })
+      host.provider.setModelScripts({
+        // Title, the subagent launch, then the parent's own continuation. The
+        // background child reports back later; the queue repeats its last
+        // (successful) behavior for those wake-up turns.
+        "fake-model": {
+          behaviors: [
+            reply("title").behaviors[0],
+            toolCall(
+              "subagent",
+              '{"agent":"general","description":"fallback probe","prompt":"say child recovered"}',
+            ),
+            reply("parent complete").behaviors[0],
+          ],
+        },
+        "fake-child": { behaviors: [failure] },
+        ...(hasFallback ? { "fake-child-2": reply("child recovered") } : {}),
+      })
+      const parent = await host.client.session.create()
+      await host.client.session.prompt({ sessionID: parent.id, text: "spawn one subagent" })
+      const diagnostic = (all: readonly Receipt[]): string =>
+        JSON.stringify({
+          receipts: all,
+          requests: host.provider.calls.map((call) => {
+            const body = JSON.parse(call.body) as {
+              model?: string
+              messages?: { role?: string }[]
+            }
+            return { model: body.model, lastRole: body.messages?.at(-1)?.role }
+          }),
+          stderr: host.stderrLines().slice(-12),
+        })
+      if (hasFallback) {
+        const recoveredReceipt = (r: Receipt): boolean =>
+          r.sessionID !== parent.id &&
+          r.tier === "quick" &&
+          r.decision.kind === "apply" &&
+          r.decision.model.providerID === "backup" &&
+          r.outcome?.status === "succeeded"
+        const all = await pollReceipts(host, (list) => list.some(recoveredReceipt), 45_000)
+        const recovered = all.find(recoveredReceipt)
+        expect(recovered, diagnostic(all)).toBeDefined()
+        expect(
+          all.some(
+            (r) =>
+              r.sessionID === recovered?.sessionID &&
+              r.tier === "quick" &&
+              r.outcome?.status === "failed" &&
+              r.outcome.category === category,
+          ),
+          diagnostic(all),
+        ).toBe(true)
+        expect(
+          recovered?.decision.kind === "apply" ? recovered.decision.evidence.skipped : [],
+          diagnostic(all),
+        ).toEqual([
+          {
+            ref: { providerID: "fake", id: "fake-child" },
+            why: category === "rate_limited" ? "rate-limited" : "quota-exhausted",
+          },
+        ])
+        expect(all.some((r) => r.decision.kind === "escalate")).toBe(false)
+        expect(all.filter((r) => r.sessionID === parent.id).every((r) => r.tier !== "quick")).toBe(
+          true,
+        )
+      } else {
+        const parkedReceipt = (r: Receipt): boolean =>
+          r.sessionID !== parent.id &&
+          r.decision.kind === "park" &&
+          r.decision.reason === "all-blocked"
+        const all = await pollReceipts(host, (list) => list.some(parkedReceipt), 45_000)
+        const parked = all.find(parkedReceipt)
+        expect(parked, diagnostic(all)).toBeDefined()
+        // The first unit was admitted on the child's role tier, so its park
+        // is durable at that tier (a lost agent hint would park "standard").
+        expect(parked).toMatchObject({ tier: "quick" })
+        expect(
+          all.some(
+            (r) =>
+              r.sessionID !== parent.id &&
+              r.outcome?.status === "failed" &&
+              r.outcome.category === category,
+          ),
+          diagnostic(all),
+        ).toBe(true)
+        expect((await status(host)).parked).toBe(1)
+        expect(all.some((r) => r.decision.kind === "escalate")).toBe(false)
+      }
+      await stop(host, parent.id)
     },
   )
 })

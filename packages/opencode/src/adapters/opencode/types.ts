@@ -32,6 +32,18 @@ export type ExecutionReport =
   | { kind: "model-selected"; sessionID: string; at: number; model: ModelRef }
 
 /**
+ * Agent selection report from the durable `session.agent.selected` event. A
+ * child session's agent is selected at creation, so this report reaches the
+ * supervisor BEFORE the child's first `session.execution.started` — the only
+ * point where role-hint routing can govern the first unit (ADP-002).
+ */
+export interface AgentSelectedReport {
+  kind: "agent-selected"
+  sessionID: string
+  agent: string
+}
+
+/**
  * Model request reports from the `context` hook (the agent loop, always
  * `primary`) and the `model.request` hook (which carries the request kind for
  * auxiliary requests — ADP-027).
@@ -86,4 +98,9 @@ export interface PromptReport {
 
 /** Everything the adapter forwards to the supervisor. */
 export type EventReport =
-  ExecutionReport | ModelRequestReport | HttpResponseReport | IdleReport | PromptReport
+  | ExecutionReport
+  | AgentSelectedReport
+  | ModelRequestReport
+  | HttpResponseReport
+  | IdleReport
+  | PromptReport

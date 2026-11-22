@@ -13,6 +13,13 @@
     "definitive": true
   },
   {
+    "source": "openai, depleted credit balance without a status prefix (GitHub issue #1)",
+    "stopReason": "error",
+    "errorMessage": "You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+    "category": "quota_exhausted",
+    "definitive": false
+  },
+  {
     "source": "openai SDK, tokens-per-minute limit",
     "stopReason": "error",
     "errorMessage": "429 Rate limit reached for gpt-4o in organization org-x on tokens per min (TPM): Limit 30000, Used 29800, Requested 900.",

@@ -369,6 +369,43 @@ describe("shared health across Pi processes — one session's limit steers anoth
     expect(outcome).toMatchObject({ category: "quota_exhausted", quotaScope: "provider" })
   })
 
+  // Regression (GitHub issue #1): Pi surfaced OpenAI's depleted balance with no
+  // status prefix, the text classified unknown, and the unit ended in an error
+  // instead of continuing on the tier's next provider.
+  it("fails over to the next provider when OpenAI reports no credits remaining", async () => {
+    const { shared } = sharedProcesses()
+    const outcome = await withHealth(shared, (registry) =>
+      observeOutcome(registry, codex, {
+        stopReason: "error",
+        errorMessage:
+          "You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+      }),
+    )
+    expect(outcome).toMatchObject({
+      category: "quota_exhausted",
+      quotaScope: "provider",
+      failoverEligible: true,
+    })
+    const openAiFirst: readonly ModelRef[] = [codex, claude]
+    const { health } = await withHealth(shared, (registry) =>
+      assessCandidates(registry, openAiFirst),
+    )
+    expect(health[schedulerHealthKey(codex)]).toMatchObject({
+      kind: "blocked",
+      reason: "quota-exhausted",
+    })
+    const settings = {
+      ...defaultSettings(),
+      mode: "active" as const,
+      tiers: { quick: [], standard: [], advanced: openAiFirst },
+    }
+    expect(
+      routeAdmission(
+        routeInput({ tier: "advanced", settings, inventory: openAiFirst.map(refOf), health }),
+      ),
+    ).toMatchObject({ kind: "apply", model: claude, reason: "fallback" })
+  })
+
   it("chains three processes down the ladder and parks when everyone is out", async () => {
     const { shared, advance } = sharedProcesses()
     // Session A exhausts the top subscription.

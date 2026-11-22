@@ -11,9 +11,14 @@ import type { EventDomain } from "@opencode/plugin/promise/event"
 /** The event surface the subscription actually uses (structural — fixture-friendly). */
 export type EventSource = Pick<EventDomain, "subscribe">
 import { mapSessionEvent, type SessionEvent } from "./report.js"
-import type { ExecutionReport } from "./types.js"
+import type { EventReport } from "./types.js"
 
 export const SESSION_EVENT_TYPES = [
+  // Child sessions are created WITH their agent, so creation is the only
+  // report that can hint the first unit (verified: no agent.selected fires
+  // for subagent children).
+  "session.created",
+  "session.agent.selected",
   "session.execution.started",
   "session.execution.succeeded",
   "session.execution.failed",
@@ -39,7 +44,7 @@ const defaultPause = (ms: number): Promise<void> =>
 /** Subscribe and pump session lifecycle reports to `onReport`, resubscribing after stream errors. */
 export function subscribeSessions(
   events: EventSource,
-  onReport: (report: ExecutionReport) => void,
+  onReport: (report: EventReport) => void,
   onError: (error: unknown) => void,
   /** Injectable so tests never wait on real timers. */
   pause: (ms: number) => Promise<void> = defaultPause,

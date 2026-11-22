@@ -5,6 +5,7 @@ import { RECEIPTS_KEY } from "@coool/adaptive-core/state/receipts/types"
 import { parseParkedPayload } from "@coool/adaptive-core/state/parked-work/index"
 import { parseReceiptsPayload } from "@coool/adaptive-core/state/receipts/index"
 import { CONTINUATION_PROMPT } from "@coool/adaptive-core/execution/index"
+import { processLedger } from "../../src/adapters/opencode/process-ledger.js"
 import { wireRef } from "../adapters/opencode/helpers.js"
 import {
   activeStorage,
@@ -82,6 +83,26 @@ describe("terminal quota recovery", () => {
       kind: "defer",
       detail: "tier-not-configured",
     })
+    expect(parseParkedPayload(storedParked(storage))).toEqual([])
+  })
+
+  it("a quota failure while another instance owns the recovery starts nothing", async () => {
+    const holder = {}
+    const other = processLedger(holder)
+    other.claim("s1", 0, Number.POSITIVE_INFINITY)
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session, ledger: processLedger(holder) })
+    await start(supervisor)
+    const before = parseReceiptsPayload(storedReceipts(storage)).length
+
+    await supervisor.handleReport(QUOTA)
+    await flush()
+
+    // The other instance's chain owns the session: no admission, no receipt,
+    // no park. Its continuation carries the next outcome.
+    expect(session.log).toEqual(["switch:s1:prov/a"])
+    expect(parseReceiptsPayload(storedReceipts(storage))).toHaveLength(before)
     expect(parseParkedPayload(storedParked(storage))).toEqual([])
   })
 

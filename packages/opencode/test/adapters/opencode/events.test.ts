@@ -89,8 +89,10 @@ function resubscribeEvents(): {
 }
 
 describe("SESSION_EVENT_TYPES", () => {
-  it("subscribes to exactly the five lifecycle/selection events", () => {
+  it("subscribes to exactly the agent/selection and lifecycle events", () => {
     expect(SESSION_EVENT_TYPES).toEqual([
+      "session.created",
+      "session.agent.selected",
       "session.execution.started",
       "session.execution.succeeded",
       "session.execution.failed",

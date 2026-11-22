@@ -280,7 +280,8 @@ describe("parked-work wake", () => {
     const holder = {}
     // The other plugin instance holds s1's claim.
     const other = processLedger(holder)
-    other.claim("s1")
+    const held = other.claim("s1", 0, Number.POSITIVE_INFINITY)
+    if (held === undefined) throw new Error("expected the other instance to hold s1")
     const scheduler = new FakeScheduler()
     const session = new FakeSupervisorSession()
     const clock = { now: 1_000 }
@@ -303,7 +304,7 @@ describe("parked-work wake", () => {
     expect(delays).toEqual([MIN_WAKE_MS, FRUITLESS_BASE_MS, FRUITLESS_BASE_MS * 2])
     expect(session.log).toEqual([])
 
-    other.release("s1")
+    other.release("s1", held)
     clock.now += scheduler.pending()[0]?.delayMs ?? 0
     await scheduler.fire()
     expect(session.log).toEqual(["wait:s1", "switch:s1:prov/a", CONTINUE])
@@ -612,7 +613,8 @@ describe("parked-work wake", () => {
     )
     const holder = {}
     const other = processLedger(holder)
-    other.claim("s1")
+    const held = other.claim("s1", 0, Number.POSITIVE_INFINITY)
+    if (held === undefined) throw new Error("expected the other instance to hold s1")
     const scheduler = new FakeScheduler()
     const session = new FakeSupervisorSession()
     const clock = { now: 1_000 }
@@ -639,7 +641,7 @@ describe("parked-work wake", () => {
     clock.now += scheduler.pending()[0]?.delayMs ?? 0
     await scheduler.fire()
     expect(session.log).toEqual([])
-    other.release("s1")
+    other.release("s1", held)
     clock.now += scheduler.pending()[0]?.delayMs ?? 0
     await scheduler.fire()
     // A leaked probe would read as probe-in-flight and keep the work parked.
@@ -936,7 +938,7 @@ describe("parked-work wake", () => {
     // showed its own wake and ignored the live instance's backoff.
     const holder = {}
     const other = processLedger(holder)
-    other.claim("s1")
+    other.claim("s1", 0, Number.POSITIVE_INFINITY)
     const pump = await seededHarness({ ledger: processLedger(holder) })
     await pump.supervisor.handleReport({
       kind: "model-request",

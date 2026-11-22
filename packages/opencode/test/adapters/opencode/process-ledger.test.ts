@@ -16,6 +16,18 @@ function pair(): [ReturnType<typeof processLedger>, ReturnType<typeof processLed
   return [processLedger(holder), processLedger(holder)]
 }
 
+/** A claim that must succeed, returning its lease token. */
+function leased(
+  ledger: ReturnType<typeof processLedger>,
+  sessionID: string,
+  at = 0,
+  staleAfterMs = 10_000,
+): symbol {
+  const token = ledger.claim(sessionID, at, staleAfterMs)
+  if (token === undefined) throw new Error("expected claim")
+  return token
+}
+
 describe("process ledger", () => {
   it("delegates resumes only to another live, registered instance", async () => {
     const [one, two] = pair()
@@ -50,6 +62,25 @@ describe("process ledger", () => {
     expect(calls).toEqual(["first", "second"])
   })
 
+  it("orders receipt operations across instances and recovers after a failed write", async () => {
+    const [one, two] = pair()
+    const calls: string[] = []
+    const first = one.receiptOperation(() => {
+      calls.push("first")
+      return Promise.reject(new Error("write failed"))
+    })
+    const second = two.receiptOperation(() => {
+      calls.push("second")
+      return Promise.resolve("second done")
+    })
+    await expect(first).rejects.toThrow("write failed")
+    await expect(second).resolves.toBe("second done")
+    expect(calls).toEqual(["first", "second"])
+    expect(one.receiptRevision()).toBe(0)
+    one.noteReceiptWrite()
+    expect(two.receiptRevision()).toBe(1)
+  })
+
   it("broadcasts health resets to registered instances until they leave", () => {
     const [one, two] = pair()
     const calls: string[] = []
@@ -65,11 +96,11 @@ describe("process ledger", () => {
   it("lives on the global object by default, shared by every view", () => {
     const first = processLedger()
     const second = processLedger()
-    expect(first.claim("ledger-test")).toBe(true)
-    expect(second.claim("ledger-test")).toBe(false)
-    first.release("ledger-test")
-    expect(second.claim("ledger-test")).toBe(true)
-    second.release("ledger-test")
+    const token = leased(first, "ledger-test")
+    expect(second.claim("ledger-test", 0, 10_000)).toBeUndefined()
+    first.release("ledger-test", token)
+    const secondToken = leased(second, "ledger-test")
+    second.release("ledger-test", secondToken)
   })
 
   it("ignores a ledger an older release left on the holder", () => {
@@ -80,7 +111,7 @@ describe("process ledger", () => {
     ledger.onHealthReset((model) => reset.push(model.id))
     ledger.resetHealth(A)
     expect(reset).toEqual(["a"])
-    expect(ledger.claim("s1")).toBe(true)
+    expect(ledger.claim("s1", 0, 10_000)).toBeDefined()
     expect(legacy.claims.size).toBe(0)
   })
 
@@ -96,11 +127,38 @@ describe("process ledger", () => {
 
   it("admits one claim per session at a time", () => {
     const [one, two] = pair()
-    expect(one.claim("s1")).toBe(true)
-    expect(two.claim("s1")).toBe(false)
-    expect(two.claim("s2")).toBe(true)
-    one.release("s1")
-    expect(two.claim("s1")).toBe(true)
+    const token = leased(one, "s1")
+    expect(two.claim("s1", 0, 10_000)).toBeUndefined()
+    leased(two, "s2")
+    one.release("s1", token)
+    leased(two, "s1")
+  })
+
+  it("reclaims a lease whose owner is presumed wedged", () => {
+    const [one, two] = pair()
+    leased(one, "s1")
+    expect(two.claim("s1", 9_999, 10_000)).toBeUndefined()
+    leased(two, "s1", 10_000)
+  })
+
+  it("lets a continuation's own failure supersede the live delivery lease", () => {
+    const [one, two] = pair()
+    const delivered = leased(one, "s1")
+    const next = two.claim("s1", 0, 10_000, true)
+    expect(next).toBeDefined()
+    // The superseded chain's late release cannot drop the new owner's lease.
+    one.release("s1", delivered)
+    expect(one.claim("s1", 0, 10_000)).toBeUndefined()
+  })
+
+  it("releases only the matching lease, never a newer owner's", () => {
+    const [one, two] = pair()
+    const stale = leased(one, "s1")
+    const current = leased(two, "s1", 10_000)
+    one.release("s1", stale)
+    expect(two.claim("s1", 10_001, 10_000)).toBeUndefined()
+    two.release("s1", current)
+    leased(one, "s1", 10_001)
   })
 
   it("counts takeovers per session across instances", () => {
@@ -161,7 +219,7 @@ describe("process ledger", () => {
   it("never evicts the takeover count a claimed session's resume compares against", () => {
     const [one, two] = pair()
     one.noteTakeover("s0")
-    one.claim("s0")
+    one.claim("s0", 0, 10_000)
     for (let index = 1; index <= MAX_LEDGER_SESSIONS; index += 1) {
       one.noteTakeover(`s${String(index)}`)
     }

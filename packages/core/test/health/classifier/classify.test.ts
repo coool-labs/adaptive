@@ -62,6 +62,10 @@ describe("classifyFailure: quota scope", () => {
     "Insufficient credits",
     "Out of credits",
     "Credit balance is too low",
+    // Regression (GitHub issue #1): OpenAI's depleted-balance reply read as
+    // unknown, so Pi never failed over to the tier's next provider.
+    "You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+    "You have no credits left",
   ])("identifies a shared subscription or balance limit: %s", (text) => {
     expect(classifyFailure({ text })).toMatchObject({
       category: "quota_exhausted",
@@ -403,6 +407,7 @@ describe("classifyFailure: textual last resort", () => {
     ["Free usage exceeded, subscribe to Go", "quota_exhausted"],
     ["You are out of credits", "quota_exhausted"],
     ["Insufficient credits to run this request", "quota_exhausted"],
+    ["You have no credits remaining. Add credits to continue using the API.", "quota_exhausted"],
     ["ChatGPT usage limit reached. Check ChatGPT Settings → Usage for details.", "quota_exhausted"],
     ["Rate limit exceeded, please retry after 20s", "rate_limited"],
     ["Request timed out", "timeout"],
@@ -419,6 +424,20 @@ describe("classifyFailure: textual last resort", () => {
     expect(c.layer).toBe("textual")
     expect(c.definitive).toBe(false)
     expectConsistentPolicy(c)
+  })
+
+  it("keeps a status-prefixed no-credits reply a provider-wide quota exhaustion", () => {
+    expect(
+      classifyFailure({
+        status: 429,
+        text: "429 You have no credits remaining. Add credits to continue using the API.",
+      }),
+    ).toMatchObject({
+      category: "quota_exhausted",
+      layer: "status",
+      quotaScope: "provider",
+      failoverEligible: true,
+    })
   })
 
   it("ignores patterns beyond the text bound", () => {

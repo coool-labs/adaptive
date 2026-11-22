@@ -28,6 +28,24 @@ describe("modelRefOf", () => {
 })
 
 describe("mapSessionEvent", () => {
+  it("maps the agent a new session was created with", () => {
+    expect(
+      mapSessionEvent(sessionEvent("session.created", { sessionID: "s1", agent: "general" }, 3)),
+    ).toEqual({ kind: "agent-selected", sessionID: "s1", agent: "general" })
+  })
+
+  it("ignores a creation event without an agent", () => {
+    expect(mapSessionEvent(sessionEvent("session.created", { sessionID: "s1" }, 3))).toBeNull()
+  })
+
+  it("maps agent.selected before the unit starts", () => {
+    expect(
+      mapSessionEvent(
+        sessionEvent("session.agent.selected", { sessionID: "s1", agent: "explore" }, 4),
+      ),
+    ).toEqual({ kind: "agent-selected", sessionID: "s1", agent: "explore" })
+  })
+
   it("maps execution.started with envelope time", () => {
     expect(
       mapSessionEvent(sessionEvent("session.execution.started", { sessionID: "s1" }, 5)),

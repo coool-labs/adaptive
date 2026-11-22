@@ -26,7 +26,7 @@ import {
 // Every entry instance shares the process-wide ledger; a mark one test's
 // supervisor leaves (a continuation, a claim) must not reach the next test.
 beforeEach(() => {
-  Reflect.deleteProperty(globalThis, Symbol.for("coool.adaptive/process-ledger/2"))
+  Reflect.deleteProperty(globalThis, Symbol.for("coool.adaptive/process-ledger/4"))
 })
 
 const HOOK_NAMES = [

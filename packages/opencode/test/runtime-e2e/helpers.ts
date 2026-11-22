@@ -154,6 +154,8 @@ export async function startHost(
     models?: Record<string, { name: string }>
     /** Distinct configured providers sharing the fixture transport, for cross-provider recovery. */
     additionalProviderIDs?: readonly string[]
+    /** Agent overrides merged into the project config (e.g. a subagent's model). */
+    agents?: Record<string, { model: string }>
     /** Reuse an existing home/project pair (restart scenarios). The caller
      * owns cleanup for reused paths; close() then only stops the host. */
     paths?: { home: string; project: string }
@@ -196,6 +198,7 @@ export async function startHost(
           ]),
         ),
         plugins: options.pluginEntries ?? [REPO_ROOT],
+        ...(options.agents === undefined ? {} : { agents: options.agents }),
       },
       null,
       2,

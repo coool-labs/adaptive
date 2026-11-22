@@ -15,6 +15,7 @@ import { CONTINUATION_PROMPT } from "@coool/adaptive-core/execution/index"
 import { parseReceiptsPayload } from "@coool/adaptive-core/state/receipts/index"
 import { SETTINGS_KEY } from "@coool/adaptive-core/state/settings/types"
 
+import { processLedger } from "../../src/adapters/opencode/process-ledger.js"
 import { wireRef } from "../adapters/opencode/helpers.js"
 import {
   FakeSupervisorSession,
@@ -40,8 +41,8 @@ function ladderStorage(): ReturnType<typeof activeStorage> {
   return storage
 }
 
-const retryInput = (model: "a" | "b" | "c") => ({
-  sessionID: "s1",
+const retryInput = (model: "a" | "b" | "c", sessionID = "s1") => ({
+  sessionID,
   model: ref("prov", model),
   error: { type: "UnknownError", message: "", status: 429 },
   attempt: 1,
@@ -91,6 +92,108 @@ describe("one owned continuation per session", () => {
 
     session.releaseWait()
     await flush()
+  })
+
+  it("concurrent retry hooks on one session start exactly one recovery", async () => {
+    const session = new FakeSupervisorSession()
+    const waiters: (() => void)[] = []
+    session.source.wait = () =>
+      new Promise<void>((resolve) => {
+        waiters.push(resolve)
+      })
+    const storage = ladderStorage()
+    const supervisor = makeSupervisor({ storage, session })
+
+    // Production's 400 ms burst: the same failed turn reports through several
+    // retry hooks before the first recovery has set its pending marker. Every
+    // hook checks the marker, awaits admission, and only then starts a chain —
+    // so a marker set after those awaits cannot serialize them.
+    const inputs = Array.from({ length: 8 }, () => retryInput("a"))
+    await Promise.all(inputs.map((input) => supervisor.handleRetry(input)))
+    await flush()
+
+    for (const input of inputs) expect(input.decision).toEqual({ retry: false })
+    expect(waiters).toHaveLength(1)
+    expect(session.log.filter((entry) => entry.startsWith("prompt:s1:"))).toHaveLength(0)
+
+    waiters[0]?.()
+    await flush()
+    expect(session.log).toEqual(["switch:s1:prov/b", `prompt:s1:${CONTINUATION_PROMPT}`])
+  })
+
+  it("duplicate plugin instances deliver one continuation for the same failure", async () => {
+    const holder = {}
+    const storage = ladderStorage()
+    const firstSession = new FakeSupervisorSession()
+    const secondSession = new FakeSupervisorSession()
+    const waiters: (() => void)[] = []
+    for (const session of [firstSession, secondSession]) {
+      session.source.wait = () =>
+        new Promise<void>((resolve) => {
+          waiters.push(resolve)
+        })
+    }
+    const firstSupervisor = makeSupervisor({
+      storage,
+      session: firstSession,
+      ledger: processLedger(holder),
+    })
+    const secondSupervisor = makeSupervisor({
+      storage,
+      session: secondSession,
+      ledger: processLedger(holder),
+    })
+
+    // The host loads the plugin twice (ADP-056); both instances receive the
+    // same failed turn and each has its own empty pending map. The shared
+    // ledger claim is the only thing that can serialize them.
+    const first = retryInput("a")
+    const second = retryInput("a")
+    await Promise.all([firstSupervisor.handleRetry(first), secondSupervisor.handleRetry(second)])
+    await flush()
+
+    expect(first.decision).toEqual({ retry: false })
+    expect(second.decision).toEqual({ retry: false })
+    expect(waiters).toHaveLength(1)
+
+    waiters[0]?.()
+    await flush()
+    const prompts = [...firstSession.log, ...secondSession.log].filter((entry) =>
+      entry.startsWith("prompt:s1:"),
+    )
+    expect(prompts).toEqual([`prompt:s1:${CONTINUATION_PROMPT}`])
+  })
+
+  it("each duplicate instance's receipt survives the other instance's next write", async () => {
+    const holder = {}
+    const storage = ladderStorage()
+    const one = makeSupervisor({
+      storage,
+      session: new FakeSupervisorSession(),
+      ledger: processLedger(holder),
+    })
+    const two = makeSupervisor({
+      storage,
+      session: new FakeSupervisorSession(),
+      ledger: processLedger(holder),
+    })
+    // Both instances load the empty ring before either writes — the
+    // production split where one instance hears the hooks and another
+    // serves RPC. Each then records a receipt from its own stale view.
+    await Promise.all([one.settings(), two.settings()])
+    await Promise.all([
+      one.handleRetry(retryInput("a", "s1")),
+      two.handleRetry(retryInput("a", "s2")),
+    ])
+    await flush()
+
+    const persisted = parseReceiptsPayload(storedReceipts(storage))
+    expect(persisted.map((receipt) => receipt.id)).toEqual([1, 2])
+    expect(persisted.map((receipt) => receipt.sessionID).sort()).toEqual(["s1", "s2"])
+    // Either instance's view refreshes from the shared key instead of
+    // serving the ring it loaded at startup.
+    expect((await one.receipts()).map((receipt) => receipt.id)).toEqual([2, 1])
+    expect((await two.receipts()).map((receipt) => receipt.id)).toEqual([2, 1])
   })
 
   it("a recovery that starts after the pending one completes still continues the work", async () => {

@@ -4,8 +4,9 @@
  * session's host reports. The ledger is what the instances share so neither
  * misreads the other — owned switches and continuation prompts are
  * recognized as Adaptive's, a takeover one instance saw stops the other's
- * resume, one resume per session is in flight, and the instance that hears
- * the host is preferred for wake sweeps.
+ * continuation (parked resume or failure recovery), one owned continuation
+ * per session is in flight, and the instance that hears the host is preferred
+ * for wake sweeps.
  */
 import { sameModelRef, type ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 import type { TierName } from "@coool/adaptive-core/routing/tier-policy/types"
@@ -30,9 +31,23 @@ export interface ProcessLedger {
   liveElsewhere(): boolean
   /** Withdraws this instance for good (disposed). */
   leave(): void
-  /** Taken synchronously before a resume pops its record; false when held. */
-  claim(sessionID: string): boolean
-  release(sessionID: string): void
+  /**
+   * Taken synchronously before an owned continuation (a parked resume or a
+   * failure recovery) starts. Returns this lease's token, or undefined when
+   * another owner holds the session. The lease expires `staleAfterMs` after
+   * `at`, so one hung settle or prompt cannot strand the session for the
+   * process lifetime. `supersede` takes over a live lease: only the failure
+   * of the continuation unit that lease delivered may do so — that episode
+   * now owns the session's next recovery.
+   */
+  claim(
+    sessionID: string,
+    at: number,
+    staleAfterMs: number,
+    supersede?: boolean,
+  ): symbol | undefined
+  /** Releases this lease only; a newer owner's lease is left intact. */
+  release(sessionID: string, token: symbol): void
   /** The user took the session over (own prompt, model pick, run, cancel). */
   noteTakeover(sessionID: string): void
   /** Takeovers seen so far; a resume compares it across its settle. */
@@ -58,6 +73,15 @@ export interface ProcessLedger {
   clearParked(sessionID: string): void
   /** Orders health hydration, persistence and resets across duplicate instances. */
   healthOperation(operation: () => Promise<void>): Promise<void>
+  /**
+   * Orders receipt load-mutate-persist cycles across duplicate instances.
+   * Receipt writes are read-modify-write on one storage key: without a shared
+   * lock, the last writer's stale ring replaces the other instance's receipt.
+   */
+  receiptOperation<T>(operation: () => Promise<T>): Promise<T>
+  /** Bumped after a receipt write, so another instance knows to reload. */
+  receiptRevision(): number
+  noteReceiptWrite(): void
   /** The listener lives until this instance leaves. */
   onHealthReset(reset: (model: ModelRef) => void): void
   /** Publish only after the reset is durable, inside healthOperation. */
@@ -74,15 +98,22 @@ interface Mark<T> {
   readonly readers: Set<symbol>
 }
 
+interface Claim {
+  readonly token: symbol
+  readonly expiresAt: number
+}
+
 interface Shared {
   readonly live: Set<symbol>
-  readonly claims: Set<string>
+  readonly claims: Map<string, Claim>
   readonly takeovers: Map<string, number>
   readonly switches: Map<string, Mark<ModelRef>>
   readonly continuations: Map<string, Mark<OwnedContinuation>>
   readonly wakes: Map<symbol, number>
   readonly parked: Set<string>
   healthQueue: Promise<void>
+  receiptQueue: Promise<unknown>
+  receiptRevision: number
   readonly healthResets: Map<symbol, (model: ModelRef) => void>
   readonly resumers: Map<symbol, (sessionID: string) => Promise<ResumeOutcome>>
 }
@@ -95,7 +126,7 @@ interface Shared {
  * loaded beside a newer one); the shape version in the key keeps copies that
  * disagree about it from sharing one. Bump it whenever `Shared` changes.
  */
-const LEDGER = Symbol.for("coool.adaptive/process-ledger/2")
+const LEDGER = Symbol.for("coool.adaptive/process-ledger/4")
 
 type LedgerHolder = Record<symbol, Shared | undefined>
 
@@ -143,13 +174,15 @@ export function processLedger(holder: object = globalThis): ProcessLedger {
   const slot = holder as LedgerHolder
   const shared = slot[LEDGER] ?? {
     live: new Set<symbol>(),
-    claims: new Set<string>(),
+    claims: new Map<string, Claim>(),
     takeovers: new Map<string, number>(),
     switches: new Map<string, Mark<ModelRef>>(),
     continuations: new Map<string, Mark<OwnedContinuation>>(),
     wakes: new Map<symbol, number>(),
     parked: new Set<string>(),
     healthQueue: Promise.resolve(),
+    receiptQueue: Promise.resolve(),
+    receiptRevision: 0,
     healthResets: new Map<symbol, (model: ModelRef) => void>(),
     resumers: new Map<symbol, (sessionID: string) => Promise<ResumeOutcome>>(),
   }
@@ -173,13 +206,15 @@ export function processLedger(holder: object = globalThis): ProcessLedger {
       shared.healthResets.delete(owner)
       shared.resumers.delete(owner)
     },
-    claim(sessionID) {
-      if (shared.claims.has(sessionID)) return false
-      shared.claims.add(sessionID)
-      return true
+    claim(sessionID, at, staleAfterMs, supersede = false) {
+      const held = shared.claims.get(sessionID)
+      if (!supersede && held !== undefined && at < held.expiresAt) return undefined
+      const token = Symbol("claim")
+      shared.claims.set(sessionID, { token, expiresAt: at + staleAfterMs })
+      return token
     },
-    release(sessionID) {
-      shared.claims.delete(sessionID)
+    release(sessionID, token) {
+      if (shared.claims.get(sessionID)?.token === token) shared.claims.delete(sessionID)
     },
     noteTakeover(sessionID) {
       // A claimed session's count is what its in-flight resume compares
@@ -236,6 +271,17 @@ export function processLedger(holder: object = globalThis): ProcessLedger {
       const pending = shared.healthQueue.then(operation)
       shared.healthQueue = pending.catch(() => undefined)
       return pending
+    },
+    receiptOperation(operation) {
+      const pending = shared.receiptQueue.then(operation)
+      shared.receiptQueue = pending.catch(() => undefined)
+      return pending
+    },
+    receiptRevision() {
+      return shared.receiptRevision
+    },
+    noteReceiptWrite() {
+      shared.receiptRevision += 1
     },
     onHealthReset(reset) {
       if (!left) shared.healthResets.set(owner, reset)

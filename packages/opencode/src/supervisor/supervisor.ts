@@ -106,6 +106,7 @@ import {
   executeContinuation,
   forMode as retryForMode,
   MAX_PARKED_ATTEMPTS,
+  MAX_VETOES_PER_UNIT,
   planContinuation,
   planWake,
   resourceUsableAt,
@@ -168,6 +169,8 @@ export class Supervisor {
   readonly #options: SupervisorOptions
   readonly #settings: SettingsStore
   readonly #receipts: ReceiptStore
+  /** Shared receipt revision this instance's ring reflects (-1: not loaded yet). */
+  #receiptRevision = -1
   readonly #parked: ParkedWorkStore
   readonly #tracker = new WorkUnitTracker()
   readonly #health: ResourceHealthRegistry
@@ -253,6 +256,13 @@ export class Supervisor {
   readonly #quotaRecoveriesRemaining = new Map<string, number>()
   /** Interruptions observed while a recovery was pending on the session. */
   readonly #recoveryInterrupted = new Set<string>()
+  /**
+   * This instance's live recovery lease per session, held until the chain
+   * settles or the delivered continuation's own failure supersedes it. The
+   * token proves a late release still belongs to the chain that took it (a
+   * wedged chain's lease may already have been superseded by a newer one).
+   */
+  readonly #recoveryClaims = new Map<string, symbol>()
   // Sessions whose last owned continuation delivery may have landed while
   // the host goal was paused by a session failure; consumed once the
   // delivered episode succeeds (see #resumeGoalIfPaused).
@@ -406,7 +416,11 @@ export class Supervisor {
     // Durable state loads before the first report is handled: a later load
     // must never clobber decisions recorded in the meantime.
     const loadState = async (): Promise<SettingsV1> => {
+      // Captured before the read: a write landing while this load is in
+      // flight leaves the revision newer than the ring and forces a reload.
+      const receiptsRevision = options.ledger.receiptRevision()
       await this.#receipts.load()
+      this.#receiptRevision = receiptsRevision
       await this.#parked.load()
       // Unit ids are durable keys (`${sessionID}#${episode}`) persisted in
       // receipts and parked work. Seed the tracker's per-session episode
@@ -764,6 +778,7 @@ export class Supervisor {
     // Parked work too: the other instance may have parked or resumed it.
     await this.#parked.refresh()
     const now = this.#options.clock()
+    await this.#refreshReceipts()
     const { records, capacity, usableAt } = await this.#persistedView(settings, now)
     // The wake that will actually resume the session may come later than the
     // reset (backoff after fruitless wakes). It is this instance's own when
@@ -834,13 +849,37 @@ export class Supervisor {
   /** Newest-first bounded receipt view (ADP-030). */
   async receipts(): Promise<Receipt[]> {
     await this.#ready
+    // The host's other instance may have written since this one loaded.
+    await this.#refreshReceipts()
     return this.#receipts.snapshot().slice(-RECEIPTS_VIEW_LIMIT).reverse()
   }
 
   // ---------- dispatch ----------
 
+  /**
+   * Records the agent a session runs under (ADP-002 role-hint routing). A
+   * child session's agent is selected before its first unit starts, so the
+   * `agent-selected` report must land ahead of the execution-started
+   * admission — otherwise the child's first unit is admitted on the default
+   * tier instead of its role's tier.
+   */
+  #noteAgent(sessionID: string, agent: string): void {
+    if (!this.#agents.has(sessionID) && this.#agents.size >= Supervisor.MAX_AGENT_HINTS) {
+      // The guard above ensures the map is at its cap (>= 1 entries),
+      // so the first key always exists; the assertion avoids a branch
+      // the coverage gate would reject as unreachable.
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const oldest = this.#agents.keys().next().value!
+      this.#agents.delete(oldest)
+    }
+    this.#agents.set(sessionID, agent)
+  }
+
   async #dispatch(report: EventReport, settings: SettingsV1): Promise<void> {
     switch (report.kind) {
+      case "agent-selected":
+        this.#noteAgent(report.sessionID, report.agent)
+        return
       case "execution-started":
         await this.#onExecutionStarted(report, settings)
         return
@@ -879,18 +918,7 @@ export class Supervisor {
       }
       case "model-request":
         if (report.agent !== undefined) {
-          if (
-            !this.#agents.has(report.sessionID) &&
-            this.#agents.size >= Supervisor.MAX_AGENT_HINTS
-          ) {
-            // The guard above ensures the map is at its cap (>= 1 entries),
-            // so the first key always exists; the assertion avoids a branch
-            // the coverage gate would reject as unreachable.
-            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-            const oldest = this.#agents.keys().next().value!
-            this.#agents.delete(oldest)
-          }
-          this.#agents.set(report.sessionID, report.agent)
+          this.#noteAgent(report.sessionID, report.agent)
         }
         // Only the agent loop's own request reports the model actually
         // executing the unit's work. An auxiliary request (title, compaction,
@@ -1053,7 +1081,7 @@ export class Supervisor {
       // The prompt-time admission receipt was recorded before this unit
       // existed; adopt it so outcomes attach to it like any unit receipt.
       try {
-        await this.#receipts.adoptUnit(report.sessionID, unit.id)
+        await this.#mutateReceipts(() => this.#receipts.adoptUnit(report.sessionID, unit.id))
       } catch (error) {
         logFailOpen("receipts", error)
       }
@@ -1356,6 +1384,7 @@ export class Supervisor {
       admissionTier,
       escalationUsed,
       toolEvidence,
+      continuation,
       settings,
     )
   }
@@ -1382,56 +1411,85 @@ export class Supervisor {
       this.#continuationPending.has(sessionID)
     )
       return
-    if (mode === "active") this.#manualSuppressionHolds(sessionID, settings)
-    const { routing, decision, probeTicket } = await this.#admit(settings, sessionID, requiredTier)
-    const tier = routingTier(routing)
+    // OBSERVE computes the same admission without applying it, so it needs no
+    // claim.
     if (mode === "observe") {
+      const { routing, decision, probeTicket } = await this.#admit(
+        settings,
+        sessionID,
+        requiredTier,
+      )
+      const tier = routingTier(routing)
       if (probeTicket !== undefined) this.#health.releaseProbe(probeTicket)
       await this.#recordReceipt({ sessionID, tier, decision: schedulerForMode(decision, mode) })
       return
     }
-    // Quota windows can expire while session.wait is pending. Snapshot the
-    // configured ladder length once so even those recoveries cannot loop.
-    const remaining =
-      this.#quotaRecoveriesRemaining.get(sessionID) ??
-      (tier === undefined ? 0 : settings.tiers[tier].length)
-    if (decision.kind === "apply" && remaining === 0) {
-      if (probeTicket !== undefined) this.#health.releaseProbe(probeTicket)
-      // The ladder is spent but the work is not done: park it so the wake
-      // resumes it with a fresh budget instead of leaving the session stuck.
-      if (tier !== undefined) {
-        await this.#recordReceipt({
-          sessionID,
-          tier,
-          decision: { kind: "park", reason: "all-blocked", detail: "quota recovery budget spent" },
-        })
-        await this.#parkUnit(unit.id, sessionID, tier, "quota exhausted")
+    this.#manualSuppressionHolds(sessionID, settings)
+    // Serialize the session's recovery before the admission await: a retry
+    // veto, the terminal quota echo it produces, and another plugin instance
+    // can all reach this point before any pending marker exists.
+    const claim = this.#claimRecovery(sessionID, continuation)
+    if (claim === undefined) return
+    let handedOff = false
+    try {
+      const { routing, decision, probeTicket } = await this.#admit(
+        settings,
+        sessionID,
+        requiredTier,
+      )
+      const tier = routingTier(routing)
+      // Quota windows can expire while session.wait is pending. Snapshot the
+      // configured ladder length once so even those recoveries cannot loop.
+      const remaining =
+        this.#quotaRecoveriesRemaining.get(sessionID) ??
+        (tier === undefined ? 0 : settings.tiers[tier].length)
+      if (decision.kind === "apply" && remaining === 0) {
+        if (probeTicket !== undefined) this.#health.releaseProbe(probeTicket)
+        // The ladder is spent but the work is not done: park it so the wake
+        // resumes it with a fresh budget instead of leaving the session stuck.
+        if (tier !== undefined) {
+          await this.#recordReceipt({
+            sessionID,
+            tier,
+            decision: {
+              kind: "park",
+              reason: "all-blocked",
+              detail: "quota recovery budget spent",
+            },
+          })
+          await this.#parkUnit(unit.id, sessionID, tier, "quota exhausted")
+        }
+        return
       }
-      return
+      await this.#recordReceipt({ sessionID, tier, decision })
+      if (decision.kind !== "apply") {
+        if (decision.kind === "park" && tier !== undefined) {
+          await this.#parkUnit(unit.id, sessionID, tier, "quota exhausted")
+        }
+        return
+      }
+      this.#quotaRecoveriesRemaining.set(sessionID, remaining - 1)
+      if (probeTicket !== undefined) this.#sessionProbeTickets.set(sessionID, probeTicket)
+      handedOff = true
+      // The host rejected this attempt without invoking its retry hook.
+      // Continue from durable session state rather than waiting for another
+      // user message.
+      void this.#ownRecovery(
+        sessionID,
+        decision.model,
+        tier,
+        () => this.#modeFor(sessionID, this.#settings.get()) === "active",
+        claim,
+      ).catch((error: unknown) => {
+        if (probeTicket !== undefined && this.#sessionProbeTickets.get(sessionID) === probeTicket) {
+          this.#sessionProbeTickets.delete(sessionID)
+          this.#health.releaseProbe(probeTicket)
+        }
+        if (!(error instanceof RecoveryAbortedError)) logFailOpen("quota-recovery", error)
+      })
+    } finally {
+      if (!handedOff) this.#releaseRecovery(sessionID, claim)
     }
-    await this.#recordReceipt({ sessionID, tier, decision })
-    if (decision.kind !== "apply") {
-      if (decision.kind === "park" && tier !== undefined) {
-        await this.#parkUnit(unit.id, sessionID, tier, "quota exhausted")
-      }
-      return
-    }
-    this.#quotaRecoveriesRemaining.set(sessionID, remaining - 1)
-    if (probeTicket !== undefined) this.#sessionProbeTickets.set(sessionID, probeTicket)
-    // The host rejected this attempt without invoking its retry hook. Continue
-    // from durable session state rather than waiting for another user message.
-    void this.#ownRecovery(
-      sessionID,
-      decision.model,
-      tier,
-      () => this.#modeFor(sessionID, this.#settings.get()) === "active",
-    ).catch((error: unknown) => {
-      if (probeTicket !== undefined && this.#sessionProbeTickets.get(sessionID) === probeTicket) {
-        this.#sessionProbeTickets.delete(sessionID)
-        this.#health.releaseProbe(probeTicket)
-      }
-      if (!(error instanceof RecoveryAbortedError)) logFailOpen("quota-recovery", error)
-    })
   }
 
   /**
@@ -1485,6 +1543,7 @@ export class Supervisor {
     admissionTier: TierName | undefined,
     escalationUsed: number,
     toolEvidence: readonly EscalationEvidence[],
+    continuation: boolean,
     settings: SettingsV1,
   ): Promise<void> {
     if (
@@ -1495,6 +1554,93 @@ export class Supervisor {
     ) {
       return
     }
+    const mode = this.#modeFor(report.sessionID, settings)
+    if (mode === "active") {
+      // Claim before the target scan awaits, for the same reason the retry
+      // path does: a concurrent veto/quota recovery or another plugin instance
+      // could otherwise start its own continuation before the pending marker
+      // exists. A pending chain owns the session: record nothing and start
+      // nothing. The continuation carries the next outcome, and a persistent
+      // capability failure re-escalates at the next safe boundary within
+      // budget — the budget must not be spent on a skipped escalation.
+      const claim = this.#claimRecovery(report.sessionID, continuation)
+      if (claim === undefined) return
+      let handedOff = false
+      try {
+        const { wrapped } = await this.#planEscalationFailure(
+          model,
+          classification,
+          admissionTier,
+          escalationUsed,
+          toolEvidence,
+          settings,
+          mode,
+        )
+        if (wrapped.kind === "escalate") {
+          this.#escalations.set(report.sessionID, escalationUsed + 1)
+          // Recorded unit-less on purpose: the receipt describes the
+          // CONTINUATION decision, so the continuation unit adopts it and its
+          // outcome attaches here (the failed unit's own outcome attaches to
+          // its apply receipt).
+          await this.#recordReceipt({
+            sessionID: report.sessionID,
+            tier: wrapped.tier,
+            decision: wrapped,
+          })
+          handedOff = true
+          // Continue the interrupted work on the escalated resource; the unit
+          // is terminally failed, so an ops failure is only logged (never
+          // parked).
+          try {
+            await this.#ownRecovery(
+              report.sessionID,
+              wrapped.target,
+              wrapped.tier,
+              () => this.#modeFor(report.sessionID, settings) !== "off",
+              claim,
+            )
+          } catch (error) {
+            if (!(error instanceof RecoveryAbortedError)) logFailOpen("escalation-ops", error)
+          }
+          return
+        }
+        await this.#recordReceipt({
+          sessionID: report.sessionID,
+          tier: admissionTier,
+          decision: wrapped,
+        })
+      } finally {
+        if (!handedOff) this.#releaseRecovery(report.sessionID, claim)
+      }
+      return
+    }
+    // OBSERVE records the identical decision; OFF records its defer. Neither
+    // may continue the work.
+    const { plan, wrapped } = await this.#planEscalationFailure(
+      model,
+      classification,
+      admissionTier,
+      escalationUsed,
+      toolEvidence,
+      settings,
+      mode,
+    )
+    await this.#recordReceipt({
+      sessionID: report.sessionID,
+      tier: plan.kind === "escalate" ? plan.tier : admissionTier,
+      decision: wrapped,
+    })
+  }
+
+  async #planEscalationFailure(
+    model: ModelRef,
+    classification: FailureClassification,
+    admissionTier: TierName,
+    escalationUsed: number,
+    toolEvidence: readonly EscalationEvidence[],
+    settings: SettingsV1,
+    mode: OperatingMode,
+  ) {
     const next = nextTier(admissionTier)
     const evidence: EscalationEvidence[] = [
       ...toolEvidence,
@@ -1509,42 +1655,7 @@ export class Supervisor {
       evidence,
       budget: { used: escalationUsed, max: MAX_ESCALATIONS_PER_TASK },
     })
-    const wrapped = schedulerForMode(plan, this.#modeFor(report.sessionID, settings))
-    if (wrapped.kind === "escalate") {
-      // A pending owned recovery already continues this session's work (the
-      // same rule the quota path applies): record nothing and start nothing.
-      // The pending chain's continuation carries the next outcome, and a
-      // persistent capability failure re-escalates at the next safe boundary
-      // within budget — the budget must not be spent on a skipped escalation.
-      if (this.#recoveryPending.has(report.sessionID)) return
-      this.#escalations.set(report.sessionID, escalationUsed + 1)
-      // Recorded unit-less on purpose: the receipt describes the CONTINUATION
-      // decision, so the continuation unit adopts it and its outcome attaches
-      // here (the failed unit's own outcome attaches to its apply receipt).
-      await this.#recordReceipt({
-        sessionID: report.sessionID,
-        tier: wrapped.tier,
-        decision: wrapped,
-      })
-      // Continue the interrupted work on the escalated resource; the unit is
-      // terminally failed, so an ops failure is only logged (never parked).
-      try {
-        await this.#ownRecovery(
-          report.sessionID,
-          wrapped.target,
-          wrapped.tier,
-          () => this.#modeFor(report.sessionID, settings) !== "off",
-        )
-      } catch (error) {
-        if (!(error instanceof RecoveryAbortedError)) logFailOpen("escalation-ops", error)
-      }
-      return
-    }
-    await this.#recordReceipt({
-      sessionID: report.sessionID,
-      tier: plan.kind === "escalate" ? plan.tier : admissionTier,
-      decision: wrapped,
-    })
+    return { plan, wrapped: schedulerForMode(plan, mode) }
   }
 
   async #onExecutionInterrupted(
@@ -1769,92 +1880,133 @@ export class Supervisor {
       return
     }
 
-    // Recovery = fresh admission; the failed resource is already health-blocked.
-    let recovery: RecoveryOption = { kind: "none" }
-    let routingTier: TierName | undefined
-    let probeTicket: ProbeTicket | undefined
-    let admission: ReturnType<typeof admit> | undefined
-    try {
-      const {
-        routing,
-        decision,
-        probeTicket: ticket,
-      } = await this.#admit(settings, input.sessionID)
-      routingTier = routing.kind === "pin" ? undefined : routing.tier
-      if (decision.kind === "apply") {
-        admission = decision
-        recovery = {
-          kind: "switch",
-          model: decision.model,
-          ...(decision.evidence.probeId !== undefined
-            ? { probeId: decision.evidence.probeId }
-            : {}),
-        }
-        probeTicket = ticket
-      }
-    } catch (error) {
-      logFailOpen("recovery", error)
-    }
-
+    const mode = this.#modeFor(input.sessionID, settings)
     const vetoesUsed = unitID !== undefined ? (this.#vetoes.get(unitID) ?? 0) : 0
-    const core = decideRetry({
-      classification,
-      failingModel: input.model,
-      native: input.decision,
-      recovery,
-      vetoesUsed,
-    })
-    const wrapped = retryForMode(core, this.#modeFor(input.sessionID, settings))
-    if (wrapped.kind !== "veto") {
-      // OBSERVE (and a declined veto) never runs the recovery episode, so an
-      // admitted probe has no continuation to report it — release it here or
-      // the resource wedges half-open.
-      if (probeTicket !== undefined) {
-        this.#health.releaseProbe(probeTicket)
-      }
+    // Only a conclusive, failover-eligible failure the host still wants to
+    // retry can start a recovery. Claim the session's one recovery slot
+    // synchronously, before the admission await: the pending marker above is
+    // set only after that await and a receipt write, so a concurrent burst
+    // would otherwise pass it and each deliver the same continuation.
+    const mayRecover =
+      mode === "active" &&
+      classification.failoverEligible &&
+      classification.definitive &&
+      input.decision.retry &&
+      vetoesUsed < MAX_VETOES_PER_UNIT
+    // The continuation unit's own failure supersedes the lease its delivery
+    // still holds: that episode now owns the next recovery.
+    const claim = mayRecover ? this.#claimRecovery(input.sessionID, continuationEcho) : undefined
+    if (mayRecover && claim === undefined) {
+      // Another hook (or plugin instance) owns the session's recovery. Veto
+      // exactly like the pending guard, and record nothing: this failure is
+      // the echo of work that chain is already continuing.
+      input.decision = { retry: false }
       return
     }
-    input.decision = { retry: false }
-    if (unitID !== undefined) {
-      this.#vetoes.set(unitID, vetoesUsed + 1)
-    }
-    // A probe admitted by this recovery belongs to the continuation episode
-    // that ownRecovery is about to start; its termination reports the probe.
-    if (probeTicket !== undefined) {
-      // The session holds one pending probe slot. A still-pending older
-      // ticket belongs to a recovery whose continuation has not started (its
-      // episode can no longer claim this slot) — release it before replacing.
-      const stale = this.#sessionProbeTickets.get(input.sessionID)
-      if (stale !== undefined && stale !== probeTicket) {
-        this.#health.releaseProbe(stale)
+    let handedOff = false
+    try {
+      // Recovery = fresh admission; the failed resource is already health-blocked.
+      let recovery: RecoveryOption = { kind: "none" }
+      let routingTier: TierName | undefined
+      let probeTicket: ProbeTicket | undefined
+      let admission: ReturnType<typeof admit> | undefined
+      try {
+        const {
+          routing,
+          decision,
+          probeTicket: ticket,
+        } = await this.#admit(settings, input.sessionID)
+        routingTier = routing.kind === "pin" ? undefined : routing.tier
+        if (decision.kind === "apply") {
+          admission = decision
+          recovery = {
+            kind: "switch",
+            model: decision.model,
+            ...(decision.evidence.probeId !== undefined
+              ? { probeId: decision.evidence.probeId }
+              : {}),
+          }
+          probeTicket = ticket
+        }
+      } catch (error) {
+        logFailOpen("recovery", error)
       }
-      this.#sessionProbeTickets.set(input.sessionID, probeTicket)
-    }
-    // The continuation episode is not re-admitted — its prompt hook is
-    // consumed as an owned continuation — so the recovery admission is
-    // recorded here, unit-less; the unit that opens next adopts this receipt
-    // and carries the outcome.
-    // A veto implies the admission was an apply: the recovery option exists
-    // only when the fresh admission selected a resource, so the assertion
-    // cannot be undefined on this path.
-    await this.#recordReceipt({
-      sessionID: input.sessionID,
-      tier: routingTier,
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- a veto implies the admission was an apply (the recovery exists only then)
-      decision: admission!,
-    })
-    void this.#ownRecovery(
-      input.sessionID,
-      wrapped.model,
-      routingTier,
-      () => this.#modeFor(input.sessionID, settings) !== "off",
-    )
-      .then(() => undefined)
-      .catch(async (error: unknown) => {
-        if (error instanceof RecoveryAbortedError) {
-          // The user steered away (interruption / OFF) during the settle: the
-          // veto stands, but no continuation episode will ever carry the
-          // probe it admitted — release it instead of wedging half-open.
+
+      const core = decideRetry({
+        classification,
+        failingModel: input.model,
+        native: input.decision,
+        recovery,
+        vetoesUsed,
+      })
+      const wrapped = retryForMode(core, mode)
+      if (wrapped.kind !== "veto") {
+        // OBSERVE (and a declined veto) never runs the recovery episode, so an
+        // admitted probe has no continuation to report it — release it here or
+        // the resource wedges half-open.
+        if (probeTicket !== undefined) {
+          this.#health.releaseProbe(probeTicket)
+        }
+        return
+      }
+      input.decision = { retry: false }
+      if (unitID !== undefined) {
+        this.#vetoes.set(unitID, vetoesUsed + 1)
+      }
+      // A probe admitted by this recovery belongs to the continuation episode
+      // that ownRecovery is about to start; its termination reports the probe.
+      if (probeTicket !== undefined) {
+        // The session holds one pending probe slot. A still-pending older
+        // ticket belongs to a recovery whose continuation has not started (its
+        // episode can no longer claim this slot) — release it before replacing.
+        const stale = this.#sessionProbeTickets.get(input.sessionID)
+        if (stale !== undefined && stale !== probeTicket) {
+          this.#health.releaseProbe(stale)
+        }
+        this.#sessionProbeTickets.set(input.sessionID, probeTicket)
+      }
+      // The continuation episode is not re-admitted — its prompt hook is
+      // consumed as an owned continuation — so the recovery admission is
+      // recorded here, unit-less; the unit that opens next adopts this receipt
+      // and carries the outcome.
+      // A veto implies the admission was an apply: the recovery option exists
+      // only when the fresh admission selected a resource, so the assertion
+      // cannot be undefined on this path.
+      await this.#recordReceipt({
+        sessionID: input.sessionID,
+        tier: routingTier,
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- a veto implies the admission was an apply (the recovery exists only then)
+        decision: admission!,
+      })
+      handedOff = true
+      // ownRecovery releases the claim when its chain settles (or aborts).
+      void this.#ownRecovery(
+        input.sessionID,
+        wrapped.model,
+        routingTier,
+        () => this.#modeFor(input.sessionID, settings) !== "off",
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- a veto implies mayRecover, so the claim exists
+        claim!,
+      )
+        .then(() => undefined)
+        .catch(async (error: unknown) => {
+          if (error instanceof RecoveryAbortedError) {
+            // The user steered away (interruption / OFF) during the settle: the
+            // veto stands, but no continuation episode will ever carry the
+            // probe it admitted — release it instead of wedging half-open.
+            if (
+              probeTicket !== undefined &&
+              this.#sessionProbeTickets.get(input.sessionID) === probeTicket
+            ) {
+              this.#sessionProbeTickets.delete(input.sessionID)
+              this.#health.releaseProbe(probeTicket)
+            }
+            return
+          }
+          logFailOpen("recovery-ops", error)
+          // The recovery rejected before (or while) delivering its continuation
+          // prompt, so no unit will ever carry the probe it admitted — release
+          // it instead of wedging the resource half-open.
           if (
             probeTicket !== undefined &&
             this.#sessionProbeTickets.get(input.sessionID) === probeTicket
@@ -1862,22 +2014,12 @@ export class Supervisor {
             this.#sessionProbeTickets.delete(input.sessionID)
             this.#health.releaseProbe(probeTicket)
           }
-          return
-        }
-        logFailOpen("recovery-ops", error)
-        // The recovery rejected before (or while) delivering its continuation
-        // prompt, so no unit will ever carry the probe it admitted — release
-        // it instead of wedging the resource half-open.
-        if (
-          probeTicket !== undefined &&
-          this.#sessionProbeTickets.get(input.sessionID) === probeTicket
-        ) {
-          this.#sessionProbeTickets.delete(input.sessionID)
-          this.#health.releaseProbe(probeTicket)
-        }
-        if (unitID === undefined || routingTier === undefined) return
-        await this.#parkUnit(unitID, input.sessionID, routingTier, "continuation failed")
-      })
+          if (unitID === undefined || routingTier === undefined) return
+          await this.#parkUnit(unitID, input.sessionID, routingTier, "continuation failed")
+        })
+    } finally {
+      if (claim !== undefined && !handedOff) this.#releaseRecovery(input.sessionID, claim)
+    }
   }
 
   /**
@@ -1891,6 +2033,7 @@ export class Supervisor {
     model: ModelRef,
     tier: TierName | undefined,
     stillValid: () => boolean,
+    claim: symbol,
   ): Promise<void> {
     const run = this.#continueSession(sessionID, model, tier, stillValid)
     // The guard window opens in the same tick the recovery starts (before
@@ -1909,7 +2052,37 @@ export class Supervisor {
         // session's next, unrelated recovery.
         this.#recoveryInterrupted.delete(sessionID)
       }
+      // The chain has delivered its prompt (or aborted). Only now may a later
+      // failure sequence the next continuation. The token proves the release
+      // belongs to this chain: a superseded chain cannot drop a newer lease.
+      this.#releaseRecovery(sessionID, claim)
     })
+  }
+
+  /**
+   * One owned recovery chain per session, process-wide. The claim is taken
+   * synchronously, before any admission await: the per-instance
+   * #recoveryPending marker is set only after admission and the receipt
+   * write, so concurrent retry hooks (parallel model calls in one turn, event
+   * replay, or the host's duplicate plugin instances) would all pass that
+   * marker and each deliver the same continuation (ADP-023, ADP-056). Parked
+   * resume shares this claim, so a recovery and a resume cannot overlap.
+   */
+  #claimRecovery(sessionID: string, supersede = false): symbol | undefined {
+    const token = this.#options.ledger.claim(
+      sessionID,
+      this.#options.clock(),
+      RECOVERY_SUPERSEDE_MS,
+      supersede,
+    )
+    if (token !== undefined) this.#recoveryClaims.set(sessionID, token)
+    return token
+  }
+
+  #releaseRecovery(sessionID: string, token: symbol): void {
+    // A superseded chain's late release must not drop the newer owner's lease.
+    if (this.#recoveryClaims.get(sessionID) === token) this.#recoveryClaims.delete(sessionID)
+    this.#options.ledger.release(sessionID, token)
   }
 
   async #continueSession(
@@ -2269,7 +2442,8 @@ export class Supervisor {
     // once it re-reads the parked store.
     const { ledger } = this.#options
     const takeovers = ledger.takeovers(record.sessionID)
-    if (!ledger.claim(record.sessionID)) {
+    const claim = this.#claimRecovery(record.sessionID)
+    if (claim === undefined) {
       if (probeTicket !== undefined) this.#health.releaseProbe(probeTicket)
       return false
     }
@@ -2291,14 +2465,19 @@ export class Supervisor {
       await this.#recordReceipt({ sessionID: record.sessionID, tier: record.tier, decision })
       delivering = true
       const takenOver = (): boolean => ledger.takeovers(record.sessionID) !== takeovers
-      void this.#deliverResume(record, decision.model, settings, probeTicket, takenOver).finally(
-        () => {
-          ledger.release(record.sessionID)
-        },
-      )
+      void this.#deliverResume(
+        record,
+        decision.model,
+        settings,
+        probeTicket,
+        takenOver,
+        claim,
+      ).finally(() => {
+        this.#releaseRecovery(record.sessionID, claim)
+      })
       return true
     } finally {
-      if (!delivering) ledger.release(record.sessionID)
+      if (!delivering) this.#releaseRecovery(record.sessionID, claim)
     }
   }
 
@@ -2308,13 +2487,20 @@ export class Supervisor {
    * same decision every few minutes.
    */
   async #noteStillParked(record: ParkedRecord, decision: Receipt["decision"]): Promise<void> {
-    const last = this.#receipts.snapshot().findLast((receipt) => receipt.unitID === record.id)
-    if (last !== undefined && JSON.stringify(last.decision) === JSON.stringify(decision)) return
-    await this.#recordReceipt({
-      sessionID: record.sessionID,
-      unitID: record.id,
-      tier: record.tier,
-      decision,
+    // Read and write under the same process-wide lock: the duplicate-instance
+    // copy is what the last sweep's "already recorded" check must see.
+    await this.#mutateReceipts(async () => {
+      const last = this.#receipts.snapshot().findLast((receipt) => receipt.unitID === record.id)
+      if (last !== undefined && JSON.stringify(last.decision) === JSON.stringify(decision)) return
+      await this.#receipts.record({
+        at: this.#options.clock(),
+        sessionID: record.sessionID,
+        unitID: record.id,
+        tier: record.tier,
+        decision,
+      })
+    }).catch((error: unknown) => {
+      logFailOpen("receipts", error)
     })
   }
 
@@ -2329,6 +2515,7 @@ export class Supervisor {
     settings: SettingsV1,
     probeTicket: ProbeTicket | undefined,
     takenOver: () => boolean,
+    claim: symbol,
   ): Promise<void> {
     try {
       await this.#ownRecovery(
@@ -2343,6 +2530,7 @@ export class Supervisor {
           !(takenOver() || this.#disposed) &&
           this.#modeFor(record.sessionID, settings) !== "off" &&
           this.#tracker.active(record.sessionID) === undefined,
+        claim,
       )
       this.#fruitless = 0
     } catch (error) {
@@ -2399,9 +2587,42 @@ export class Supervisor {
     }
   }
 
+  /**
+   * Receipts are read-modify-write on one key shared by every plugin
+   * instance. Reload inside the shared lock or this instance's stale ring
+   * replaces a receipt the other instance just wrote (the 400 ms burst left
+   * 14 prompts but one surviving receipt).
+   */
+  #refreshReceipts(): Promise<void> {
+    return this.#options.ledger.receiptOperation(async () => {
+      const revision = this.#options.ledger.receiptRevision()
+      if (this.#receiptRevision === revision) return
+      await this.#receipts.load()
+      this.#receiptRevision = revision
+    })
+  }
+
+  #mutateReceipts<T>(operation: () => Promise<T>): Promise<T> {
+    return this.#options.ledger.receiptOperation(async () => {
+      const revision = this.#options.ledger.receiptRevision()
+      if (this.#receiptRevision !== revision) {
+        await this.#receipts.load()
+        this.#receiptRevision = revision
+      }
+      const result = await operation()
+      // Published inside the lock: the next operation in either instance
+      // sees the write before it decides whether its ring is current.
+      this.#options.ledger.noteReceiptWrite()
+      this.#receiptRevision = this.#options.ledger.receiptRevision()
+      return result
+    })
+  }
+
   async #recordReceipt(input: Omit<ReceiptInput, "at">): Promise<void> {
     try {
-      await this.#receipts.record({ at: this.#options.clock(), ...input })
+      await this.#mutateReceipts(() =>
+        this.#receipts.record({ at: this.#options.clock(), ...input }),
+      )
     } catch (error) {
       logFailOpen("receipts", error)
     }
@@ -2409,7 +2630,9 @@ export class Supervisor {
 
   async #attachOutcome(unit: ActiveUnit, outcome: ReceiptOutcome): Promise<void> {
     try {
-      await this.#receipts.attachOutcome({ sessionID: unit.sessionID, unitID: unit.id }, outcome)
+      await this.#mutateReceipts(() =>
+        this.#receipts.attachOutcome({ sessionID: unit.sessionID, unitID: unit.id }, outcome),
+      )
     } catch (error) {
       logFailOpen("receipts", error)
     }

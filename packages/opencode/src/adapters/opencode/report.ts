@@ -9,6 +9,7 @@ import type { SessionHttpResponse } from "@opencode/plugin/promise/session"
 import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 import type {
   AdapterStructuredError,
+  AgentSelectedReport,
   ExecutionReport,
   HttpResponseReport,
   ModelRequestReport,
@@ -61,6 +62,8 @@ export function modelRefOf(ref: Model.Ref): ModelRef {
 
 /** Structural session event the mapper accepts (host payloads are assignable). */
 export type SessionEvent =
+  | { type: "session.created"; created: number; data: { sessionID: string; agent?: string } }
+  | { type: "session.agent.selected"; created: number; data: { sessionID: string; agent: string } }
   | { type: "session.execution.started"; created: number; data: { sessionID: string } }
   | { type: "session.execution.succeeded"; created: number; data: { sessionID: string } }
   | {
@@ -84,8 +87,18 @@ export type SessionEvent =
  * types the supervisor does not consume (defensive — the subscription filters
  * types, so this branch only fires if the host ever widens the stream).
  */
-export function mapSessionEvent(event: SessionEvent): ExecutionReport | null {
+export function mapSessionEvent(event: SessionEvent): ExecutionReport | AgentSelectedReport | null {
   switch (event.type) {
+    // The child session is created with its agent already set, so the creation
+    // event carries the role hint before the first unit starts. A host that
+    // never emits `agent.selected` at creation (verified: subagent children do
+    // not) still routes the first unit through its role tier from this event.
+    case "session.created":
+      return event.data.agent === undefined
+        ? null
+        : { kind: "agent-selected", sessionID: event.data.sessionID, agent: event.data.agent }
+    case "session.agent.selected":
+      return { kind: "agent-selected", sessionID: event.data.sessionID, agent: event.data.agent }
     case "session.execution.started":
       return { kind: "execution-started", sessionID: event.data.sessionID, at: event.created }
     case "session.execution.succeeded":

@@ -10,7 +10,7 @@ const TEXT_BOUND = 512
 // These messages describe the subscription's shared allowance or balance,
 // unlike a generic quota error or a named model-family limit (ADP-007).
 const SHARED_QUOTA_PATTERN =
-  /\byou['’]ve hit your (?:session|usage|weekly) limit(?=\s*(?:$|[·.,;(:]|resets?\b))|\b(?:out of credits|insufficient credits|credit balance)\b/i
+  /\byou['’]ve hit your (?:session|usage|weekly) limit(?=\s*(?:$|[·.,;(:]|resets?\b))|\b(?:out of credits|insufficient credits|credit balance|no credits (?:remaining|left))\b/i
 
 // A 429 whose message says the quota itself is spent ("You exceeded your
 // current quota, please check your plan and billing details") is quota
@@ -87,11 +87,12 @@ const TEXTUAL_PATTERNS: readonly {
     // Sibling fallback plugins' issue trackers document the real-world
     // phrasings that missed curated whitelists (oh-my-openagent #2393/#5815,
     // lichter's 429 lesson): snake-cased limits, "usage exceeded" without
-    // "limit", credit exhaustion without "balance". Qualifiers stay required
+    // "limit", credit exhaustion without "balance" (OpenAI's "You have no
+    // credits remaining"). Qualifiers stay required
     // so "token limit reached" (context overflow) never matches quota.
     category: "quota_exhausted",
     pattern:
-      /\bquota\b|credit balance|(?:session|usage|free usage|message|plan|monthly|weekly|daily)[ _-]?limit|usage exceeded|out of credits|insufficient credits/i,
+      /\bquota\b|credit balance|(?:session|usage|free usage|message|plan|monthly|weekly|daily)[ _-]?limit|usage exceeded|out of credits|insufficient credits|no credits (?:remaining|left)/i,
   },
   { category: "rate_limited", pattern: /rate ?limit/i },
   { category: "timeout", pattern: /\btimeout\b|timed? ?out|deadline exceeded|etimedout/i },

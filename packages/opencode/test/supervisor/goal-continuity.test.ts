@@ -8,7 +8,7 @@
  * limit changes inside one goal never strand it (ADP-005, ADP-015, ADP-016,
  * ADP-021, ADP-022, ADP-024, ADP-028, ADP-038, ADP-056).
  */
-// covers: ["ADP-005", "ADP-015", "ADP-016", "ADP-021", "ADP-022", "ADP-024", "ADP-028", "ADP-038", "ADP-056"]
+// covers: ["ADP-005", "ADP-013", "ADP-015", "ADP-016", "ADP-021", "ADP-022", "ADP-024", "ADP-028", "ADP-038", "ADP-056"]
 import { describe, expect, it } from "vitest"
 
 import { CONTINUATION_PROMPT } from "@coool/adaptive-core/execution/index"
@@ -694,6 +694,120 @@ describe("goal continuity — subagents on their own tier", () => {
     await flush()
     expect(h.session.log).toEqual(["switch:s-sub:openrouter/glm-flash"])
     expect(parseParkedPayload(storedParked(h.storage))).toEqual([])
+  })
+})
+
+describe("goal continuity — a subagent auto-switches off a usage limit mid-run", () => {
+  // The production shape: the parent already burned the two subscriptions,
+  // the subagent runs on the paid fallback, and that fallback dies on its
+  // own per-model usage limit mid-run (429 + quota text — definitive). The
+  // retry hook (which fires for child sessions too) must veto the host's
+  // native retry and hand the subagent to the next working rung in its own
+  // tier (ADP-013). A shared "you've hit your usage limit" message would be
+  // provider-scoped and correctly block the same-provider sibling too.
+  function deepStorage(): KeyFailStorage {
+    return ladderStorage({
+      standard: [
+        wireRef("anthropic", "claude-sonnet-4"),
+        wireRef("openai", "codex-gpt-5"),
+        wireRef("openrouter", "glm-flash"),
+        wireRef("openrouter", "glm-flash-mini"),
+      ],
+    })
+  }
+
+  const DEEP_INFOS = [...LADDER_INFOS, makeInfo("openrouter", "glm-flash-mini")]
+
+  async function startSubagent(h: Harness, agent = "general"): Promise<void> {
+    await h.supervisor.handleReport({
+      kind: "model-request",
+      sessionID: "s-sub",
+      agent,
+      model: GLM,
+      requestKind: "primary",
+    })
+    await h.supervisor.handleReport({ kind: "prompt", sessionID: "s-sub" })
+  }
+
+  async function startUnit(h: Harness): Promise<void> {
+    await h.supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s-sub",
+      at: h.clock.now - 1,
+      model: GLM,
+    })
+    await h.supervisor.handleReport({
+      kind: "execution-started",
+      sessionID: "s-sub",
+      at: h.clock.now,
+    })
+  }
+
+  it("the retry hook vetoes the native retry and moves the subagent to the next working rung", async () => {
+    const h = harness({ storage: deepStorage(), infos: DEEP_INFOS })
+    await observeStatus(h, CLAUDE, 429)
+    await observeStatus(h, CODEX, 402)
+    await startSubagent(h, "general")
+    expect(h.session.log).toEqual(["switch:s-sub:openrouter/glm-flash"])
+    await startUnit(h)
+
+    const retry = {
+      sessionID: "s-sub",
+      model: GLM,
+      error: { type: "UnknownError", message: "Model quota exhausted", status: 429 },
+      attempt: 1,
+      decision: { retry: true, delay: 100 },
+    }
+    await h.supervisor.handleRetry(retry)
+    await flush()
+
+    // The host must not re-send the failing request: Adaptive owns recovery.
+    expect(retry.decision).toEqual({ retry: false })
+    // The recovery stays inside the subagent's tier and skips every
+    // exhausted rung — never back onto a parent-dead subscription.
+    expect(h.session.log).toEqual([
+      "switch:s-sub:openrouter/glm-flash",
+      "wait:s-sub",
+      "switch:s-sub:openrouter/glm-flash-mini",
+      CONTINUE("s-sub"),
+    ])
+    expect(parseParkedPayload(storedParked(h.storage))).toEqual([])
+  })
+
+  it("with no rung left the native retry stands and the terminal quota path parks", async () => {
+    const h = harness()
+    await observeStatus(h, CLAUDE, 429)
+    await observeStatus(h, CODEX, 402)
+    await startSubagent(h, "general")
+    await startUnit(h)
+
+    const retry = {
+      sessionID: "s-sub",
+      model: GLM,
+      error: { type: "UnknownError", message: "You've hit your usage limit", status: 429 },
+      attempt: 1,
+      decision: { retry: true, delay: 100 },
+    }
+    await h.supervisor.handleRetry(retry)
+    await flush()
+
+    // Nothing healthy to hand over: admission cannot hold the episode, so
+    // the host's own retry stands (fail-open) until the unit fails for
+    // good — the terminal quota recovery then parks it.
+    expect(retry.decision).toEqual({ retry: true, delay: 100 })
+    expect(h.session.log).toEqual(["switch:s-sub:openrouter/glm-flash"])
+    expect(parseParkedPayload(storedParked(h.storage))).toEqual([])
+
+    await h.supervisor.handleReport({
+      kind: "execution-failed",
+      sessionID: "s-sub",
+      at: h.clock.now,
+      error: { type: "UnknownError", message: "You've hit your usage limit" },
+    })
+    await flush()
+    expect(parseParkedPayload(storedParked(h.storage))).toEqual([
+      expect.objectContaining({ sessionID: "s-sub", tier: "standard" }),
+    ])
   })
 })
 

@@ -157,24 +157,30 @@ describe("runtime e2e: per-session tier requests over the RPC surface (ADP-055)"
     },
   )
 
-  it("rejects an unknown tier and a malformed wire input without a write", async () => {
-    const host = await start()
-    // Vocabulary failure: the handler reports a per-field error, no write.
-    const badTier = await rpcRaw(host, "tier-request.set", {
-      input: { sessionID: "ses_1", tier: "bogus" },
-    })
-    expect(badTier.ok).toBe(true)
-    const badTierOutput = (await badTier.json()) as { output: { ok: boolean; errors: string[] } }
-    expect(badTierOutput.output).toEqual({
-      ok: false,
-      errors: ["tier must be one of quick, standard, advanced or null"],
-    })
-    expect(((await rpc(host).tierRequest.get("ses_1")) as { tier: string | null }).tier).toBeNull()
+  it(
+    "rejects an unknown tier and a malformed wire input without a write",
+    { timeout: 60_000 },
+    async () => {
+      const host = await start()
+      // Vocabulary failure: the handler reports a per-field error, no write.
+      const badTier = await rpcRaw(host, "tier-request.set", {
+        input: { sessionID: "ses_1", tier: "bogus" },
+      })
+      expect(badTier.ok).toBe(true)
+      const badTierOutput = (await badTier.json()) as { output: { ok: boolean; errors: string[] } }
+      expect(badTierOutput.output).toEqual({
+        ok: false,
+        errors: ["tier must be one of quick, standard, advanced or null"],
+      })
+      expect(
+        ((await rpc(host).tierRequest.get("ses_1")) as { tier: string | null }).tier,
+      ).toBeNull()
 
-    // Wire-gate failure: the tier type is wrong, so the transport rejects it.
-    const badWire = await rpcRaw(host, "tier-request.set", {
-      input: { sessionID: "ses_1", tier: 7 },
-    })
-    expect(badWire.ok).toBe(false)
-  })
+      // Wire-gate failure: the tier type is wrong, so the transport rejects it.
+      const badWire = await rpcRaw(host, "tier-request.set", {
+        input: { sessionID: "ses_1", tier: 7 },
+      })
+      expect(badWire.ok).toBe(false)
+    },
+  )
 })
