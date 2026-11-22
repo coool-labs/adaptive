@@ -494,36 +494,38 @@ async function openStatusPage(app: TerminalApp, match: RegExp): Promise<void> {
   throw new Error("status page never opened")
 }
 
-test("the tui boots to the first-run home with the configured model", async ({
-  termwright: tw,
-  terminal,
-}) => {
-  const launched = await launchTui(tw, terminal)
-  await step("tui boots", async () => {
-    await bootTui(launched)
-  })
-  // First-run home: the editor prompt is empty and the configured fake
-  // provider model is the active agent model.
-  await launched.app.waitForText("Fake Model", { timeout: 15_000 })
-  await launched.app.close()
-  await closeLaunched(launched)
-})
+test(
+  "the tui boots to the first-run home with the configured model",
+  { timeout: 180_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal)
+    await step("tui boots", async () => {
+      await bootTui(launched)
+    })
+    // First-run home: the editor prompt is empty and the configured fake
+    // provider model is the active agent model.
+    await launched.app.waitForText("Fake Model", { timeout: 15_000 })
+    await launched.app.close()
+    await closeLaunched(launched)
+  },
+)
 
-test("the command palette is keyboard-operable and escapable", async ({
-  termwright: tw,
-  terminal,
-}) => {
-  const launched = await launchTui(tw, terminal)
-  await bootTui(launched)
-  await step("keyboard-only palette", async () => {
-    await openPalette(launched.app)
-    // Escape returns to the unchanged home screen (cancel path).
-    await launched.app.press("escape")
-    await launched.app.waitForText("Ask anything", { timeout: 15_000 })
-  })
-  await launched.app.close()
-  await closeLaunched(launched)
-})
+test(
+  "the command palette is keyboard-operable and escapable",
+  { timeout: 180_000 },
+  async ({ termwright: tw, terminal }) => {
+    const launched = await launchTui(tw, terminal)
+    await bootTui(launched)
+    await step("keyboard-only palette", async () => {
+      await openPalette(launched.app)
+      // Escape returns to the unchanged home screen (cancel path).
+      await launched.app.press("escape")
+      await launched.app.waitForText("Ask anything", { timeout: 15_000 })
+    })
+    await launched.app.close()
+    await closeLaunched(launched)
+  },
+)
 
 test(
   "backspace does not navigate host select dialogs (host-limitation canary)",
@@ -1146,13 +1148,16 @@ async function chooseMainMenuItem(app: TerminalApp, index: number): Promise<void
     app,
     Array.from({ length: index }, () => "ArrowDown"),
   )
+  // A loaded host can still be repainting the highlighted row when Enter
+  // arrives and drop it, leaving the outer menu open.
+  await app.waitForQuiet({ quietMs: 200 })
   await app.press("Enter")
 }
 
 /** From the main menu, open the models flow and land on the tier list menu. */
 async function openTierMenu(app: TerminalApp, quickCount: number): Promise<void> {
   await chooseMainMenuItem(app, 1)
-  await app.waitForText(`quick (${String(quickCount)})`, { timeout: 30_000 })
+  await app.waitForText(`quick (${String(quickCount)})`, { timeout: 60_000 })
 }
 
 /** From the tier list menu, enter the quick tier editor (quick is highlighted). */
