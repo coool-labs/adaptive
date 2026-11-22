@@ -17,7 +17,11 @@ import { dirname } from "node:path"
 // a read-modify-write of a small file in milliseconds.
 const STALE_LOCK_MS = 10_000
 // Waiting longer than this for a live holder fails the update (fail-open).
-const LOCK_TIMEOUT_MS = 1_000
+// A subagent burst can put many Pi processes on one state file, and a host
+// under CPU pressure stretches each holder's read-modify-write; 1 s failed
+// legitimate writes under that load. Stay below STALE_LOCK_MS so waiters
+// still reclaim a crashed holder through the stale path.
+const LOCK_TIMEOUT_MS = 3_000
 const LOCK_RETRY_MS = 10
 
 export interface JsonFile {
