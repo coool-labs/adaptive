@@ -26,6 +26,15 @@ const QUOTA = {
   at: 20,
   error: { type: "UnknownError", message: "Model quota exhausted" },
 } as const
+// The shape a provider-limit reply took in the field: the host gives up with a
+// free-text rate limit and no HTTP status, so only the terminal path can
+// recover it.
+const RATE_LIMIT = {
+  kind: "execution-failed",
+  sessionID: "s1",
+  at: 20,
+  error: { type: "UnknownError", message: "Rate limit exceeded. Please try again later." },
+} as const
 
 async function start(supervisor: Supervisor, model = "a"): Promise<void> {
   await supervisor.handleReport(PROMPT)
@@ -50,7 +59,7 @@ async function tripSibling(supervisor: Supervisor): Promise<void> {
   }
 }
 
-describe("terminal quota recovery", () => {
+describe("terminal availability recovery", () => {
   it("parks an exhausted tier instead of escalating or prompting a blocked resource", async () => {
     const session = new FakeSupervisorSession()
     const storage = activeStorage()
@@ -66,8 +75,34 @@ describe("terminal quota recovery", () => {
       kind: "park",
     })
     expect(parseParkedPayload(storedParked(storage))).toMatchObject([
-      { sessionID: "s1", tier: "standard", reason: "all-blocked", detail: "quota exhausted" },
+      {
+        sessionID: "s1",
+        tier: "standard",
+        reason: "all-blocked",
+        detail: "availability exhausted",
+      },
     ])
+  })
+
+  it("continues a terminal rate limit on the next rung without another user prompt", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = activeStorage()
+    const supervisor = makeSupervisor({ storage, session })
+    await supervisor.handleReport({
+      kind: "model-selected",
+      sessionID: "s1",
+      at: 5,
+      model: { providerID: "prov", id: "b" },
+    })
+    await supervisor.handleReport(PROMPT)
+    await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 10 })
+    await supervisor.handleReport(RATE_LIMIT)
+    await flush()
+    expect(session.log).toEqual(["wait:s1", "switch:s1:prov/a", `prompt:s1:${CONTINUATION_PROMPT}`])
+    expect(parseReceiptsPayload(storedReceipts(storage)).at(-1)?.decision).toMatchObject({
+      kind: "apply",
+      model: { providerID: "prov", id: "a" },
+    })
   })
 
   it("records a defer when no tier is configured", async () => {
@@ -118,26 +153,32 @@ describe("terminal quota recovery", () => {
     expect(parseParkedPayload(storedParked(storage))).toEqual([])
   })
 
-  it("OBSERVE records the same fallback without continuing the session", async () => {
-    const session = new FakeSupervisorSession()
-    const storage = activeStorage()
-    seed(
-      storage,
-      SETTINGS_KEY,
-      settingsJSON("observe", {
-        standard: [wireRef("prov", "a"), wireRef("prov", "b")],
-      }),
-    )
-    const supervisor = makeSupervisor({ storage, session })
-    await start(supervisor)
-    await supervisor.handleReport(QUOTA)
-    await flush()
-    expect(session.log).toEqual([])
-    expect(parseReceiptsPayload(storedReceipts(storage)).at(-1)?.decision).toMatchObject({
-      kind: "observe-only",
-      would: { kind: "apply", model: { providerID: "prov", id: "b" } },
-    })
-  })
+  it.each([
+    ["quota", QUOTA],
+    ["rate limit", RATE_LIMIT],
+  ] as const)(
+    "OBSERVE records the same fallback without continuing the session (%s)",
+    async (_label, error) => {
+      const session = new FakeSupervisorSession()
+      const storage = activeStorage()
+      seed(
+        storage,
+        SETTINGS_KEY,
+        settingsJSON("observe", {
+          standard: [wireRef("prov", "a"), wireRef("prov", "b")],
+        }),
+      )
+      const supervisor = makeSupervisor({ storage, session })
+      await start(supervisor)
+      await supervisor.handleReport(error)
+      await flush()
+      expect(session.log).toEqual([])
+      expect(parseReceiptsPayload(storedReceipts(storage)).at(-1)?.decision).toMatchObject({
+        kind: "observe-only",
+        would: { kind: "apply", model: { providerID: "prov", id: "b" } },
+      })
+    },
+  )
 
   it("honors OFF chosen while the failure outcome is being persisted", async () => {
     const session = new FakeSupervisorSession()
@@ -226,27 +267,33 @@ describe("terminal quota recovery", () => {
     expect(session.log.filter((entry) => entry.startsWith("prompt:"))).toHaveLength(1)
   })
 
-  it("bounds automatic continuations even when earlier quota windows expire", async () => {
-    let now = 1000
-    const session = new FakeSupervisorSession()
-    const storage = activeStorage()
-    const supervisor = makeSupervisor({ storage, session, clock: () => now })
-    await start(supervisor)
-    for (const model of ["a", "b", "a"]) {
-      await supervisor.handleReport({
-        kind: "model-request",
-        sessionID: "s1",
-        model: { providerID: "prov", id: model },
-        requestKind: "primary",
-      })
-      await supervisor.handleReport(QUOTA)
-      await flush()
-      now += 15 * 60 * 1000
-      await supervisor.handleReport(PROMPT)
-      await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: now })
-    }
-    expect(session.log.filter((entry) => entry.startsWith("prompt:"))).toHaveLength(2)
-  })
+  it.each([
+    ["quota", QUOTA],
+    ["rate limit", RATE_LIMIT],
+  ] as const)(
+    "bounds automatic continuations even when earlier %s windows expire",
+    async (_label, error) => {
+      let now = 1000
+      const session = new FakeSupervisorSession()
+      const storage = activeStorage()
+      const supervisor = makeSupervisor({ storage, session, clock: () => now })
+      await start(supervisor)
+      for (const model of ["a", "b", "a"]) {
+        await supervisor.handleReport({
+          kind: "model-request",
+          sessionID: "s1",
+          model: { providerID: "prov", id: model },
+          requestKind: "primary",
+        })
+        await supervisor.handleReport(error)
+        await flush()
+        now += 15 * 60 * 1000
+        await supervisor.handleReport(PROMPT)
+        await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: now })
+      }
+      expect(session.log.filter((entry) => entry.startsWith("prompt:"))).toHaveLength(2)
+    },
+  )
 
   it("releases a probe when the task's terminal-recovery budget is exhausted", async () => {
     let now = 1000
@@ -300,7 +347,7 @@ describe("terminal quota recovery", () => {
         await start(supervisor)
         await supervisor.handleReport(QUOTA)
         await flush()
-        expect(errors).toHaveBeenCalledWith(expect.stringContaining("quota-recovery"))
+        expect(errors).toHaveBeenCalledWith(expect.stringContaining("availability-recovery"))
         expect(session.log.filter((entry) => entry.startsWith("prompt:"))).toHaveLength(
           operation === "prompt" ? 1 : 0,
         )

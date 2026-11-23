@@ -13,6 +13,19 @@ describe("shouldResumeGoal", () => {
     ).toBe(true)
   })
 
+  // The host's stall detector pauses the goal when a session waited on
+  // background work (subagents, jobs) without producing a message. That pause
+  // is machine-generated like the session-failure one: the work being waited
+  // on is exactly what an owned continuation resuming the goal continues.
+  it("resumes a goal the host paused over background work", () => {
+    for (const reason of [
+      "Nothing ran for 5 minutes while the goal waited on background work",
+      "Nothing ran for 30 minutes while the goal waited on background work",
+    ]) {
+      expect(shouldResumeGoal({ status: "paused", reason })).toBe(true)
+    }
+  })
+
   it("leaves every deliberate pause paused", () => {
     const deliberate = [
       "Paused by the user",
@@ -21,7 +34,8 @@ describe("shouldResumeGoal", () => {
       "The goal reviewer gave no usable verdict",
       "The goal reviewer's request is too large for the model",
       "The goal stopped after an error",
-      "Nothing ran for 5 minutes while the goal waited on background work",
+      "Nothing ran for 30 minutes",
+      "Nothing ran for 30 minutes while the goal waited on background work. Paused by the user",
       "The server restarted while the goal was active",
       "Reached the limit of 50 rounds",
     ]

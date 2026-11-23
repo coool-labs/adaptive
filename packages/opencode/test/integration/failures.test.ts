@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest"
 import { SETTINGS_KEY } from "@coool/adaptive-core/state/settings/types"
 import { parseReceiptsPayload } from "@coool/adaptive-core/state/receipts/index"
 import { parseParkedPayload } from "@coool/adaptive-core/state/parked-work/index"
+import { CONTINUATION_PROMPT } from "@coool/adaptive-core/execution/index"
 import { storedParked, storedReceipts } from "../supervisor/helpers.js"
 import { makeInfo } from "../adapters/opencode/helpers.js"
 import {
@@ -36,7 +37,7 @@ describe("fault-injection matrix", () => {
       at: 20,
       error: { type: "UnknownError", message: "", status: 429 },
     })
-    await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
+    await flush()
     const receipts = parseReceiptsPayload(storedReceipts(storage))
     expect(receipts[0]?.decision).toMatchObject({ kind: "apply", model: ref("prov", "a") })
     // Same tier, different resource — horizontal recovery, no escalation.
@@ -45,7 +46,13 @@ describe("fault-injection matrix", () => {
       reason: "fallback",
       model: ref("prov", "b"),
     })
-    expect(session.log).toEqual(["switch:s1:prov/a", "switch:s1:prov/b"])
+    // The host gave up, so the continuation is delivered in-unit.
+    expect(session.log).toEqual([
+      "switch:s1:prov/a",
+      "wait:s1",
+      "switch:s1:prov/b",
+      `prompt:s1:${CONTINUATION_PROMPT}`,
+    ])
   })
 
   it("waits out a rate-limit window and returns to the preferred resource", async () => {
@@ -271,13 +278,18 @@ describe("fault-injection matrix", () => {
         at: 20,
         error: { type: "UnknownError", message: "Rate limit reached for model a", status: 429 },
       })
-      await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
+      await flush()
       expect(parseReceiptsPayload(storedReceipts(storage))[1]?.decision).toMatchObject({
         kind: "apply",
         reason: "fallback",
         model: ref("ofox", "b"),
       })
-      expect(session.log).toEqual(["switch:s1:ofox/a", "switch:s1:ofox/b"])
+      expect(session.log).toEqual([
+        "switch:s1:ofox/a",
+        "wait:s1",
+        "switch:s1:ofox/b",
+        `prompt:s1:${CONTINUATION_PROMPT}`,
+      ])
     })
 
     it("skips the sibling model when the shared balance is exhausted (402)", async () => {

@@ -83,6 +83,14 @@ export interface ErrorEvidence {
 export interface RetryAdvice {
   readonly retryable: boolean
   readonly retryAfterMs?: number
+  /**
+   * Provider-declared absolute reset instant (epoch ms), when the message
+   * names one ("Resets at 2026-11-23T16:00:00.000Z"). Parsing ISO-8601 needs
+   * no clock; validating the instant does, so the health layer clamps it
+   * against its injected clock and ignores deadlines that already passed.
+   * Only quota and rate-limit classifications carry it.
+   */
+  readonly retryAt?: number
 }
 
 export interface FailureClassification {

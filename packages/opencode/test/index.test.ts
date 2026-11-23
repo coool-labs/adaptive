@@ -447,13 +447,24 @@ describe("plugin entry", () => {
       created: 120,
       data: { sessionID: "s1", error: { type: "", message: "", status: 429 } },
     })
+    // a is rate-limited, so the unit continues on b from session state.
     await vi.waitFor(() => {
-      expect(parseReceiptsPayload(storedReceipts(storage))).toHaveLength(1)
+      expect(session.log).toEqual([
+        "switch:s1:prov/a",
+        "wait:s1",
+        "switch:s1:prov/b",
+        `prompt:s1:${CONTINUATION_PROMPT}`,
+      ])
     })
-    // Second admission: a is rate-limited, so it falls back to b.
-    events.push({ type: "session.execution.started", created: 130, data: { sessionID: "s1" } })
-    await vi.waitFor(() => {
-      expect(session.log).toEqual(["switch:s1:prov/a", "switch:s1:prov/b"])
+    const receipts = parseReceiptsPayload(storedReceipts(storage))
+    expect(receipts[0]?.decision).toMatchObject({
+      kind: "apply",
+      model: { providerID: "prov", id: "a" },
+    })
+    expect(receipts[1]?.decision).toMatchObject({
+      kind: "apply",
+      model: { providerID: "prov", id: "b" },
+      reason: "fallback",
     })
     cleanup()
   })

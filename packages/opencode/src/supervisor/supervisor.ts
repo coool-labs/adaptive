@@ -252,8 +252,8 @@ export class Supervisor {
    * Cleared at unit close.
    */
   readonly #continuationUnits = new Set<string>()
-  /** Snapshot-sized budget shared by a task's terminal quota continuations. */
-  readonly #quotaRecoveriesRemaining = new Map<string, number>()
+  /** Snapshot-sized budget shared by a task's terminal availability continuations. */
+  readonly #terminalRecoveriesRemaining = new Map<string, number>()
   /** Interruptions observed while a recovery was pending on the session. */
   readonly #recoveryInterrupted = new Set<string>()
   /**
@@ -993,7 +993,7 @@ export class Supervisor {
     this.#continuationTiers.delete(sessionID)
     this.#promptAdmission.delete(sessionID)
     this.#escalations.delete(sessionID)
-    this.#quotaRecoveriesRemaining.delete(sessionID)
+    this.#terminalRecoveriesRemaining.delete(sessionID)
     await this.#takeOver(sessionID)
     // A pending probe ticket from an earlier prompt admission (or a failed
     // recovery) can only be carried by the unit the ORIGINAL prompt opens;
@@ -1357,8 +1357,16 @@ export class Supervisor {
     this.#afterUnitClose(closed)
     // The delivered continuation's episode failed: work did not continue, so
     // a paused goal stays paused. A further recovery re-marks on its own
-    // delivery.
-    this.#goalResumePending.delete(report.sessionID)
+    // delivery. A failure that lands while a NEWER continuation is delivered
+    // but not yet started is the previous episode's delayed terminal echo
+    // (the retry veto's recovery can prompt the next rung before the host
+    // emits it): deleting here would eat the mark the fresh delivery owns.
+    const newerContinuationQueued =
+      this.#continuationPending.has(report.sessionID) ||
+      this.#promptAdmission.get(report.sessionID)?.continuation === true
+    if (unit === undefined || !newerContinuationQueued) {
+      this.#goalResumePending.delete(report.sessionID)
+    }
     if (model !== undefined && countTerminal) {
       this.#observeHealth(failureEvent(refKey(model), classification))
     }
@@ -1368,12 +1376,17 @@ export class Supervisor {
         this.#reportProbeOutcome(probeTicket, { success: false, category: classification.category })
       }
     }
+    // Quota and rate-limit evidence quarantines the failing resource, so a
+    // terminal failure the host will not retry (billing limits never are) can
+    // continue on another rung of the same tier. Transient failures stay with
+    // the host's native retry: they do not quarantine the resource, so
+    // admission could hand back the model that just failed.
     if (
       unit !== undefined &&
       model !== undefined &&
-      classification.category === "quota_exhausted"
+      (classification.category === "quota_exhausted" || classification.category === "rate_limited")
     ) {
-      await this.#recoverTerminalQuota(unit, admissionTier, continuation, settings)
+      await this.#recoverTerminalAvailability(unit, admissionTier, continuation, settings)
       return
     }
     await this.#escalateOnFailure(
@@ -1389,16 +1402,24 @@ export class Supervisor {
     )
   }
 
-  async #recoverTerminalQuota(
+  /**
+   * Continue a unit whose resource was quarantined by availability evidence
+   * the host does not retry itself (ADP-061 parity with the Pi host): admit
+   * the next usable rung of the SAME tier, then continue from durable session
+   * state. OBSERVE computes the identical admission; the per-task budget is
+   * finite so a quarantined ladder cannot loop.
+   */
+  async #recoverTerminalAvailability(
     unit: ActiveUnit,
     requiredTier: TierName | undefined,
     continuation: boolean,
     settings: SettingsV1,
   ): Promise<void> {
     const sessionID = unit.sessionID
-    // The continuation unit itself can run out of quota before the recovery
-    // that started it returns from its prompt call. Its failure is its own:
-    // wait for that recovery to settle, then recover (or park) like any unit.
+    // The continuation unit itself can fail on availability before the
+    // recovery that started it returns from its prompt call. Its failure is
+    // its own: wait for that recovery to settle, then recover (or park) like
+    // any unit.
     if (continuation) await this.#recoveryPending.get(sessionID)
     // Otherwise a pending continuation owns the session (a retry veto's
     // terminal echo must not start another). OBSERVE computes the same
@@ -1426,8 +1447,8 @@ export class Supervisor {
     }
     this.#manualSuppressionHolds(sessionID, settings)
     // Serialize the session's recovery before the admission await: a retry
-    // veto, the terminal quota echo it produces, and another plugin instance
-    // can all reach this point before any pending marker exists.
+    // veto, the terminal availability echo it produces, and another plugin
+    // instance can all reach this point before any pending marker exists.
     const claim = this.#claimRecovery(sessionID, continuation)
     if (claim === undefined) return
     let handedOff = false
@@ -1438,10 +1459,11 @@ export class Supervisor {
         requiredTier,
       )
       const tier = routingTier(routing)
-      // Quota windows can expire while session.wait is pending. Snapshot the
-      // configured ladder length once so even those recoveries cannot loop.
+      // Availability windows can expire while session.wait is pending.
+      // Snapshot the configured ladder length once so even those recoveries
+      // cannot loop.
       const remaining =
-        this.#quotaRecoveriesRemaining.get(sessionID) ??
+        this.#terminalRecoveriesRemaining.get(sessionID) ??
         (tier === undefined ? 0 : settings.tiers[tier].length)
       if (decision.kind === "apply" && remaining === 0) {
         if (probeTicket !== undefined) this.#health.releaseProbe(probeTicket)
@@ -1454,21 +1476,21 @@ export class Supervisor {
             decision: {
               kind: "park",
               reason: "all-blocked",
-              detail: "quota recovery budget spent",
+              detail: "availability recovery budget spent",
             },
           })
-          await this.#parkUnit(unit.id, sessionID, tier, "quota exhausted")
+          await this.#parkUnit(unit.id, sessionID, tier, "availability exhausted")
         }
         return
       }
       await this.#recordReceipt({ sessionID, tier, decision })
       if (decision.kind !== "apply") {
         if (decision.kind === "park" && tier !== undefined) {
-          await this.#parkUnit(unit.id, sessionID, tier, "quota exhausted")
+          await this.#parkUnit(unit.id, sessionID, tier, "availability exhausted")
         }
         return
       }
-      this.#quotaRecoveriesRemaining.set(sessionID, remaining - 1)
+      this.#terminalRecoveriesRemaining.set(sessionID, remaining - 1)
       if (probeTicket !== undefined) this.#sessionProbeTickets.set(sessionID, probeTicket)
       handedOff = true
       // The host rejected this attempt without invoking its retry hook.
@@ -1485,7 +1507,7 @@ export class Supervisor {
           this.#sessionProbeTickets.delete(sessionID)
           this.#health.releaseProbe(probeTicket)
         }
-        if (!(error instanceof RecoveryAbortedError)) logFailOpen("quota-recovery", error)
+        if (!(error instanceof RecoveryAbortedError)) logFailOpen("availability-recovery", error)
       })
     } finally {
       if (!handedOff) this.#releaseRecovery(sessionID, claim)
@@ -2303,7 +2325,7 @@ export class Supervisor {
         this.#promptAdmission.delete(sessionID)
         this.#continuationPending.delete(sessionID)
         this.#escalations.delete(sessionID)
-        this.#quotaRecoveriesRemaining.delete(sessionID)
+        this.#terminalRecoveriesRemaining.delete(sessionID)
         this.#resumeCycles.delete(sessionID)
         this.#options.ledger.clearParked(sessionID)
         if (this.#sessionModes.get(sessionID) !== null) {
@@ -2454,10 +2476,10 @@ export class Supervisor {
         if (probeTicket !== undefined) this.#health.releaseProbe(probeTicket)
         return false
       }
-      // The resumed unit is a new round of the same task: a fresh quota
+      // The resumed unit is a new round of the same task: a fresh availability
       // ladder, and one more spent resume cycle should it park again.
       this.#resumeCycles.set(record.sessionID, (record.attempts ?? 0) + 1)
-      this.#quotaRecoveriesRemaining.delete(record.sessionID)
+      this.#terminalRecoveriesRemaining.delete(record.sessionID)
       if (probeTicket !== undefined) this.#sessionProbeTickets.set(record.sessionID, probeTicket)
       // The resume continuation is not re-admitted (owned continuation), so
       // the freshly routed admission is recorded here, unit-less; the unit

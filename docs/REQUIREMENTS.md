@@ -29,7 +29,7 @@ virtual model. A pinned `adaptive/<tier>` is a user pin above `adaptive_tier`.
 ## Health and error classification
 
 - **ADP-007** — Resource health is hierarchical (provider → account → model → variant) with discriminated states `healthy | draining | degraded | rate_limited | quota_exhausted | unavailable | half_open`; quarantine applies at the narrowest scope the evidence justifies.
-- **ADP-008** — Error classification precedence: structured host/provider metadata → HTTP status/code → `Retry-After`/reset headers → documented provider-specific metadata → bounded textual classification as last resort only. Missing structured data (including Pi's free-text error surface) never becomes invented certainty.
+- **ADP-008** — Error classification precedence: structured host/provider metadata → HTTP status/code → `Retry-After`/reset headers → documented provider-specific metadata → bounded textual classification as last resort only. Missing structured data (including Pi's free-text error surface) never becomes invented certainty. A provider-declared absolute reset instant in the text bounds the availability window the same way a `Retry-After` delay does; localized prose times are not interpreted.
 - **ADP-009** — The classifier distinguishes at least: short rate limiting, fixed-window quota exhaustion, provider outage, temporary overload, timeout, authentication failure, invalid model, context overflow, content/policy rejection, user cancellation, unknown.
 - **ADP-010** — User cancellation never triggers failover or retry.
 - **ADP-011** — All retry/escalation loops are finite and provably bounded; permanent configuration/authentication errors never enter retry loops.
@@ -52,7 +52,7 @@ virtual model. A pinned `adaptive/<tier>` is a user pin above `adaptive_tier`.
 
 ## OpenCode compatibility and control
 
-- **ADP-025** — Native `/goal` keeps working while Adaptive is enabled; Adaptive implements no goal engine and survives model transitions during a goal.
+- **ADP-025** — Native `/goal` keeps working while Adaptive is enabled; Adaptive implements no goal engine and survives model transitions during a goal. A goal the host paused over a session failure or over a detected stall while waiting on background work is resumed after an owned continuation succeeds; user pauses and every other deliberate stop stay paused.
 - **ADP-026** — Subagent executions are routed independently and share health state; Adaptive never restructures execution topology.
 - **ADP-027** — Auxiliary requests (compaction/title/generate/summary-class) do not consume an unnecessarily expensive tier.
 - **ADP-028** — Users can disable Adaptive, switch modes, explicitly request a tier, pin the current resource, and inspect why a decision was made; manual intent always wins and Adaptive never fights manual model changes.

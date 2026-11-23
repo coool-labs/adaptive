@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A provider reply that names an absolute reset instant (`Resets at
+2026-11-23T16:00:00Z`) now quarantines the model until that instant instead
+  of the default window, so a closed account is not retried every few minutes.
+  The window is still capped at one day, an instant already in the past falls
+  back to the default window, and localized prose times are not interpreted.
+
 ## [1.0.3] — 2026-11-22
 
 # pi-adaptive 1.0.3

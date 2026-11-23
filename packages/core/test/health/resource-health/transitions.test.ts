@@ -123,6 +123,79 @@ describe("resource health transitions", () => {
       expect(result.window).toEqual({ kind: "rate-limit", until: 20_100 })
     })
 
+    it("prefers a provider-declared absolute reset instant", () => {
+      const result = applyHealthEvent(
+        record("healthy"),
+        {
+          kind: "failure",
+          key: { providerID: "p" },
+          category: "rate_limited",
+          definitive: true,
+          retryAt: 90_000,
+        },
+        100,
+        CONFIG,
+      )
+      expect(result.health).toBe("rate_limited")
+      expect(result.window).toEqual({ kind: "rate-limit", until: 90_000 })
+    })
+
+    it("keeps the later of the declared instant and the retry delay", () => {
+      const failure = {
+        kind: "failure",
+        key: { providerID: "p" },
+        category: "rate_limited",
+        definitive: true,
+      } as const
+      const laterInstant = applyHealthEvent(
+        record("healthy"),
+        { ...failure, retryAfterMs: 5_000, retryAt: 90_000 },
+        100,
+        CONFIG,
+      )
+      expect(laterInstant.window).toEqual({ kind: "rate-limit", until: 90_000 })
+      const laterDelay = applyHealthEvent(
+        record("healthy"),
+        { ...failure, retryAfterMs: 500_000, retryAt: 90_000 },
+        100,
+        CONFIG,
+      )
+      expect(laterDelay.window).toEqual({ kind: "rate-limit", until: 500_100 })
+    })
+
+    it("falls back to the default window for an instant already in the past", () => {
+      const result = applyHealthEvent(
+        record("healthy"),
+        {
+          kind: "failure",
+          key: { providerID: "p" },
+          category: "rate_limited",
+          definitive: true,
+          retryAt: 50,
+        },
+        100,
+        CONFIG,
+      )
+      expect(result.window).toEqual({ kind: "rate-limit", until: 20_100 })
+    })
+
+    it("clamps a declared instant at one day", () => {
+      const day = 24 * 60 * 60 * 1000
+      const result = applyHealthEvent(
+        record("healthy"),
+        {
+          kind: "failure",
+          key: { providerID: "p" },
+          category: "rate_limited",
+          definitive: true,
+          retryAt: 100 + 2 * day,
+        },
+        100,
+        CONFIG,
+      )
+      expect(result.window).toEqual({ kind: "rate-limit", until: 100 + day })
+    })
+
     it("replaces an earlier window", () => {
       const result = applyHealthEvent(
         record("rate_limited", { window: { kind: "rate-limit", until: 500 } }),
@@ -191,6 +264,39 @@ describe("resource health transitions", () => {
         CONFIG,
       )
       expect(result.health).toBe("quota_exhausted")
+      expect(result.window).toEqual({ kind: "quota", until: 100 + CONFIG.defaultQuotaWindowMs })
+    })
+
+    it("prefers a provider-declared absolute reset instant over the default window", () => {
+      const result = applyHealthEvent(
+        record("healthy"),
+        {
+          kind: "failure",
+          key: { providerID: "p" },
+          category: "quota_exhausted",
+          definitive: true,
+          retryAt: 1_000_000,
+        },
+        100,
+        CONFIG,
+      )
+      expect(result.health).toBe("quota_exhausted")
+      expect(result.window).toEqual({ kind: "quota", until: 1_000_000 })
+    })
+
+    it("falls back to the default quota window for an instant already in the past", () => {
+      const result = applyHealthEvent(
+        record("healthy"),
+        {
+          kind: "failure",
+          key: { providerID: "p" },
+          category: "quota_exhausted",
+          definitive: true,
+          retryAt: 10,
+        },
+        100,
+        CONFIG,
+      )
       expect(result.window).toEqual({ kind: "quota", until: 100 + CONFIG.defaultQuotaWindowMs })
     })
 

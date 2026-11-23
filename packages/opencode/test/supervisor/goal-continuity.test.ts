@@ -240,7 +240,11 @@ describe("goal continuity — the paid fallback's credits deplete", () => {
     // rung blocked (claude and codex quota windows, openrouter out of
     // credits) and parks instead of looping.
     expect(parseParkedPayload(storedParked(h.storage))).toEqual([
-      expect.objectContaining({ sessionID: "s1", tier: "standard", detail: "quota exhausted" }),
+      expect.objectContaining({
+        sessionID: "s1",
+        tier: "standard",
+        detail: "availability exhausted",
+      }),
     ])
     expect(h.scheduler.pending()).toHaveLength(1)
     expect(h.scheduler.pending()[0]?.delayMs).toBe(QUOTA_WINDOW + WAKE_GRACE_MS)
@@ -268,7 +272,11 @@ describe("goal continuity — the paid fallback's credits deplete", () => {
     // recovery machinery, now with nothing left to admit.
     await continueAndFail(h, "s1", GLM, "Insufficient credits")
     expect(parseParkedPayload(storedParked(h.storage))).toEqual([
-      expect.objectContaining({ sessionID: "s1", tier: "standard", detail: "quota exhausted" }),
+      expect.objectContaining({
+        sessionID: "s1",
+        tier: "standard",
+        detail: "availability exhausted",
+      }),
     ])
   })
 
@@ -395,7 +403,11 @@ describe("goal continuity — several limit changes inside one goal", () => {
     await runOutOfQuota(h, "s1", CODEX)
     await runOutOfQuota(h, "s1", GLM)
     expect(parseParkedPayload(storedParked(h.storage))).toEqual([
-      expect.objectContaining({ sessionID: "s1", tier: "standard", detail: "quota exhausted" }),
+      expect.objectContaining({
+        sessionID: "s1",
+        tier: "standard",
+        detail: "availability exhausted",
+      }),
     ])
     const delay = await wake(h)
     expect(delay).toBe(QUOTA_WINDOW + WAKE_GRACE_MS)
@@ -982,7 +994,7 @@ describe("goal continuity — parked goal survives idle wake cycles", () => {
     await runOutOfQuota(h, "s1", CODEX)
     await runOutOfQuota(h, "s1", GLM)
     expect(parseParkedPayload(storedParked(h.storage))).toEqual([
-      expect.objectContaining({ sessionID: "s1", detail: "quota exhausted" }),
+      expect.objectContaining({ sessionID: "s1", detail: "availability exhausted" }),
     ])
     // More wake cycles than the give-up budget, every one finding all three
     // models still out (each window is renewed just before its wake falls

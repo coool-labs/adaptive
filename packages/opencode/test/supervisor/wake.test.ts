@@ -202,7 +202,11 @@ describe("parked-work wake", () => {
     await failed
     await flush()
     expect(parseParkedPayload(storedParked(h.storage))).toEqual([
-      expect.objectContaining({ sessionID: "s1", tier: "standard", detail: "quota exhausted" }),
+      expect.objectContaining({
+        sessionID: "s1",
+        tier: "standard",
+        detail: "availability exhausted",
+      }),
     ])
     expect(h.scheduler.pending()).toHaveLength(1)
   })
@@ -435,7 +439,7 @@ describe("parked-work wake", () => {
     expect(parseReceiptsPayload(storedReceipts(h.storage)).at(-1)?.decision).toEqual({
       kind: "park",
       reason: "all-blocked",
-      detail: "quota recovery budget spent",
+      detail: "availability recovery budget spent",
     })
     expect(parseParkedPayload(storedParked(h.storage))).toHaveLength(1)
     expect(h.scheduler.pending()).toHaveLength(1)

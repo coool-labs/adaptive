@@ -26,5 +26,8 @@ export function failureEvent(key: ResourceKey, classification: FailureClassifica
     ...(classification.retry.retryAfterMs !== undefined
       ? { retryAfterMs: classification.retry.retryAfterMs }
       : {}),
+    ...(classification.retry.retryAt !== undefined
+      ? { retryAt: classification.retry.retryAt }
+      : {}),
   }
 }

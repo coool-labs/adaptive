@@ -19,6 +19,19 @@ it("scopes provider-wide quota to the provider and model quota above the variant
   expect(failureKey(VARIANT, classifyFailure({ status: 503 }))).toBe(VARIANT)
 })
 
+it("forwards a provider-declared reset instant", () => {
+  const c = classifyFailure({
+    text: "You've hit your session limit. Resets at 2026-11-03T17:10:00Z",
+  })
+  expect(failureEvent(VARIANT, c)).toEqual({
+    kind: "failure",
+    key: { providerID: "p" },
+    category: "quota_exhausted",
+    definitive: false,
+    retryAt: Date.parse("2026-11-03T17:10:00Z"),
+  })
+})
+
 it("carries category, definitiveness and any known retry delay", () => {
   expect(failureEvent(VARIANT, classifyFailure({ status: 503 }))).toEqual({
     kind: "failure",

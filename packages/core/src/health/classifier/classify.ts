@@ -81,9 +81,10 @@ const TEXTUAL_PATTERNS: readonly {
   },
   {
     // Subscription limits ("You've hit your session/usage limit") are quota
-    // exhaustion with a provider-side reset window; the reset time in the
-    // text is not parsed (the classifier has no clock) — the health layer's
-    // default quota window bounds the quarantine instead.
+    // exhaustion with a provider-side reset window. The window comes from
+    // whichever evidence states it: an absolute instant in the text (parsed
+    // without a clock, see `declaredResetInstant`), a retry delay, or the
+    // health layer's bounded default.
     // Sibling fallback plugins' issue trackers document the real-world
     // phrasings that missed curated whitelists (oh-my-openagent #2393/#5815,
     // lichter's 429 lesson): snake-cased limits, "usage exceeded" without
@@ -115,6 +116,30 @@ const TEXTUAL_PATTERNS: readonly {
   { category: "overload", pattern: /overloaded|over capacity|high demand/i },
   { category: "user_cancelled", pattern: /cancel+(l)?ed|aborted by (the )?user|user abort/i },
 ]
+
+/**
+ * A provider-declared absolute reset instant, e.g. "Resets at
+ * 2026-11-23T16:00:00.000Z". Matching and parsing ISO-8601 needs no clock, so
+ * this stays a pure textual read; the health layer clamps the instant against
+ * its injected clock (a past deadline must not clear the block on the spot).
+ * Localized prose forms ("resets 5pm (Europe/Budapest)") are deliberately not
+ * interpreted — they need a timezone database and a clock.
+ */
+const RESET_AT_PATTERN =
+  /\bresets?\s+(?:at\s+)?(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2}))/i
+
+function declaredResetInstant(text: string | undefined): number | undefined {
+  if (text === undefined) {
+    return undefined
+  }
+  const match = RESET_AT_PATTERN.exec(text.slice(0, TEXT_BOUND))
+  const instant = match?.[1]
+  if (instant === undefined) {
+    return undefined
+  }
+  const parsed = Date.parse(instant)
+  return Number.isNaN(parsed) ? undefined : parsed
+}
 
 function isHttpStatus(status: number | undefined): status is number {
   return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599
@@ -186,13 +211,18 @@ function fixedWindowExhausted(headers: ReadonlyMap<string, string>): boolean {
   return sawRemaining
 }
 
-function retryAdvice(category: FailureCategory, retryAfterMs: number | undefined): RetryAdvice {
+function retryAdvice(
+  category: FailureCategory,
+  retryAfterMs: number | undefined,
+  retryAt: number | undefined,
+): RetryAdvice {
   const policy = CATEGORY_POLICY[category]
   const bounded = boundedRetryAfterMs(retryAfterMs)
-  if (bounded === undefined) {
-    return { retryable: policy.retryable }
+  return {
+    retryable: policy.retryable,
+    ...(bounded !== undefined ? { retryAfterMs: bounded } : {}),
+    ...(retryAt !== undefined ? { retryAt } : {}),
   }
-  return { retryable: policy.retryable, retryAfterMs: bounded }
 }
 
 function classification(
@@ -201,13 +231,20 @@ function classification(
   definitive: boolean,
   retryAfterMs: number | undefined,
   quotaScope?: "provider",
+  resetAt?: number,
 ): FailureClassification {
   const policy = CATEGORY_POLICY[category]
+  // Only availability categories describe a resource reset; an instant in a
+  // timeout or outage message must not extend a health window nothing set.
+  const retryAt =
+    resetAt !== undefined && (category === "quota_exhausted" || category === "rate_limited")
+      ? resetAt
+      : undefined
   return {
     category,
     layer,
     definitive,
-    retry: retryAdvice(category, retryAfterMs),
+    retry: retryAdvice(category, retryAfterMs, retryAt),
     failoverEligible: policy.failoverEligible,
     ...(quotaScope !== undefined ? { quotaScope } : {}),
   }
@@ -261,13 +298,26 @@ function classifyText(text: string): FailureCategory | undefined {
  * native failure handling (ADP-009, ADP-012).
  */
 export function classifyFailure(evidence: ErrorEvidence): FailureClassification {
+  // A provider-declared reset instant is evidence-level, not category-level:
+  // parse it once here and attach it wherever the winning category is an
+  // availability failure (the factory filters the rest out).
+  const resetAt = declaredResetInstant(evidence.text)
+  const finish = (
+    category: FailureCategory,
+    layer: FailureClassification["layer"],
+    definitive: boolean,
+    retryAfterMs: number | undefined,
+    quotaScope?: "provider",
+  ): FailureClassification =>
+    classification(category, layer, definitive, retryAfterMs, quotaScope, resetAt)
+
   // Layer 0: interruption evidence. Interruptions are host decisions, not
   // provider failures; a user cancellation is final (ADP-010).
   if (evidence.interrupted === "user") {
-    return classification("user_cancelled", "interruption", true, undefined)
+    return finish("user_cancelled", "interruption", true, undefined)
   }
   if (evidence.interrupted !== undefined) {
-    return classification("unknown", "interruption", true, undefined)
+    return finish("unknown", "interruption", true, undefined)
   }
 
   // Layer 1: structured OpenCode metadata.
@@ -278,7 +328,7 @@ export function classifyFailure(evidence: ErrorEvidence): FailureClassification 
   if (structured !== undefined) {
     const mapped = STRUCTURED_TYPES.get(structured.type)
     if (mapped !== undefined) {
-      return classification(mapped, "structured", true, structuredRetryAfterMs)
+      return finish(mapped, "structured", true, structuredRetryAfterMs)
     }
     // Unmapped tag: fall through so HTTP semantics can refine the category.
   }
@@ -293,32 +343,32 @@ export function classifyFailure(evidence: ErrorEvidence): FailureClassification 
       // every model behind the provider ID (a gateway such as OpenRouter or
       // Ofox) bills the same account, so a sibling model cannot help.
       if (evidence.status === 402) {
-        return classification(category, "status", true, retryAfterMs, "provider")
+        return finish(category, "status", true, retryAfterMs, "provider")
       }
       if (category === "rate_limited" && evidence.text !== undefined) {
         const bounded = evidence.text.slice(0, TEXT_BOUND)
         if (classifyText(bounded) === "quota_exhausted" && !RATE_LIMIT_TEXT.test(bounded)) {
           const quotaScope = SHARED_QUOTA_PATTERN.test(bounded) ? "provider" : undefined
-          return classification("quota_exhausted", "status", true, retryAfterMs, quotaScope)
+          return finish("quota_exhausted", "status", true, retryAfterMs, quotaScope)
         }
       }
-      return classification(category, "status", true, retryAfterMs)
+      return finish(category, "status", true, retryAfterMs)
     }
   }
 
   // Layer 3: standard headers alone (Retry-After without a decisive status).
   const headerRetryAfterMs = retryAfterHeaderMs(headers)
   if (headerRetryAfterMs !== undefined) {
-    return classification("rate_limited", "headers", false, headerRetryAfterMs)
+    return finish("rate_limited", "headers", false, headerRetryAfterMs)
   }
 
   // Layer 4: documented provider-specific metadata, normalized by our own
   // adapters after validation (T-15).
   if (evidence.providerMetadata?.quotaExhausted === true) {
-    return classification("quota_exhausted", "provider-metadata", true, undefined)
+    return finish("quota_exhausted", "provider-metadata", true, undefined)
   }
   if (evidence.providerMetadata?.overloaded === true) {
-    return classification("overload", "provider-metadata", true, structuredRetryAfterMs)
+    return finish("overload", "provider-metadata", true, structuredRetryAfterMs)
   }
 
   // Layer 5: bounded textual classification, always non-definitive.
@@ -330,9 +380,9 @@ export function classifyFailure(evidence: ErrorEvidence): FailureClassification 
         category === "quota_exhausted" && SHARED_QUOTA_PATTERN.test(text.slice(0, TEXT_BOUND))
           ? "provider"
           : undefined
-      return classification(category, "textual", false, structuredRetryAfterMs, quotaScope)
+      return finish(category, "textual", false, structuredRetryAfterMs, quotaScope)
     }
   }
 
-  return classification("unknown", "none", false, undefined)
+  return finish("unknown", "none", false, undefined)
 }

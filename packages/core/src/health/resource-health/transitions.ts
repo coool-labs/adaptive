@@ -67,13 +67,45 @@ function validRetryAfterMs(value: number | undefined): number | undefined {
   return value !== undefined && Number.isInteger(value) && value >= 0 ? value : undefined
 }
 
+/**
+ * Upper bound on a provider-declared window, matching the classifier's retry
+ * bound: health never lets untrusted provider data blacklist a resource for
+ * more than a day.
+ */
+const MAX_WINDOW_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Window end for availability evidence. A retry delay is relative to `now`; a
+ * provider-declared reset instant is absolute and is used only when it lies
+ * ahead (a deadline that already passed describes a window the failure just
+ * closed, so the caller's default bounds it instead). The later candidate
+ * wins, and no candidate falls back to the default.
+ */
+function windowUntil(
+  now: number,
+  retryAfterMs: number | undefined,
+  retryAt: number | undefined,
+  defaultMs: number,
+): number {
+  const candidates: number[] = []
+  const delay = validRetryAfterMs(retryAfterMs)
+  if (delay !== undefined) {
+    candidates.push(now + delay)
+  }
+  if (retryAt !== undefined && retryAt > now) {
+    candidates.push(Math.min(retryAt, now + MAX_WINDOW_MS))
+  }
+  return candidates.length === 0 ? now + defaultMs : Math.max(...candidates)
+}
+
 function quotaExhausted(
   record: ResourceRecord,
   retryAfterMs: number | undefined,
+  retryAt: number | undefined,
   now: number,
   config: ResourceHealthConfig,
 ): ResourceRecord {
-  const until = now + (validRetryAfterMs(retryAfterMs) ?? config.defaultQuotaWindowMs)
+  const until = windowUntil(now, retryAfterMs, retryAt, config.defaultQuotaWindowMs)
   return { ...record, health: "quota_exhausted", window: { kind: "quota", until }, updatedAt: now }
 }
 
@@ -88,8 +120,12 @@ function failureEvent(
       if (record.health === "quota_exhausted" || record.health === "unavailable") {
         return touched(record, now)
       }
-      const retryAfterMs = validRetryAfterMs(event.retryAfterMs)
-      const until = now + (retryAfterMs ?? config.defaultRateLimitWindowMs)
+      const until = windowUntil(
+        now,
+        event.retryAfterMs,
+        event.retryAt,
+        config.defaultRateLimitWindowMs,
+      )
       return {
         ...record,
         health: "rate_limited",
@@ -101,7 +137,7 @@ function failureEvent(
       if (record.health === "unavailable") {
         return touched(record, now)
       }
-      return quotaExhausted(record, event.retryAfterMs, now, config)
+      return quotaExhausted(record, event.retryAfterMs, event.retryAt, now, config)
     }
     case "outage":
     case "overload":
@@ -172,7 +208,7 @@ export function applyHealthEvent(
         if (record.health === "unavailable") {
           return touched(record, now)
         }
-        return quotaExhausted(record, event.retryAfterMs, now, config)
+        return quotaExhausted(record, event.retryAfterMs, undefined, now, config)
       }
       const health = record.health === "quota_exhausted" ? "healthy" : record.health
       return {

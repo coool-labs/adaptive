@@ -185,7 +185,16 @@ describe("supervisor", () => {
       error: { type: "UnknownError", message: "slow down", status: 429 },
     })
     await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
-    expect(session.log).toEqual(["switch:s1:prov/a", "switch:s1:prov/b"])
+    // The rate limit quarantines a, so the failover is admitted in-unit on b.
+    // The fake session does not run the host's prompt hook, so this start
+    // re-admits (a host would adopt the recovery's continuation).
+    expect(session.log).toEqual([
+      "switch:s1:prov/a",
+      "wait:s1",
+      "switch:s1:prov/b",
+      `prompt:s1:${CONTINUATION_PROMPT}`,
+      "switch:s1:prov/b",
+    ])
     const receipts = parseReceiptsPayload(storedReceipts(storage))
     expect(receipts[1]?.decision).toMatchObject({
       kind: "apply",
@@ -913,8 +922,15 @@ describe("supervisor", () => {
       // The 429 was attributed to b (the unit's seeded model) and quarantined
       // it: the next admission yields the suppression to health and falls
       // back to the configured sibling instead of the dead pick.
+      // The host delivers the recovery's continuation through its prompt
+      // hook; the following start adopts it instead of re-routing.
+      await supervisor.handleReport({ kind: "prompt", sessionID: "s1" })
       await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
-      expect(session.log).toEqual(["switch:s1:prov/a"])
+      expect(session.log).toEqual([
+        "wait:s1",
+        "switch:s1:prov/a",
+        `prompt:s1:${CONTINUATION_PROMPT}`,
+      ])
       const after = parseReceiptsPayload(storedReceipts(storage))
       expect(after[1]?.decision).toMatchObject({
         kind: "apply",
@@ -927,7 +943,12 @@ describe("supervisor", () => {
       supervisor.noteTierRequest("s1", "standard")
       await supervisor.handleReport({ kind: "execution-succeeded", sessionID: "s1", at: 40 })
       await supervisor.handleReport({ kind: "prompt", sessionID: "s1" })
-      expect(session.log).toEqual(["switch:s1:prov/a", "switch:s1:prov/a"])
+      expect(session.log).toEqual([
+        "wait:s1",
+        "switch:s1:prov/a",
+        `prompt:s1:${CONTINUATION_PROMPT}`,
+        "switch:s1:prov/a",
+      ])
     })
   })
 
@@ -1020,8 +1041,15 @@ describe("supervisor", () => {
         error: { type: "UnknownError", message: "", status: 429 },
       })
       await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
-      // The 429 was attributed to b (reported via model-request), so a stays healthy.
-      expect(session.log).toEqual(["switch:s1:prov/a", "switch:s1:prov/a"])
+      // The 429 was attributed to b (reported via model-request), so a stays
+      // healthy and the recovery re-admits a within the unit.
+      expect(session.log).toEqual([
+        "switch:s1:prov/a",
+        "wait:s1",
+        "switch:s1:prov/a",
+        `prompt:s1:${CONTINUATION_PROMPT}`,
+        "switch:s1:prov/a",
+      ])
     })
 
     // covers: ["ADP-027", "ADP-013"]
@@ -1055,7 +1083,13 @@ describe("supervisor", () => {
       // The 429 belongs to the primary model (a): a is windowed and the
       // admission falls back to b. Adopting the auxiliary pick would have
       // blamed b and re-applied a.
-      expect(session.log).toEqual(["switch:s1:prov/a", "switch:s1:prov/b"])
+      expect(session.log).toEqual([
+        "switch:s1:prov/a",
+        "wait:s1",
+        "switch:s1:prov/b",
+        `prompt:s1:${CONTINUATION_PROMPT}`,
+        "switch:s1:prov/b",
+      ])
       const receipts = parseReceiptsPayload(storedReceipts(storage))
       expect(receipts[1]?.decision).toMatchObject({ kind: "apply", model: ref("prov", "b") })
     })
@@ -1256,7 +1290,7 @@ describe("supervisor", () => {
       // The supervisor still responds: the next unit routes and records.
       await supervisor.handleReport({ kind: "execution-started", sessionID: "s1", at: 30 })
       const receipts = parseReceiptsPayload(storedReceipts(storage))
-      expect(receipts).toHaveLength(2)
+      expect(receipts).toHaveLength(3)
       // The failed attach persisted nothing: the first receipt carries no outcome.
       expect(receipts[0]?.outcome).toBeUndefined()
       expect(receipts[1]?.decision).toMatchObject({
@@ -1264,7 +1298,7 @@ describe("supervisor", () => {
         model: ref("prov", "b"),
         reason: "fallback",
       })
-      await expect(supervisor.status()).resolves.toMatchObject({ receipts: 2 })
+      await expect(supervisor.status()).resolves.toMatchObject({ receipts: 3 })
       errors.restore()
     })
 
@@ -1442,6 +1476,36 @@ describe("supervisor", () => {
       // a is rate-limited (window from retryAfterMs); admission falls back to b.
       expect(receipts[1]?.decision).toMatchObject({ kind: "apply", reason: "fallback" })
       expect(receipts[1]?.decision).toMatchObject({ model: ref("prov", "b") })
+    })
+
+    it("honors a provider-declared reset instant as the availability window", async () => {
+      const session = new FakeSupervisorSession()
+      const storage = activeStorage()
+      const resetAt = Date.parse("2026-11-23T16:00:00.000Z")
+      const supervisor = makeSupervisor({ storage, session, clock: () => resetAt - 3_600_000 })
+      await supervisor.handleReport(STARTED)
+      await supervisor.handleReport({
+        kind: "model-request",
+        sessionID: "s1",
+        model: ref("prov", "a"),
+        requestKind: "primary",
+      })
+      await supervisor.handleReport({
+        kind: "execution-failed",
+        sessionID: "s1",
+        at: 20,
+        error: {
+          type: "UnknownError",
+          message:
+            "You exceeded your current quota, please check your plan and billing details. Resets at 2026-11-23T16:00:00.000Z.",
+        },
+      })
+      await flush()
+      const failed = (await supervisor.status()).tiers.standard.find(
+        (entry) => entry.ref.id === "a",
+      )
+      expect(failed?.health).toBe("quota_exhausted")
+      expect(failed?.windowUntil).toBe(resetAt)
     })
 
     it("resets the veto budget when a unit is superseded", async () => {
@@ -1891,7 +1955,11 @@ describe("supervisor", () => {
       })
       expect(session.log).toEqual(["switch:s1:prov/a"])
       const receipts = parseReceiptsPayload(storedReceipts(storage))
-      expect(receipts).toHaveLength(1)
+      expect(receipts).toHaveLength(2)
+      // Availability evidence never escalates: the only rung is quarantined,
+      // so the unit parks on its own tier instead of climbing to advanced.
+      expect(receipts[1]?.decision).toMatchObject({ kind: "park", reason: "all-blocked" })
+      expect(receipts[1]?.tier).toBe("standard")
     })
 
     it("never escalates on an auth failure", async () => {

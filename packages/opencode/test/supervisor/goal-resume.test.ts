@@ -29,7 +29,9 @@ const QUOTA_WINDOW = DEFAULT_HEALTH_CONFIG.defaultQuotaWindowMs
 
 const CLAUDE = ref("anthropic", "claude-sonnet-4")
 const CODEX = ref("openai", "codex-gpt-5")
+const GLM = ref("openrouter", "glm-flash")
 const LADDER_INFOS = [makeInfo("anthropic", "claude-sonnet-4"), makeInfo("openai", "codex-gpt-5")]
+const DEEP_INFOS = [...LADDER_INFOS, makeInfo("openrouter", "glm-flash")]
 
 const CONTINUE = (sessionID: string): string => `prompt:${sessionID}:${CONTINUATION_PROMPT}`
 
@@ -40,6 +42,23 @@ function ladderStorage(): KeyFailStorage {
     "coool.adaptive/settings",
     settingsJSON("active", {
       standard: [wireRef("anthropic", "claude-sonnet-4"), wireRef("openai", "codex-gpt-5")],
+    }),
+  )
+  return storage
+}
+
+/** Three-rung standard ladder: the second rung can fail after being reclaimed. */
+function deepStorage(): KeyFailStorage {
+  const storage = new KeyFailStorage("unused")
+  seed(
+    storage,
+    "coool.adaptive/settings",
+    settingsJSON("active", {
+      standard: [
+        wireRef("anthropic", "claude-sonnet-4"),
+        wireRef("openai", "codex-gpt-5"),
+        wireRef("openrouter", "glm-flash"),
+      ],
     }),
   )
   return storage
@@ -75,10 +94,16 @@ interface Harness {
   supervisor: ReturnType<typeof makeSupervisor>
 }
 
-function harness(options: { goal?: FakeGoal } = {}): Harness {
+function harness(
+  options: {
+    goal?: FakeGoal
+    storage?: KeyFailStorage
+    infos?: ReturnType<typeof makeInfo>[]
+  } = {},
+): Harness {
   const clock = { now: 1_000 }
   const session = new FakeSupervisorSession()
-  const storage = ladderStorage()
+  const storage = options.storage ?? ladderStorage()
   const scheduler = new FakeScheduler()
   const goal = options.goal ?? new FakeGoal()
   const supervisor = makeSupervisor({
@@ -86,7 +111,7 @@ function harness(options: { goal?: FakeGoal } = {}): Harness {
     session,
     clock: () => clock.now,
     scheduler,
-    infos: LADDER_INFOS,
+    infos: options.infos ?? LADDER_INFOS,
     goal: goal.source,
   })
   return { clock, session, storage, scheduler, goal, supervisor }
@@ -133,6 +158,49 @@ async function continuationSucceeds(
   await flush()
 }
 
+/** The continuation's unit opens on the recovered model. */
+async function continuationStarts(
+  h: Harness,
+  sessionID: string,
+  model: { providerID: string; id: string },
+): Promise<void> {
+  await h.supervisor.handleReport({
+    kind: "model-selected",
+    sessionID,
+    at: h.clock.now,
+    model,
+  })
+  await h.supervisor.handleReport({ kind: "execution-started", sessionID, at: h.clock.now })
+}
+
+/** The host's retry hook for a 429 on the continuation's rung. */
+async function retryOutOfQuota(
+  h: Harness,
+  sessionID: string,
+  model: { providerID: string; id: string },
+): Promise<{ decision: unknown }> {
+  const retry = {
+    sessionID,
+    model,
+    error: { type: "UnknownError", message: "Model quota exhausted", status: 429 },
+    attempt: 1,
+    decision: { retry: true as const, delay: 100 },
+  }
+  await h.supervisor.handleRetry(retry)
+  await flush()
+  return retry
+}
+
+async function executionFailed(h: Harness, sessionID: string): Promise<void> {
+  await h.supervisor.handleReport({
+    kind: "execution-failed",
+    sessionID,
+    at: h.clock.now,
+    error: { type: "UnknownError", message: "Model quota exhausted" },
+  })
+  await flush()
+}
+
 describe("goal resume after an owned continuation", () => {
   it("resumes a goal the limit hit paused once the continuation succeeds", async () => {
     const h = harness()
@@ -144,6 +212,79 @@ describe("goal resume after an owned continuation", () => {
     expect(h.session.log).toContain(`switch:s1:openai/codex-gpt-5`)
     expect(h.session.log).toContain(CONTINUE("s1"))
 
+    await continuationSucceeds(h, "s1", CODEX)
+    expect(h.goal.log).toEqual([`get:s1`, `resume:s1`])
+  })
+
+  // The host's event pump can deliver the failed rung's terminal echo after
+  // the retry veto's recovery has already prompted the next rung. That echo
+  // closes the OLD unit and must not clear the resume mark the fresh delivery
+  // owns; otherwise a goal pauses even though work continued elsewhere.
+  it("keeps the mark when the failed rung's terminal echo lands after the next delivery", async () => {
+    const h = harness({ storage: deepStorage(), infos: DEEP_INFOS })
+    h.goal.state = {
+      status: "paused",
+      reason: "The session failed: Model API quota exceeded across all providers",
+    }
+    await runOutOfQuota(h, "s1", CLAUDE)
+    await continuationStarts(h, "s1", CODEX)
+
+    const retry = await retryOutOfQuota(h, "s1", CODEX)
+    expect(retry.decision).toEqual({ retry: false })
+    expect(h.session.log).toContain(`switch:s1:openrouter/glm-flash`)
+    expect(h.session.log.filter((line) => line === CONTINUE("s1"))).toHaveLength(2)
+
+    // The host prompt hook has run for the delivered continuation, but its
+    // unit has not started when the previous rung's terminal failure lands.
+    await h.supervisor.handleReport({ kind: "prompt", sessionID: "s1" })
+    await executionFailed(h, "s1")
+
+    await continuationStarts(h, "s1", GLM)
+    await h.supervisor.handleReport({
+      kind: "execution-succeeded",
+      sessionID: "s1",
+      at: h.clock.now,
+    })
+    await flush()
+
+    expect(h.goal.log).toEqual([`get:s1`, `resume:s1`])
+  })
+
+  it("keeps the mark when the terminal echo lands before the prompt hook", async () => {
+    const h = harness({ storage: deepStorage(), infos: DEEP_INFOS })
+    h.goal.state = {
+      status: "paused",
+      reason: "The session failed: Model API quota exceeded across all providers",
+    }
+    await runOutOfQuota(h, "s1", CLAUDE)
+    await continuationStarts(h, "s1", CODEX)
+    await retryOutOfQuota(h, "s1", CODEX)
+    expect(h.session.log).toContain(`switch:s1:openrouter/glm-flash`)
+
+    // The delivered prompt has not reached the host's prompt hook yet.
+    await executionFailed(h, "s1")
+
+    await continuationStarts(h, "s1", GLM)
+    await h.supervisor.handleReport({
+      kind: "execution-succeeded",
+      sessionID: "s1",
+      at: h.clock.now,
+    })
+    await flush()
+
+    expect(h.goal.log).toEqual([`get:s1`, `resume:s1`])
+  })
+
+  // The host's own stall detector pauses a goal after waiting on background
+  // work (subagents, jobs) for too long. That pause is machine-generated, so
+  // the first owned continuation that succeeds brings the goal back.
+  it("resumes a goal the host paused while waiting on background work", async () => {
+    const h = harness()
+    h.goal.state = {
+      status: "paused",
+      reason: "Nothing ran for 30 minutes while the goal waited on background work",
+    }
+    await runOutOfQuota(h, "s1", CLAUDE)
     await continuationSucceeds(h, "s1", CODEX)
     expect(h.goal.log).toEqual([`get:s1`, `resume:s1`])
   })

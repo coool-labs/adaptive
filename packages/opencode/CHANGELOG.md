@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A terminal rate limit now fails over within the unit's tier, the same way
+  terminal quota exhaustion already did. When the host gives up with a
+  free-text rate-limit reply (no HTTP status, so its retry hook is never
+  invoked), Adaptive quarantines the model and continues from session state
+  on the next usable rung of the same tier instead of leaving the session
+  failed. Capability is never escalated, OBSERVE records the same admission
+  without applying it, and the per-task recovery budget still bounds the
+  ladder.
+- A provider-declared reset instant ("Resets at 2026-11-23T16:00:00.000Z")
+  now bounds the health window instead of the default burst-sized one. An
+  account closed for hours is no longer re-probed every few minutes, and the
+  receipts and status view show the real deadline. The instant is clamped to
+  the same one-day bound as `Retry-After` and ignored when it already passed;
+  localized prose times are still not interpreted.
+- A goal the host paused because the session waited on background work
+  ("Nothing ran for N minutes while the goal waited on background work") is
+  resumed once an owned continuation succeeds. The pause is machine-generated
+  like the session-failure one; user pauses, reviewer stalls, round limits,
+  and server restarts still stay paused.
+
 ## [1.6.4] — 2026-11-22
 
 # opencode-adaptive 1.6.4

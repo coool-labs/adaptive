@@ -80,6 +80,7 @@ export type HealthEvent =
       readonly category: FailureCategory
       readonly definitive: boolean
       readonly retryAfterMs?: number | undefined
+      readonly retryAt?: number | undefined
     }
   | { readonly kind: "success"; readonly key: ResourceKey }
   | { readonly kind: "drain"; readonly key: ResourceKey }

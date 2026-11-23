@@ -48,6 +48,10 @@ function expectConsistentPolicy(c: FailureClassification): void {
     expect(c.retry.retryAfterMs).toBeGreaterThanOrEqual(0)
     expect(c.retry.retryAfterMs).toBeLessThanOrEqual(24 * 60 * 60 * 1000)
   }
+  if (c.retry.retryAt !== undefined) {
+    expect(Number.isInteger(c.retry.retryAt)).toBe(true)
+    expect(c.retry.retryAt).toBeGreaterThan(0)
+  }
   expect(EVIDENCE_LAYERS).toContain(c.layer)
   if (c.layer === "textual" || c.layer === "none") {
     expect(c.definitive).toBe(false)
@@ -525,5 +529,63 @@ describe("classifyFailure: total classification", () => {
     for (const prop of props) {
       fc.assert(prop)
     }
+  })
+})
+
+// Providers that state an absolute reset instant ("Resets at
+// 2026-11-23T16:00:00.000Z") are describing a deadline hours away, not a
+// burst window. The classifier carries the parsed instant (no clock needed to
+// parse ISO-8601); the health layer clamps it against its own clock.
+describe("classifyFailure: provider-declared reset instants", () => {
+  it("carries an absolute reset instant from quota text", () => {
+    const c = classifyFailure({
+      text: "You've hit your session limit · resets 6:10pm (Europe/Budapest) Resets at 2026-11-03T17:10:00.000Z.",
+    })
+    expect(c.category).toBe("quota_exhausted")
+    expect(c.retry.retryAt).toBe(Date.parse("2026-11-03T17:10:00.000Z"))
+  })
+
+  it("accepts an explicit offset timestamp", () => {
+    const c = classifyFailure({
+      text: "You've hit your usage limit. Resets at 2026-11-03T18:10:00+01:00",
+    })
+    expect(c.retry.retryAt).toBe(Date.parse("2026-11-03T17:10:00.000Z"))
+  })
+
+  it("matches case-insensitively and without 'at'", () => {
+    const c = classifyFailure({
+      text: "You've hit your weekly limit. RESETS 2026-11-03T17:10:00Z",
+    })
+    expect(c.retry.retryAt).toBe(Date.parse("2026-11-03T17:10:00Z"))
+  })
+
+  it("keeps a 429's status category and still carries the declared instant", () => {
+    const c = classifyFailure({
+      status: 429,
+      text: "Rate limit exceeded. Resets at 2026-11-03T17:10:00Z",
+    })
+    expect(c.category).toBe("rate_limited")
+    expect(c.retry.retryAt).toBe(Date.parse("2026-11-03T17:10:00Z"))
+  })
+
+  it("does not invent an instant from a localized time", () => {
+    const c = classifyFailure({
+      text: "You've hit your session limit · resets 5pm (Europe/Budapest)",
+    })
+    expect(c.retry.retryAt).toBeUndefined()
+  })
+
+  it("ignores an instant outside quota and rate-limit categories", () => {
+    const c = classifyFailure({ text: "Request timed out at 2026-11-03T17:10:00Z" })
+    expect(c.category).toBe("timeout")
+    expect(c.retry.retryAt).toBeUndefined()
+  })
+
+  it("drops an unparseable timestamp", () => {
+    const c = classifyFailure({
+      text: "You've hit your session limit. Resets at 2026-13-45T99:00:00Z",
+    })
+    expect(c.category).toBe("quota_exhausted")
+    expect(c.retry.retryAt).toBeUndefined()
   })
 })
