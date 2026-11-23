@@ -54,6 +54,23 @@ export interface GoalSurface {
   resume(sessionID: string): Promise<void>
 }
 
+/**
+ * Model-facing narration for orchestrators (ADP-031/ADP-052). A parent session
+ * learns about a child only through the host's terminal task result, which is
+ * delivered before Adaptive's recovery lands; without a word from the
+ * environment the parent concludes the child died and re-dispatches it. The
+ * supervisor narrates two bounded facts: a standing note that a subagent's
+ * report is its final result, and a notice when a child was resumed on another
+ * model. Optional — a host without these surfaces omits the port and every
+ * call is skipped. Failures are logged and never abort recovery.
+ */
+export interface ParentNarration {
+  /** Install the standing orchestrator note in the parent session's context. */
+  instruct(parentID: string): Promise<void>
+  /** Announce that a child's availability failure continued on `model`. */
+  resumed(parentID: string, model: ModelRef): Promise<void>
+}
+
 /** Everything the supervisor needs from the host. */
 export interface SupervisorOptions {
   readonly session: SupervisorSessionSource
@@ -67,6 +84,8 @@ export interface SupervisorOptions {
   readonly ledger: ProcessLedger
   /** Host goal surface, when the host has one (goal continuity, ADP-015). */
   readonly goal?: GoalSurface | undefined
+  /** Model-facing narration for parent sessions, when the host supports it. */
+  readonly parent?: ParentNarration | undefined
 }
 
 /** The Codex header sensor watches ChatGPT/Codex-backed resources. */

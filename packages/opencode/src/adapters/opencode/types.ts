@@ -41,6 +41,8 @@ export interface AgentSelectedReport {
   kind: "agent-selected"
   sessionID: string
   agent: string
+  /** The spawning session, when the host reports one (subagent children). */
+  readonly parentID?: string | undefined
 }
 
 /**

@@ -541,18 +541,29 @@ describe("resource health transitions", () => {
       }
     })
 
-    it("never overrides draining or quota exhaustion", () => {
-      for (const health of ["draining", "quota_exhausted"] as const) {
-        const base = record(health, { window: { kind: "quota", until: 9_000 } })
-        const result = applyHealthEvent(
-          base,
-          { kind: "success", key: { providerID: "p" } },
-          0,
-          CONFIG,
-        )
-        expect(result.health).toBe(health)
-        expect(result.window).toEqual(base.window)
-      }
+    it("keeps draining but lifts quota exhaustion", () => {
+      const draining = record("draining", { window: { kind: "quota", until: 9_000 } })
+      const kept = applyHealthEvent(
+        draining,
+        { kind: "success", key: { providerID: "p" } },
+        0,
+        CONFIG,
+      )
+      expect(kept.health).toBe("draining")
+      expect(kept.window).toEqual(draining.window)
+
+      // A completed request is newer evidence than the quota reply that
+      // quarantined the resource: a topped-up account works before the
+      // declared reset instant arrives.
+      const quota = record("quota_exhausted", { window: { kind: "quota", until: 9_000 } })
+      const lifted = applyHealthEvent(
+        quota,
+        { kind: "success", key: { providerID: "p" } },
+        0,
+        CONFIG,
+      )
+      expect(lifted.health).toBe("healthy")
+      expect(lifted.window).toBeUndefined()
     })
   })
 

@@ -34,6 +34,20 @@ describe("mapSessionEvent", () => {
     ).toEqual({ kind: "agent-selected", sessionID: "s1", agent: "general" })
   })
 
+  it("carries a child session's parent", () => {
+    expect(
+      mapSessionEvent(
+        sessionEvent("session.created", { sessionID: "c1", agent: "general", parentID: "p1" }, 3),
+      ),
+    ).toEqual({ kind: "agent-selected", sessionID: "c1", agent: "general", parentID: "p1" })
+  })
+
+  it("omits the parent for a top-level session", () => {
+    expect(
+      mapSessionEvent(sessionEvent("session.created", { sessionID: "s1", agent: "build" }, 3)),
+    ).toEqual({ kind: "agent-selected", sessionID: "s1", agent: "build" })
+  })
+
   it("ignores a creation event without an agent", () => {
     expect(mapSessionEvent(sessionEvent("session.created", { sessionID: "s1" }, 3))).toBeNull()
   })

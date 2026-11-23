@@ -200,6 +200,28 @@ export class ResourceHealthRegistry {
       existing === undefined ? initialRecord(event.key, now) : sweepRecord(existing, now)
     const updated = applyHealthEvent(swept, event, now, this.#config)
     this.#records.set(id, updated)
+    // A completed request proves every scope it crossed is serving again.
+    // Quota and rate-limit windows are bounded forecasts, so a success on any
+    // variant (or any model of a provider) must lift an ancestor's forecast
+    // instead of leaving the whole subtree blocked until it expires. Only
+    // records that already exist are touched: a success never invents state
+    // for a scope that was never observed.
+    if (event.kind === "success") {
+      for (const key of resourceChain(event.key)) {
+        const ancestorID = resourceKeyID(key)
+        if (ancestorID === id) {
+          continue
+        }
+        const record = this.#records.get(ancestorID)
+        if (record === undefined) {
+          continue
+        }
+        this.#records.set(
+          ancestorID,
+          applyHealthEvent(sweepRecord(record, now), { kind: "success", key }, now, this.#config),
+        )
+      }
+    }
     return updated
   }
 

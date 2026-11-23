@@ -44,6 +44,57 @@ describe("ResourceHealthRegistry", () => {
     expect(registry.evaluate(MODEL_KEY)).toEqual({ kind: "available" })
   })
 
+  describe("success evidence across scopes", () => {
+    it("lifts a model-scope quota block on a success from any variant", () => {
+      const { now } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      const variantKey: ResourceKey = { providerID: "p", modelID: "m", variantID: "high" }
+      registry.observe({
+        kind: "failure",
+        key: MODEL_KEY,
+        category: "quota_exhausted",
+        definitive: true,
+      })
+      expect(registry.assess(variantKey).kind).toBe("blocked")
+
+      registry.observe({
+        kind: "success",
+        key: { providerID: "p", modelID: "m", variantID: "max" },
+      })
+      expect(registry.assess(variantKey)).toEqual({ kind: "available" })
+    })
+
+    it("lifts a provider-scope block without clearing a sibling model's own block", () => {
+      const { now } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      const sibling: ResourceKey = { providerID: "p", modelID: "other" }
+      registry.observe({
+        kind: "failure",
+        key: PROVIDER_KEY,
+        category: "quota_exhausted",
+        definitive: true,
+      })
+      registry.observe({
+        kind: "failure",
+        key: sibling,
+        category: "quota_exhausted",
+        definitive: true,
+      })
+
+      registry.observe({ kind: "success", key: MODEL_KEY })
+
+      expect(registry.assess(MODEL_KEY)).toEqual({ kind: "available" })
+      expect(registry.assess(sibling).kind).toBe("blocked")
+    })
+
+    it("does not create records for ancestor scopes that never failed", () => {
+      const { now } = fakeClock()
+      const registry = new ResourceHealthRegistry(now)
+      registry.observe({ kind: "success", key: MODEL_KEY })
+      expect(registry.snapshot().map((record) => record.key)).toEqual([MODEL_KEY])
+    })
+  })
+
   describe("hard state blocking", () => {
     it("blocks on rate limiting with the window's remaining delay", () => {
       const { now } = fakeClock()

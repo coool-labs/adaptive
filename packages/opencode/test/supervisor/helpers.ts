@@ -8,7 +8,11 @@ import type { SessionHookSource } from "../../src/adapters/opencode/hooks.js"
 import type { StorageSource } from "../../src/adapters/opencode/storage.js"
 import type { ModelRef } from "@coool/adaptive-core/routing/work-unit/types"
 import type { ModelSource } from "../../src/adapters/opencode/inventory.js"
-import type { GoalSurface, SupervisorSessionSource } from "../../src/supervisor/types.js"
+import type {
+  GoalSurface,
+  ParentNarration,
+  SupervisorSessionSource,
+} from "../../src/supervisor/types.js"
 import { processLedger, type ProcessLedger } from "../../src/adapters/opencode/process-ledger.js"
 import { Supervisor } from "../../src/supervisor/index.js"
 import { makeInfo, wireRef } from "../adapters/opencode/helpers.js"
@@ -250,6 +254,7 @@ export function makeSupervisor(options: {
   /** Pass one `processLedger(holder)` view per supervisor over a shared holder to model one process. */
   ledger?: ProcessLedger
   goal?: GoalSurface
+  parent?: ParentNarration
 }): Supervisor {
   const infos = options.infos ?? [makeInfo("prov", "a"), makeInfo("prov", "b")]
   const model = {
@@ -271,6 +276,7 @@ export function makeSupervisor(options: {
     schedule: (options.scheduler ?? new FakeScheduler()).schedule,
     ledger: options.ledger ?? processLedger({}),
     ...(options.goal === undefined ? {} : { goal: options.goal }),
+    ...(options.parent === undefined ? {} : { parent: options.parent }),
   })
 }
 

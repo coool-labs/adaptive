@@ -9,6 +9,10 @@
   of the default window, so a closed account is not retried every few minutes.
   The window is still capped at one day, an instant already in the past falls
   back to the default window, and localized prose times are not interpreted.
+- A successful request now lifts the quota forecast recorded for its model and
+  provider scopes, so a topped-up account is usable on the next admission
+  instead of waiting for the old window to expire. Draining still stays until
+  the operator lifts it.
 
 ## [1.0.3] — 2026-11-22
 

@@ -196,6 +196,10 @@ export class Supervisor {
   // are worthless. Insertion order gives the eviction (oldest hint first).
   static readonly MAX_AGENT_HINTS = 1024
   readonly #agents = new Map<string, string>()
+  /** Child session → spawning session, bounded like the agent hints. */
+  readonly #parents = new Map<string, string>()
+  /** Orchestrators that already carry the standing subagent note. */
+  readonly #instructedParents = new Set<string>()
   /**
    * Per-session tier requests (agent-declared via the adaptive_tier tool):
    * the request is STICKY — it steers the session's next and following
@@ -875,9 +879,65 @@ export class Supervisor {
     this.#agents.set(sessionID, agent)
   }
 
+  /**
+   * Remember which orchestrator owns a child session, and install the standing
+   * note in that orchestrator once. The note exists because the host reports a
+   * child's failure to its parent before any recovery lands (the terminal task
+   * result is generated from the failed attempt), so the parent otherwise reads
+   * "subagent failed" as "subagent is gone" and re-dispatches it.
+   */
+  #noteParent(childID: string, parentID: string | undefined): void {
+    if (parentID === undefined) {
+      return
+    }
+    if (!this.#parents.has(childID) && this.#parents.size >= Supervisor.MAX_AGENT_HINTS) {
+      // The guard above ensures the map is at its cap (>= 1 entries), so the
+      // first key always exists; the assertion avoids a branch the coverage
+      // gate would reject as unreachable.
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const oldest = this.#parents.keys().next().value!
+      this.#parents.delete(oldest)
+    }
+    this.#parents.set(childID, parentID)
+    if (this.#instructedParents.has(parentID)) {
+      return
+    }
+    if (this.#instructedParents.size >= Supervisor.MAX_AGENT_HINTS) {
+      return
+    }
+    this.#instructedParents.add(parentID)
+    const narration = this.#options.parent
+    if (narration === undefined) {
+      return
+    }
+    void narration.instruct(parentID).catch((error: unknown) => {
+      logFailOpen("parent-narration", error)
+    })
+  }
+
+  /**
+   * Tell an orchestrator that its child continued on another model. Called only
+   * after the switch and continuation prompt landed, so the notice never
+   * announces a recovery that did not happen; a parked ladder stays silent.
+   */
+  #announceResume(sessionID: string, model: ModelRef): void {
+    const parentID = this.#parents.get(sessionID)
+    if (parentID === undefined) {
+      return
+    }
+    const narration = this.#options.parent
+    if (narration === undefined) {
+      return
+    }
+    void narration.resumed(parentID, model).catch((error: unknown) => {
+      logFailOpen("parent-narration", error)
+    })
+  }
+
   async #dispatch(report: EventReport, settings: SettingsV1): Promise<void> {
     switch (report.kind) {
       case "agent-selected":
+        this.#noteParent(report.sessionID, report.parentID)
         this.#noteAgent(report.sessionID, report.agent)
         return
       case "execution-started":
@@ -1502,13 +1562,20 @@ export class Supervisor {
         tier,
         () => this.#modeFor(sessionID, this.#settings.get()) === "active",
         claim,
-      ).catch((error: unknown) => {
-        if (probeTicket !== undefined && this.#sessionProbeTickets.get(sessionID) === probeTicket) {
-          this.#sessionProbeTickets.delete(sessionID)
-          this.#health.releaseProbe(probeTicket)
-        }
-        if (!(error instanceof RecoveryAbortedError)) logFailOpen("availability-recovery", error)
-      })
+      )
+        .then(() => {
+          this.#announceResume(sessionID, decision.model)
+        })
+        .catch((error: unknown) => {
+          if (
+            probeTicket !== undefined &&
+            this.#sessionProbeTickets.get(sessionID) === probeTicket
+          ) {
+            this.#sessionProbeTickets.delete(sessionID)
+            this.#health.releaseProbe(probeTicket)
+          }
+          if (!(error instanceof RecoveryAbortedError)) logFailOpen("availability-recovery", error)
+        })
     } finally {
       if (!handedOff) this.#releaseRecovery(sessionID, claim)
     }
@@ -2010,7 +2077,9 @@ export class Supervisor {
         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- a veto implies mayRecover, so the claim exists
         claim!,
       )
-        .then(() => undefined)
+        .then(() => {
+          this.#announceResume(input.sessionID, wrapped.model)
+        })
         .catch(async (error: unknown) => {
           if (error instanceof RecoveryAbortedError) {
             // The user steered away (interruption / OFF) during the settle: the

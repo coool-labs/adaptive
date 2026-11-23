@@ -186,10 +186,11 @@ export function applyHealthEvent(
       return failureEvent(record, event, now, config)
     case "success": {
       const breaker: BreakerRecord = recordBreakerSuccess()
-      const health =
-        record.health === "draining" || record.health === "quota_exhausted"
-          ? record.health
-          : "healthy"
+      // Draining is an operator decision and stays until the drain lifts.
+      // Quota exhaustion is a time-bounded forecast; a completed request is
+      // newer evidence that the resource serves again, so a topped-up account
+      // must not stay quarantined until the forecast's instant arrives.
+      const health = record.health === "draining" ? "draining" : "healthy"
       return {
         ...record,
         health,

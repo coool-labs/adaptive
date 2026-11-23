@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A session that spawns subagents now gets one short standing note that a
+  subagent's report is its final result, and one notice when a subagent was
+  resumed on another model after an availability failure. The host reports a
+  child's failed attempt to its parent before the recovery lands, so an
+  orchestrator could read the failure as "the worker died", re-dispatch it, and
+  race two workers over the same files.
 - A terminal rate limit now fails over within the unit's tier, the same way
   terminal quota exhaustion already did. When the host gives up with a
   free-text rate-limit reply (no HTTP status, so its retry hook is never
@@ -27,6 +33,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   resumed once an owned continuation succeeds. The pause is machine-generated
   like the session-failure one; user pauses, reviewer stalls, round limits,
   and server restarts still stay paused.
+- A successful request now lifts the quota forecast recorded for its model and
+  provider scopes. An account topped up after a quota failure becomes usable
+  on the next admission instead of staying quarantined until the old window
+  expires; `draining` still requires the operator to lift it.
 
 ## [1.6.4] — 2026-11-22
 

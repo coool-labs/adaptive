@@ -62,7 +62,11 @@ export function modelRefOf(ref: Model.Ref): ModelRef {
 
 /** Structural session event the mapper accepts (host payloads are assignable). */
 export type SessionEvent =
-  | { type: "session.created"; created: number; data: { sessionID: string; agent?: string } }
+  | {
+      type: "session.created"
+      created: number
+      data: { sessionID: string; agent?: string; parentID?: string }
+    }
   | { type: "session.agent.selected"; created: number; data: { sessionID: string; agent: string } }
   | { type: "session.execution.started"; created: number; data: { sessionID: string } }
   | { type: "session.execution.succeeded"; created: number; data: { sessionID: string } }
@@ -96,7 +100,12 @@ export function mapSessionEvent(event: SessionEvent): ExecutionReport | AgentSel
     case "session.created":
       return event.data.agent === undefined
         ? null
-        : { kind: "agent-selected", sessionID: event.data.sessionID, agent: event.data.agent }
+        : {
+            kind: "agent-selected",
+            sessionID: event.data.sessionID,
+            agent: event.data.agent,
+            ...(event.data.parentID === undefined ? {} : { parentID: event.data.parentID }),
+          }
     case "session.agent.selected":
       return { kind: "agent-selected", sessionID: event.data.sessionID, agent: event.data.agent }
     case "session.execution.started":

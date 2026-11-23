@@ -12,6 +12,7 @@ import { SETTINGS_KEY } from "@coool/adaptive-core/state/settings/types"
 import { PARKED_KEY } from "@coool/adaptive-core/state/parked-work/types"
 import { parseReceiptsPayload } from "@coool/adaptive-core/state/receipts/index"
 import { makeInfo, fakeEvents, wireRef } from "./adapters/opencode/helpers.js"
+import { SUBAGENT_NOTE } from "../src/adapters/opencode/index.js"
 import type { ModelSource } from "../src/adapters/opencode/index.js"
 import { CONTINUATION_PROMPT } from "@coool/adaptive-core/execution/index"
 import {
@@ -47,6 +48,7 @@ function fakeContext(options: {
   addedTools?: unknown[]
   addedCommands?: unknown[]
   said?: { sessionID: string; text: string; description: string; resume: boolean }[]
+  instructed?: { sessionID: string; key: string; value: string }[]
   registeredRpc?: (record: { definition: unknown; handlers: unknown }) => void
   emitted?: unknown[][]
 }): Parameters<typeof adaptivePlugin.setup>[0] {
@@ -73,6 +75,14 @@ function fakeContext(options: {
       }) => {
         options.said?.push(input)
         return Promise.resolve()
+      },
+      instructions: {
+        entry: {
+          put: (input: { sessionID: string; key: string; value: string }) => {
+            options.instructed?.push(input)
+            return Promise.resolve()
+          },
+        },
       },
     },
     command: {
@@ -336,6 +346,27 @@ describe("plugin entry", () => {
     await vi.waitFor(() => {
       expect(session.log).toEqual(["switch:s1:prov/a"])
       expect(parseReceiptsPayload(storedReceipts(storage))).toHaveLength(1)
+    })
+    cleanup()
+  })
+
+  it("installs the orchestrator note when a session spawns a child", async () => {
+    const session = new FakeSupervisorSession()
+    const storage = new KeyFailStorage("unused")
+    const events = fakeEvents()
+    const instructed: { sessionID: string; key: string; value: string }[] = []
+    const cleanup = (await adaptivePlugin.setup(
+      fakeContext({ storage, session, events, instructed }),
+    )) as () => void
+    events.push({
+      type: "session.created",
+      created: 100,
+      data: { sessionID: "c1", agent: "general", parentID: "p1" },
+    })
+    await vi.waitFor(() => {
+      expect(instructed).toEqual([
+        { sessionID: "p1", key: "adaptive-subagents", value: SUBAGENT_NOTE },
+      ])
     })
     cleanup()
   })
