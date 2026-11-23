@@ -82,6 +82,17 @@ export interface ProcessLedger {
   /** Bumped after a receipt write, so another instance knows to reload. */
   receiptRevision(): number
   noteReceiptWrite(): void
+  /**
+   * Orders steering read-modify-write cycles across duplicate instances.
+   * Settings, session modes and tier requests are durable keys whose
+   * in-memory snapshots must not drift when both instances write.
+   */
+  steeringOperation<T>(operation: () => Promise<T>): Promise<T>
+  /** Resolves when every steering write enqueued so far has settled. */
+  steeringFlush(): Promise<void>
+  /** Bumped after a steering write, so the other instance reloads. */
+  steeringRevision(): number
+  noteSteeringWrite(): void
   /** The listener lives until this instance leaves. */
   onHealthReset(reset: (model: ModelRef) => void): void
   /** Publish only after the reset is durable, inside healthOperation. */
@@ -105,6 +116,8 @@ interface Claim {
 
 interface Shared {
   readonly live: Set<symbol>
+  /** Instances that disposed: their marks must never steer a survivor. */
+  readonly departed: Set<symbol>
   readonly claims: Map<string, Claim>
   readonly takeovers: Map<string, number>
   readonly switches: Map<string, Mark<ModelRef>>
@@ -114,6 +127,8 @@ interface Shared {
   healthQueue: Promise<void>
   receiptQueue: Promise<unknown>
   receiptRevision: number
+  steeringQueue: Promise<unknown>
+  steeringRevision: number
   readonly healthResets: Map<symbol, (model: ModelRef) => void>
   readonly resumers: Map<symbol, (sessionID: string) => Promise<ResumeOutcome>>
 }
@@ -126,7 +141,7 @@ interface Shared {
  * loaded beside a newer one); the shape version in the key keeps copies that
  * disagree about it from sharing one. Bump it whenever `Shared` changes.
  */
-const LEDGER = Symbol.for("coool.adaptive/process-ledger/4")
+const LEDGER = Symbol.for("coool.adaptive/process-ledger/6")
 
 type LedgerHolder = Record<symbol, Shared | undefined>
 
@@ -161,9 +176,16 @@ function take<T>(
   sessionID: string,
   reader: symbol,
   now: number,
+  departed: ReadonlySet<symbol>,
 ): T | undefined {
   const mark = marks.get(sessionID)
-  if (mark === undefined || mark.owner === reader || mark.readers.has(reader)) return undefined
+  if (
+    mark === undefined ||
+    mark.owner === reader ||
+    mark.readers.has(reader) ||
+    departed.has(mark.owner)
+  )
+    return undefined
   mark.readers.add(reader)
   return now - mark.at <= MARK_TTL_MS ? mark.value : undefined
 }
@@ -174,6 +196,7 @@ export function processLedger(holder: object = globalThis): ProcessLedger {
   const slot = holder as LedgerHolder
   const shared = slot[LEDGER] ?? {
     live: new Set<symbol>(),
+    departed: new Set<symbol>(),
     claims: new Map<string, Claim>(),
     takeovers: new Map<string, number>(),
     switches: new Map<string, Mark<ModelRef>>(),
@@ -183,6 +206,8 @@ export function processLedger(holder: object = globalThis): ProcessLedger {
     healthQueue: Promise.resolve(),
     receiptQueue: Promise.resolve(),
     receiptRevision: 0,
+    steeringQueue: Promise.resolve(),
+    steeringRevision: 0,
     healthResets: new Map<symbol, (model: ModelRef) => void>(),
     resumers: new Map<symbol, (sessionID: string) => Promise<ResumeOutcome>>(),
   }
@@ -201,6 +226,7 @@ export function processLedger(holder: object = globalThis): ProcessLedger {
     },
     leave() {
       left = true
+      shared.departed.add(owner)
       shared.live.delete(owner)
       shared.wakes.delete(owner)
       shared.healthResets.delete(owner)
@@ -230,7 +256,7 @@ export function processLedger(holder: object = globalThis): ProcessLedger {
       setBounded(shared.switches, sessionID, mark(model, at))
     },
     takeSwitch(sessionID, model, now) {
-      const noted = take(shared.switches, sessionID, owner, now)
+      const noted = take(shared.switches, sessionID, owner, now, shared.departed)
       return noted !== undefined && sameModelRef(noted, model)
     },
     withdrawSwitch(sessionID) {
@@ -240,7 +266,7 @@ export function processLedger(holder: object = globalThis): ProcessLedger {
       setBounded(shared.continuations, sessionID, mark(continuation, at))
     },
     takeContinuation(sessionID, now) {
-      return take(shared.continuations, sessionID, owner, now)
+      return take(shared.continuations, sessionID, owner, now, shared.departed)
     },
     withdrawContinuation(sessionID) {
       withdraw(shared.continuations, sessionID, owner)
@@ -282,6 +308,20 @@ export function processLedger(holder: object = globalThis): ProcessLedger {
     },
     noteReceiptWrite() {
       shared.receiptRevision += 1
+    },
+    steeringOperation(operation) {
+      const pending = shared.steeringQueue.then(operation)
+      shared.steeringQueue = pending.catch(() => undefined)
+      return pending
+    },
+    steeringFlush() {
+      return shared.steeringQueue.then(() => undefined)
+    },
+    steeringRevision() {
+      return shared.steeringRevision
+    },
+    noteSteeringWrite() {
+      shared.steeringRevision += 1
     },
     onHealthReset(reset) {
       if (!left) shared.healthResets.set(owner, reset)

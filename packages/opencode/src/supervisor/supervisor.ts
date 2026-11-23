@@ -171,6 +171,8 @@ export class Supervisor {
   readonly #receipts: ReceiptStore
   /** Shared receipt revision this instance's ring reflects (-1: not loaded yet). */
   #receiptRevision = -1
+  /** Shared steering revision this instance's settings/modes/requests reflect. */
+  #steeringRevision = -1
   readonly #parked: ParkedWorkStore
   readonly #tracker = new WorkUnitTracker()
   readonly #health: ResourceHealthRegistry
@@ -463,7 +465,9 @@ export class Supervisor {
       // steer this instance's admissions.
       await this.#tierRequests.load()
       await this.#capacityStore.load()
-      return this.#settings.load()
+      const loaded = await this.#settings.load()
+      this.#steeringRevision = options.ledger.steeringRevision()
+      return loaded
     }
     this.#ready = loadState()
     // Parked work survives restarts; its wake must too.
@@ -490,7 +494,28 @@ export class Supervisor {
   /** Settings as of the latest load/patch (awaits the constructor load). */
   async #ensureSettings(): Promise<SettingsV1> {
     await this.#ready
+    await this.#refreshSteering()
     return this.#settings.get()
+  }
+
+  /**
+   * Duplicate instances share the durable steering keys but not their
+   * in-memory stores: a mode, pin or tier request written through the
+   * instance that serves the control surface must steer the instance that
+   * routes the session's reports too (ADP-056). Reload only when the shared
+   * revision moved; callers have already awaited `#ready`. The captured
+   * revision is what this load reflects, so a write racing the reload is
+   * picked up by the next one instead of being skipped.
+   */
+  async #refreshSteering(): Promise<void> {
+    // A note is fire-and-forget: its write may still sit in this process's
+    // steering queue. Reloading before it lands would serve the old record
+    // and let the pending write resurrect an evicted one.
+    await this.#options.ledger.steeringFlush()
+    const revision = this.#options.ledger.steeringRevision()
+    if (revision === this.#steeringRevision) return
+    await Promise.all([this.#settings.load(), this.#sessionModes.load(), this.#tierRequests.load()])
+    this.#steeringRevision = revision
   }
 
   /**
@@ -617,7 +642,12 @@ export class Supervisor {
    */
   noteTierRequest(sessionID: string, tier: string): boolean {
     if (!isTierName(tier)) return false
-    void this.#tierRequests.set(sessionID, tier).catch(() => undefined)
+    void this.#options.ledger
+      .steeringOperation(() => this.#tierRequests.set(sessionID, tier))
+      .then(() => {
+        this.#options.ledger.noteSteeringWrite()
+      })
+      .catch(() => undefined)
     // The user/agent explicitly asked Adaptive to route again (ADP-028).
     this.#manualSelections.delete(sessionID)
     return true
@@ -626,6 +656,7 @@ export class Supervisor {
   /** The session's tier request, or `null` when it follows the routing ladder. */
   async getTierRequest(sessionID: string): Promise<TierName | null> {
     await this.#ready
+    await this.#refreshSteering()
     // A fire-and-forget note may still be in the queue: flush before reading.
     await this.#tierRequests.flush()
     return this.#tierRequests.get(sessionID)
@@ -635,7 +666,8 @@ export class Supervisor {
   async setTierRequest(sessionID: string, tier: TierName | null): Promise<void> {
     await this.#ready
     if (tier !== null) throw new Error("only null clears a tier request")
-    await this.#tierRequests.set(sessionID, null)
+    await this.#options.ledger.steeringOperation(() => this.#tierRequests.set(sessionID, null))
+    this.#options.ledger.noteSteeringWrite()
     // Clearing through the control surface is the user asking Adaptive back.
     this.#manualSelections.delete(sessionID)
   }
@@ -740,7 +772,8 @@ export class Supervisor {
   /** Validate and persist a settings patch; returns per-field errors. */
   async updateSettings(patch: SettingsPatch): Promise<PatchResult> {
     await this.#ready
-    const result = await this.#settings.update(patch)
+    const result = await this.#options.ledger.steeringOperation(() => this.#settings.update(patch))
+    if (result.ok) this.#options.ledger.noteSteeringWrite()
     if (result.ok && patch.mode !== undefined) {
       // A global mode change is the user steering Adaptive explicitly
       // (ADP-028): manual-selection suppression lifts for every session.
@@ -754,6 +787,7 @@ export class Supervisor {
   /** The session's mode override, or `null` when it follows the global mode. */
   async getSessionMode(sessionID: string): Promise<OperatingMode | null> {
     await this.#ready
+    await this.#refreshSteering()
     return this.#sessionModes.get(sessionID)
   }
 
@@ -764,7 +798,8 @@ export class Supervisor {
    */
   async setSessionMode(sessionID: string, mode: OperatingMode | null): Promise<void> {
     await this.#ready
-    await this.#sessionModes.set(sessionID, mode)
+    await this.#options.ledger.steeringOperation(() => this.#sessionModes.set(sessionID, mode))
+    this.#options.ledger.noteSteeringWrite()
     // A mode change is the user steering Adaptive explicitly (ADP-028).
     this.#manualSelections.delete(sessionID)
     await this.#rearmWake()
@@ -2368,7 +2403,10 @@ export class Supervisor {
     for (const sessionID of tierRequestIDs) {
       if (alive.get(sessionID) === false) {
         try {
-          await this.#tierRequests.set(sessionID, null)
+          await this.#options.ledger.steeringOperation(() =>
+            this.#tierRequests.set(sessionID, null),
+          )
+          this.#options.ledger.noteSteeringWrite()
         } catch (error) {
           logFailOpen("tier-requests", error)
         }
@@ -2399,7 +2437,10 @@ export class Supervisor {
         this.#options.ledger.clearParked(sessionID)
         if (this.#sessionModes.get(sessionID) !== null) {
           try {
-            await this.#sessionModes.set(sessionID, null)
+            await this.#options.ledger.steeringOperation(() =>
+              this.#sessionModes.set(sessionID, null),
+            )
+            this.#options.ledger.noteSteeringWrite()
           } catch (error) {
             logFailOpen("session-modes", error)
           }

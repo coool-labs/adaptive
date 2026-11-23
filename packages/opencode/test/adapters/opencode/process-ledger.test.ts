@@ -185,6 +185,41 @@ describe("process ledger", () => {
     expect(two.takeSwitch("s2", A, 2_003)).toBe(false)
   })
 
+  it("ignores a departed instance's marks", () => {
+    const [one, two] = pair()
+    one.noteSwitch("s1", A, 1_000)
+    one.noteContinuation("s1", { tier: "standard" }, 1_000)
+    one.leave()
+    // A disposed instance must not steer a survivor with marks it left behind
+    // (a released test supervisor would otherwise own the next real prompt).
+    expect(two.takeSwitch("s1", A, 1_001)).toBe(false)
+    expect(two.takeContinuation("s1", 1_001)).toBeUndefined()
+  })
+
+  it("orders steering writes and shares their revision across instances", async () => {
+    const [one, two] = pair()
+    const order: string[] = []
+    await Promise.all([
+      one.steeringOperation(() => {
+        order.push("one")
+        return Promise.resolve()
+      }),
+      two.steeringOperation(() => {
+        order.push("two")
+        return Promise.resolve()
+      }),
+    ])
+    expect(order).toEqual(["one", "two"])
+    expect(two.steeringRevision()).toBe(0)
+    one.noteSteeringWrite()
+    expect(two.steeringRevision()).toBe(1)
+    // A failed write still releases the shared queue for the next one.
+    await expect(
+      one.steeringOperation(() => Promise.reject(new Error("write failed"))),
+    ).rejects.toThrow("write failed")
+    await two.steeringFlush()
+  })
+
   it("forgets marks older than the TTL", () => {
     const [one, two] = pair()
     one.noteSwitch("s1", A, 0)

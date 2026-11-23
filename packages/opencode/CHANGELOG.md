@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A mode, pin or tier request set through one plugin instance now steers the
+  other instance that routes the session. The host can load the plugin twice;
+  each copy kept its own settings, session modes and tier requests, so the same
+  unit could be routed at two different tiers (advanced and standard ladders
+  interleaved in production) and manual steering was honored only by the
+  instance that received it.
+- A disposed plugin instance's owned switch or continuation mark no longer
+  steers the surviving instance, so a stale mark cannot absorb the next real
+  prompt.
 - A session that spawns subagents now gets one short standing note that a
   subagent's report is its final result, and one notice when a subagent was
   resumed on another model after an availability failure. The host reports a
