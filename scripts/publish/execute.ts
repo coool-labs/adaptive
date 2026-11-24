@@ -21,14 +21,10 @@ export function executePublish(
   for (const action of actions) {
     switch (action) {
       case "publish":
+        // A failed publish throws before anything is tagged. A successful one
+        // certifies the version even while the registry still answers E404:
+        // its listing can lag the accepted upload by minutes.
         effects.publish()
-        // npm's exit status alone is not proof: 1.6.3 exited 0 and never
-        // reached the registry, yet was tagged. Tag only what is listed.
-        if (effects.registryState() !== "published") {
-          throw new Error(
-            `publish: npm publish exited 0 but the registry does not list ${target.name}@${target.version}; nothing was tagged, rerun once it does or publish again`,
-          )
-        }
         break
       case "tag":
         effects.createTag()

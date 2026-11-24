@@ -120,7 +120,7 @@ stays clean during the battery. A failed preparation or commit restores its file
 edits; a failed verification additionally discards the still-local commit. On
 success it pushes. Publication and certification
 are separate steps: `npm run publish:opencode` / `npm run publish:pi` publish the
-bumped package and, only after the registry accepts it, certify it with its
+bumped package and, once `npm publish` succeeds, certify it with its
 annotated tag (`opencode-vX.Y.Z` / `pi-vX.Y.Z`, read from the just-published
 manifest) and push the tag. Historical `vX.Y.Z` tags are pre-monorepo OpenCode
 releases.

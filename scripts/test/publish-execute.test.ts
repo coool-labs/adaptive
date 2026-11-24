@@ -10,7 +10,7 @@ interface RecordingEffects extends PublishEffects {
 
 function recording(
   state: { published: boolean; localTag: "absent" | "on-head" | "detached" },
-  lands = true,
+  publishFails = false,
 ) {
   const calls: string[] = []
   const effects: RecordingEffects = {
@@ -25,7 +25,8 @@ function recording(
     },
     publish: () => {
       calls.push("publish")
-      state.published = lands
+      if (publishFails)
+        throw new Error("npm publish --workspace packages/pi --access public: failed")
     },
     createTag: () => calls.push("createTag"),
     pushTag: () => calls.push("pushTag"),
@@ -34,27 +35,18 @@ function recording(
 }
 
 describe("executePublish", () => {
-  it("publishes, tags and pushes in dependency order", () => {
+  it("tags and pushes once npm publish succeeds, without waiting for the registry to list it", () => {
+    // The registry can lag a successful publish by minutes (1.0.4 returned
+    // E404 right after `PUT 202`); a successful exit is the certification.
     const effects = recording({ published: false, localTag: "absent" })
     expect(executePublish(TARGET, effects)).toEqual(["publish", "tag", "pushTag"])
-    expect(effects.calls).toEqual([
-      "registryState",
-      "localTag",
-      "publish",
-      "registryState",
-      "createTag",
-      "pushTag",
-    ])
+    expect(effects.calls).toEqual(["registryState", "localTag", "publish", "createTag", "pushTag"])
   })
 
-  it("refuses to tag when npm publish exits 0 but the registry lacks the version", () => {
-    // Regression: 1.6.3 was tagged and pushed after `npm publish` exited 0,
-    // yet the registry never listed it.
-    const effects = recording({ published: false, localTag: "absent" }, false)
-    expect(() => executePublish(TARGET, effects)).toThrow(
-      "publish: npm publish exited 0 but the registry does not list @coool/pi-adaptive@1.0.0",
-    )
-    expect(effects.calls).toEqual(["registryState", "localTag", "publish", "registryState"])
+  it("does not tag when npm publish fails", () => {
+    const effects = recording({ published: false, localTag: "absent" }, true)
+    expect(() => executePublish(TARGET, effects)).toThrow("npm publish --workspace packages/pi")
+    expect(effects.calls).toEqual(["registryState", "localTag", "publish"])
   })
 
   it("does not publish or tag again when both already agree", () => {
