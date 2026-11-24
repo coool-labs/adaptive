@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+## [1.0.4] — 2026-11-24
+
+# pi-adaptive 1.0.4
+
+A provider's stated reset time now bounds how long a closed account stays
+quarantined, and a successful request lifts a stale quota forecast so a
+topped-up account is usable again right away.
+
+### Fixed
+
+- A provider reply that names an absolute reset instant
+  (`Resets at 2026-11-23T16:00:00Z`) now quarantines the model until that
+  instant instead of the default window, so a closed account is not retried
+  every few minutes. The window is still capped at one day, an instant already
+  in the past falls back to the default window, and localized prose times are
+  not interpreted.
+- A successful request now lifts the quota forecast recorded for its model and
+  provider scopes, so a topped-up account is usable on the next admission
+  instead of waiting for the old window to expire. Draining still stays until
+  the operator lifts it.
+
+### Tests
+
+- Shared classifier, health-transition and registry coverage for declared
+  reset instants and for success evidence lifting ancestor quota forecasts.
+
+### Shared core
+
+- fix: lift quota forecasts on success and narrate subagent recovery (b74cbed)
+- fix: recover terminal rate limits and resume stalled goals (51e743d)
+
 ## [1.0.3] — 2026-11-22
 
 # pi-adaptive 1.0.3
@@ -121,6 +152,7 @@ Initial Pi integration; not yet published.
 - Add `/adaptive` (status, why, tiers, health, resume, cancel, observe on|off, doctor), a first-run tier proposal that saves only after confirmation, and Ctrl+Alt+A.
 - Add deterministic tests, real-Pi SDK faux-provider scenarios, a versioned provider-error corpus, a packed minimum/latest host matrix over SDK, JSON, and real-terminal surfaces, and requirement traceability. See the [test strategy](docs/TEST_STRATEGY.md).
 
+[1.0.4]: https://github.com/coool-labs/adaptive/releases/tag/pi-v1.0.4
 [1.0.3]: https://github.com/coool-labs/adaptive/releases/tag/pi-v1.0.3
 [1.0.2]: https://github.com/coool-labs/adaptive/releases/tag/pi-v1.0.2
 [1.0.1]: https://github.com/coool-labs/adaptive/releases/tag/pi-v1.0.1
