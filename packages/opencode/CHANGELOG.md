@@ -6,47 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Fixed
-
-- A mode, pin or tier request set through one plugin instance now steers the
-  other instance that routes the session. The host can load the plugin twice;
-  each copy kept its own settings, session modes and tier requests, so the same
-  unit could be routed at two different tiers (advanced and standard ladders
-  interleaved in production) and manual steering was honored only by the
-  instance that received it.
-- A disposed plugin instance's owned switch or continuation mark no longer
-  steers the surviving instance, so a stale mark cannot absorb the next real
-  prompt.
-- A session that spawns subagents now gets one short standing note that a
-  subagent's report is its final result, and one notice when a subagent was
-  resumed on another model after an availability failure. The host reports a
-  child's failed attempt to its parent before the recovery lands, so an
-  orchestrator could read the failure as "the worker died", re-dispatch it, and
-  race two workers over the same files.
-- A terminal rate limit now fails over within the unit's tier, the same way
-  terminal quota exhaustion already did. When the host gives up with a
-  free-text rate-limit reply (no HTTP status, so its retry hook is never
-  invoked), Adaptive quarantines the model and continues from session state
-  on the next usable rung of the same tier instead of leaving the session
-  failed. Capability is never escalated, OBSERVE records the same admission
-  without applying it, and the per-task recovery budget still bounds the
-  ladder.
-- A provider-declared reset instant ("Resets at 2026-11-23T16:00:00.000Z")
-  now bounds the health window instead of the default burst-sized one. An
-  account closed for hours is no longer re-probed every few minutes, and the
-  receipts and status view show the real deadline. The instant is clamped to
-  the same one-day bound as `Retry-After` and ignored when it already passed;
-  localized prose times are still not interpreted.
-- A goal the host paused because the session waited on background work
-  ("Nothing ran for N minutes while the goal waited on background work") is
-  resumed once an owned continuation succeeds. The pause is machine-generated
-  like the session-failure one; user pauses, reviewer stalls, round limits,
-  and server restarts still stay paused.
-- A successful request now lifts the quota forecast recorded for its model and
-  provider scopes. An account topped up after a quota failure becomes usable
-  on the next admission instead of staying quarantined until the old window
-  expires; `draining` still requires the operator to lift it.
-
 ## [1.6.4] — 2026-11-22
 
 # opencode-adaptive 1.6.4
